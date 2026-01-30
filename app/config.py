@@ -260,6 +260,22 @@ class AgentConfig(BaseSettings):
     skills_base_dir: str = Field(default="./skills")
     shared_skills_dir: str = Field(default="./skills/shared")
 
+    def model_post_init(self, __context) -> None:  # type: ignore[override]
+        """Post-init normalization.
+
+        If a caller overrides skills_base_dir but leaves shared_skills_dir at
+        its default, treat shared_skills_dir as a subdirectory of skills_base_dir.
+
+        This keeps test/dev setups isolated (tmp skills dirs won't accidentally
+        sync from the repository's ./skills/shared).
+        """
+        try:
+            if self.shared_skills_dir == "./skills/shared" and self.skills_base_dir != "./skills":
+                self.shared_skills_dir = str(Path(self.skills_base_dir) / "shared")
+        except Exception:
+            # Be conservative: never fail config construction due to normalization.
+            return
+
     # Pending skill onboarding
     pending_skills_preflight_enabled: bool = Field(
         default=True,
