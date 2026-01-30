@@ -21,6 +21,7 @@ Requirements:
 """
 
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime
@@ -137,14 +138,19 @@ class AgentService:
         self._skills_base_dir = Path(config.skills_base_dir)
         self._skills_base_dir.mkdir(parents=True, exist_ok=True)
         self._user_agents: dict[str, Agent] = {}  # cached agent instances
-        self._user_conversation_managers: dict[str, SlidingWindowConversationManager] = {}  # cached managers
+        self._user_conversation_managers: dict[
+            str, SlidingWindowConversationManager
+        ] = {}  # cached managers
 
     def _get_user_skills_dir(self, user_id: str) -> Path:
         """Get the skills directory for a specific user.
 
         Also syncs shared skills into the user's directory so Strands can
-        load all tools from a single directory. User skills override shared
-        skills with the same name.
+        load all tools from a single directory.
+
+        Current behavior: shared skills are mirrored into the user directory
+        on every call, overwriting any existing same-named entries. This keeps
+        the per-user tools directory always in sync with shared skills.
         """
         user_dir = self._skills_base_dir / user_id
         user_dir.mkdir(parents=True, exist_ok=True)
@@ -152,10 +158,19 @@ class AgentService:
         return user_dir
 
     def _sync_shared_skills(self, user_dir: Path) -> None:
-        """Sync shared skills into user's directory.
+        """Mirror shared skills into a user's directory.
 
-        Copies shared skills that don't exist in user's directory.
-        User skills with the same name take precedence (not overwritten).
+        This runs on each message (via agent creation) to ensure the user's
+        skills directory reflects the latest shared skills.
+
+        Semantics:
+        - For each shared skill (file or directory), copy into user_dir.
+        - If the destination exists, it is overwritten.
+        - If a previously-synced shared skill was deleted from shared/, remove
+          the corresponding entry from user_dir.
+
+        To avoid expensive full copies on every call, we keep a lightweight
+        per-user manifest with fingerprints of each synced shared entry.
 
         Args:
             user_dir: User's skills directory.
@@ -167,32 +182,146 @@ class AgentService:
             logger.debug("Shared skills dir does not exist: %s", shared_dir)
             return
 
-        synced = []
+        manifest_path = user_dir / ".shared_skills_sync.json"
+
+        def load_manifest() -> dict:
+            try:
+                if manifest_path.exists():
+                    return json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+            return {"synced": {}}
+
+        def save_manifest(data: dict) -> None:
+            try:
+                tmp = manifest_path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+                tmp.replace(manifest_path)
+            except Exception as e:
+                logger.debug("Failed to write shared skills manifest: %s", e)
+
+        def fingerprint_path(p: Path) -> dict:
+            """Compute a best-effort fingerprint for p.
+
+            For directories, we hash only metadata (mtime_ns + size) of contained
+            files, not file contents.
+            """
+            try:
+                if p.is_file():
+                    st = p.stat()
+                    return {
+                        "kind": "file",
+                        "mtime_ns": st.st_mtime_ns,
+                        "size": st.st_size,
+                    }
+                if p.is_dir():
+                    max_mtime_ns = 0
+                    total_size = 0
+                    file_count = 0
+                    for root, _dirs, files in os.walk(p):
+                        for fn in files:
+                            fp = Path(root) / fn
+                            try:
+                                st = fp.stat()
+                            except OSError:
+                                continue
+                            file_count += 1
+                            total_size += int(st.st_size)
+                            max_mtime_ns = max(max_mtime_ns, int(st.st_mtime_ns))
+                    return {
+                        "kind": "dir",
+                        "max_mtime_ns": max_mtime_ns,
+                        "total_size": total_size,
+                        "file_count": file_count,
+                    }
+            except Exception:
+                pass
+
+            return {"kind": "unknown"}
+
+        manifest = load_manifest()
+        synced: dict[str, dict] = dict(manifest.get("synced", {}))
+
+        # Determine which shared entries should be mirrored.
+        shared_items: dict[str, Path] = {}
         for item in shared_dir.iterdir():
+            # Skip private/dunder entries and non-skill reserved dirs.
             if item.name.startswith("__"):
                 continue
-
-            # Never sync non-skill reserved directories
+            if item.is_file() and item.name == "__init__.py":
+                continue
             if item.is_dir() and item.name in _RESERVED_SKILL_DIR_NAMES:
                 continue
 
-            dest = user_dir / item.name
-            # Skip if user has their own version (user overrides shared)
+            shared_items[item.name] = item
+
+        removed: list[str] = []
+        updated: list[str] = []
+
+        # Remove entries that were previously synced but no longer exist in shared.
+        for name in list(synced.keys()):
+            if name in shared_items:
+                continue
+            dest = user_dir / name
             if dest.exists():
-                logger.debug("Skipping %s - user has override", item.name)
+                try:
+                    if dest.is_dir():
+                        shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+                    removed.append(name)
+                except Exception as e:
+                    logger.warning("Failed to remove stale shared skill %s: %s", name, e)
+            synced.pop(name, None)
+
+        # Mirror/overwrite current shared skills.
+        for name, src in shared_items.items():
+            dest = user_dir / name
+            fp = fingerprint_path(src)
+            prev_fp = (synced.get(name) or {}).get("fingerprint")
+
+            # Skip if unchanged and destination exists.
+            if prev_fp == fp and dest.exists():
                 continue
 
-            try:
-                if item.is_dir():
-                    shutil.copytree(item, dest)
-                else:
-                    shutil.copy2(item, dest)
-                synced.append(item.name)
-            except Exception as e:
-                logger.warning("Failed to sync shared skill %s: %s", item.name, e)
+            # Overwrite destination.
+            if dest.exists():
+                try:
+                    if dest.is_dir():
+                        shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+                except Exception as e:
+                    logger.warning(
+                        "Failed to remove existing dest for shared skill %s: %s",
+                        name,
+                        e,
+                    )
+                    # If we can't remove it, don't attempt to copy over it.
+                    continue
 
-        if synced:
-            logger.info("Synced shared skills to user dir: %s", ", ".join(synced))
+            try:
+                if src.is_dir():
+                    shutil.copytree(src, dest)
+                else:
+                    shutil.copy2(src, dest)
+                synced[name] = {
+                    "fingerprint": fp,
+                    "synced_at": datetime.utcnow().isoformat(),
+                    "source": str(src),
+                }
+                updated.append(name)
+            except Exception as e:
+                logger.warning("Failed to sync shared skill %s: %s", name, e)
+
+        if removed or updated:
+            manifest["synced"] = synced
+            save_manifest(manifest)
+
+        if removed:
+            logger.info("Removed stale shared skills for user: %s", ", ".join(removed))
+        if updated:
+            logger.info("Synced/updated shared skills for user: %s", ", ".join(updated))
 
     def _get_session_id(self, user_id: str) -> str:
         """Get or create a session ID for a user."""
@@ -253,9 +382,7 @@ class AgentService:
         # Use vision model if requested and configured (Req 3.1, 3.2, 3.5)
         if use_vision and self.config.vision_model_id:
             if self.config.bedrock_api_key:
-                os.environ["AWS_BEARER_TOKEN_BEDROCK"] = (
-                    self.config.bedrock_api_key
-                )
+                os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self.config.bedrock_api_key
             return BedrockModel(
                 model_id=self.config.vision_model_id,
                 region_name=self.config.aws_region,
@@ -266,9 +393,7 @@ class AgentService:
             case ModelProvider.BEDROCK:
                 model_id = self.config.bedrock_model_id
                 if self.config.bedrock_api_key:
-                    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = (
-                        self.config.bedrock_api_key
-                    )
+                    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self.config.bedrock_api_key
                 return BedrockModel(
                     model_id=model_id,
                     region_name=self.config.aws_region,
@@ -289,9 +414,7 @@ class AgentService:
                     params={"max_output_tokens": 4096},
                 )
             case _:
-                raise ValueError(
-                    f"Unknown model provider: {self.config.model_provider}"
-                )
+                raise ValueError(f"Unknown model provider: {self.config.model_provider}")
 
     def set_agent_name(self, user_id: str, name: str) -> None:
         """Set the agent name for a user (cached, caller saves to DB).
@@ -313,9 +436,7 @@ class AgentService:
             name: New name for the agent.
         """
         self._user_agent_names[user_id] = name
-        logger.info(
-            "Agent name changed via tool for user %s: %s", user_id, name
-        )
+        logger.info("Agent name changed via tool for user %s: %s", user_id, name)
 
     def get_agent_name(self, user_id: str) -> str | None:
         """Get the cached agent name for a user.
@@ -405,12 +526,10 @@ class AgentService:
                     # Only copy if not already in workspace
                     if src_path.parent != workspace_dir:
                         import shutil
+
                         shutil.copy2(src_path, dest_path)
                         file_path = str(dest_path)
-                        logger.info(
-                            "Copied attachment %s to workspace: %s",
-                            file_name, dest_path
-                        )
+                        logger.info("Copied attachment %s to workspace: %s", file_name, dest_path)
 
             # Format size for readability
             if file_size >= 1024 * 1024:
@@ -454,11 +573,7 @@ class AgentService:
             # Cache it for future use in this session
             if agent_name:
                 self._user_agent_names[user_id] = agent_name
-                logger.info(
-                    "Loaded agent name '%s' from memory for user %s",
-                    agent_name,
-                    user_id
-                )
+                logger.info("Loaded agent name '%s' from memory for user %s", agent_name, user_id)
         facts = memory_context.get("facts", [])
         preferences = memory_context.get("preferences", [])
 
@@ -473,10 +588,8 @@ class AgentService:
         else:
             # Check if memories mention a name - tell agent to look there
             has_name_in_memory = any(
-                "assistant" in str(f).lower() and any(
-                    word in str(f).lower()
-                    for word in ["call", "name", "mordecai", "jarvis"]
-                )
+                "assistant" in str(f).lower()
+                and any(word in str(f).lower() for word in ["call", "name", "mordecai", "jarvis"])
                 for f in facts + preferences
             )
             if has_name_in_memory:
@@ -568,13 +681,13 @@ class AgentService:
             prompt += (
                 "Skills contain instructions with bash commands to execute.\n\n"
                 "**Your available tools:**\n"
-                "- `shell(command=\"...\")` - Run bash/shell commands\n"
-                "- `file_read(path=\"...\", mode=\"view\")` - Read files\n"
+                '- `shell(command="...")` - Run bash/shell commands\n'
+                '- `file_read(path="...", mode="view")` - Read files\n'
                 "- `file_write(...)` - Write files\n\n"
                 "**To use a skill:**\n"
                 "1. file_read the SKILL.md ONCE\n"
                 "2. Extract the bash commands from the instructions\n"
-                "3. Run them with shell(command=\"the bash command\")\n\n"
+                '3. Run them with shell(command="the bash command")\n\n'
                 "**CRITICAL:** After reading SKILL.md, your next tool call "
                 "MUST be shell(), not file_read. Skills say 'Bash' but use "
                 "shell() tool.\n\n"
@@ -585,8 +698,7 @@ class AgentService:
                 path = skill.get("path", "")
                 prompt += f"- **{name}**: {desc}\n"
                 prompt += (
-                    f"  → file_read(path=\"{path}/SKILL.md\", mode=\"view\") "
-                    "→ shell(command=\"...\")\n"
+                    f'  → file_read(path="{path}/SKILL.md", mode="view") → shell(command="...")\n'
                 )
 
         # Working folder section (Requirement 10.3)
@@ -601,17 +713,17 @@ class AgentService:
             "- NEVER create files in `.` or any other location\n"
             "- NEVER use relative paths without the working folder prefix\n\n"
             "**CRITICAL: For shell commands, ALWAYS set work_dir:**\n"
-            f"- shell(command=\"...\", work_dir=\"{wd}\")\n"
+            f'- shell(command="...", work_dir="{wd}")\n'
             "- This ensures commands run in your working folder\n"
             "- Output files will be saved in the correct location\n\n"
             "Examples:\n"
-            f"- ✅ Correct: `file_write(path=\"{wd}/out.txt\", ...)`\n"
-            f"- ✅ Correct: `file_write(path=\"{wd}/data.json\", ...)`\n"
-            f"- ✅ Correct: `shell(command=\"uv run ...\", "
-            f"work_dir=\"{wd}\")`\n"
-            "- ❌ Wrong: `file_write(path=\"output.txt\", ...)`\n"
-            "- ❌ Wrong: `file_write(path=\"./data.json\", ...)`\n"
-            "- ❌ Wrong: `shell(command=\"...\")` (missing work_dir)\n\n"
+            f'- ✅ Correct: `file_write(path="{wd}/out.txt", ...)`\n'
+            f'- ✅ Correct: `file_write(path="{wd}/data.json", ...)`\n'
+            f'- ✅ Correct: `shell(command="uv run ...", '
+            f'work_dir="{wd}")`\n'
+            '- ❌ Wrong: `file_write(path="output.txt", ...)`\n'
+            '- ❌ Wrong: `file_write(path="./data.json", ...)`\n'
+            '- ❌ Wrong: `shell(command="...")` (missing work_dir)\n\n'
             "You have read and write access to this directory.\n"
         )
 
@@ -635,9 +747,9 @@ class AgentService:
                 "**Example - User wants a joke every 5 minutes:**\n"
                 "```\n"
                 "create_cron_task(\n"
-                "  name=\"joke-sender\",\n"
-                "  instructions=\"Tell the user a funny joke\",\n"
-                "  cron_expression=\"*/5 * * * *\"\n"
+                '  name="joke-sender",\n'
+                '  instructions="Tell the user a funny joke",\n'
+                '  cron_expression="*/5 * * * *"\n'
                 ")\n"
                 "```\n"
                 "When this fires, you'll be asked to tell a joke and you'll "
@@ -645,9 +757,9 @@ class AgentService:
                 "**Example - Daily weather update:**\n"
                 "```\n"
                 "create_cron_task(\n"
-                "  name=\"weather-update\",\n"
-                "  instructions=\"Check the weather and send a summary\",\n"
-                "  cron_expression=\"0 8 * * *\"\n"
+                '  name="weather-update",\n'
+                '  instructions="Check the weather and send a summary",\n'
+                '  cron_expression="0 8 * * *"\n'
                 ")\n"
                 "```\n\n"
                 "**DO NOT:**\n"
@@ -735,13 +847,13 @@ class AgentService:
 
     def _get_or_create_conversation_manager(self, user_id: str) -> SlidingWindowConversationManager:
         """Get or create a conversation manager for a user.
-        
+
         This ensures the same conversation manager is reused across messages
         so the agent maintains conversation history within a session.
-        
+
         Args:
             user_id: User's telegram ID.
-            
+
         Returns:
             SlidingWindowConversationManager instance for the user.
         """
@@ -753,10 +865,10 @@ class AgentService:
 
     def _get_user_messages(self, user_id: str) -> list:
         """Get the cached messages for a user's session.
-        
+
         Args:
             user_id: User's telegram ID.
-            
+
         Returns:
             List of messages from the user's current session.
         """
@@ -767,7 +879,7 @@ class AgentService:
 
     def _cache_agent(self, user_id: str, agent: Agent) -> None:
         """Cache an agent instance for a user.
-        
+
         Args:
             user_id: User's telegram ID.
             agent: Agent instance to cache.
@@ -806,13 +918,10 @@ class AgentService:
                 self.memory_service,
                 user_id,
                 session_id,
-                on_name_changed=self._on_agent_name_changed
+                on_name_changed=self._on_agent_name_changed,
             )
             # Set up search_memory tool context
-            search_memory_module.set_memory_context(
-                self.memory_service,
-                user_id
-            )
+            search_memory_module.set_memory_context(self.memory_service, user_id)
 
         # Set up cron tools with cron service context
         if self.cron_service is not None:
@@ -837,8 +946,11 @@ class AgentService:
 
         # Include tools for memory and file operations
         tools = [
-            shell, file_read, file_write,
-            set_agent_name_tool, send_file_module,
+            shell,
+            file_read,
+            file_write,
+            set_agent_name_tool,
+            send_file_module,
         ]
 
         # Add search_memory tool if memory service is available
@@ -847,19 +959,23 @@ class AgentService:
 
         # Add cron tools if cron service is available
         if self.cron_service is not None:
-            tools.extend([
-                cron_tools_module.create_cron_task,
-                cron_tools_module.list_cron_tasks,
-                cron_tools_module.delete_cron_task,
-            ])
+            tools.extend(
+                [
+                    cron_tools_module.create_cron_task,
+                    cron_tools_module.list_cron_tasks,
+                    cron_tools_module.delete_cron_task,
+                ]
+            )
 
         # Add pending skill onboarding tools if service is available
         if self.pending_skill_service is not None:
-            tools.extend([
-                onboard_pending_skills_module.list_pending_skills,
-                onboard_pending_skills_module.onboard_pending_skills,
-                onboard_pending_skills_module.repair_skill_dependencies,
-            ])
+            tools.extend(
+                [
+                    onboard_pending_skills_module.list_pending_skills,
+                    onboard_pending_skills_module.onboard_pending_skills,
+                    onboard_pending_skills_module.repair_skill_dependencies,
+                ]
+            )
 
         # Add skill download tool if skill service is available
         if self.skill_service is not None:
@@ -871,29 +987,28 @@ class AgentService:
             conversation_manager=conversation_manager,
             tools=tools,
             load_tools_from_directory=user_skills_dir,
-            system_prompt=self._build_system_prompt(
-                user_id, memory_context, attachments
-            ),
+            system_prompt=self._build_system_prompt(user_id, memory_context, attachments),
         )
 
         # Log loaded skills for this user
         logger.info(
             "User %s: Skills dir=%s, shared_dir=%s",
-            user_id, user_skills_dir, self.config.shared_skills_dir
+            user_id,
+            user_skills_dir,
+            self.config.shared_skills_dir,
         )
         skills = self._discover_skills(user_id)
         if skills:
             skill_names = [s["name"] for s in skills]
             logger.info(
-                "User %s: Loaded %d skills: %s",
-                user_id, len(skills), ", ".join(skill_names)
+                "User %s: Loaded %d skills: %s", user_id, len(skills), ", ".join(skill_names)
             )
         else:
             logger.info("User %s: No skills loaded", user_id)
-        
+
         # Cache the agent so we can retrieve messages later
         self._cache_agent(user_id, agent)
-        
+
         return agent
 
     def get_or_create_agent(self, user_id: str) -> Agent:
@@ -945,36 +1060,34 @@ class AgentService:
                             session_id=session_id,
                             conversation_history=history,
                         ),
-                        timeout=self.config.extraction_timeout_seconds
+                        timeout=self.config.extraction_timeout_seconds,
                     )
                     extraction_success = result.success
                     # Log result but continue regardless (Requirement 6.1)
                     if not result.success:
                         logger.warning(
-                            "Extraction failed for user %s: %s, "
-                            "proceeding with session clearing",
-                            user_id, result.error
+                            "Extraction failed for user %s: %s, proceeding with session clearing",
+                            user_id,
+                            result.error,
                         )
             except asyncio.TimeoutError:
                 # Log warning and proceed (Requirement 6.4)
                 logger.warning(
-                    "Extraction timed out for user %s after %ds, "
-                    "proceeding with session clearing",
+                    "Extraction timed out for user %s after %ds, proceeding with session clearing",
                     user_id,
                     self.config.extraction_timeout_seconds,
                 )
             except Exception as e:
                 # Log error and continue (Requirement 6.1)
                 logger.error(
-                    "Extraction failed for user %s: %s, "
-                    "proceeding with session clearing",
-                    user_id, e
+                    "Extraction failed for user %s: %s, proceeding with session clearing",
+                    user_id,
+                    e,
                 )
         elif not self.memory_service and msg_count > 0:
             # Log that we're skipping due to unavailable memory service
             logger.warning(
-                "Memory service unavailable for user %s, "
-                "skipping extraction before new session",
+                "Memory service unavailable for user %s, skipping extraction before new session",
                 user_id,
             )
 
@@ -992,16 +1105,12 @@ class AgentService:
                 self.file_service.clear_working_folder(user_id)
                 logger.info("Cleared working folder for user %s", user_id)
             except Exception as e:
-                logger.warning(
-                    "Failed to clear working folder for user %s: %s",
-                    user_id, e
-                )
+                logger.warning("Failed to clear working folder for user %s: %s", user_id, e)
 
         # Build user notification message
         if extraction_success and msg_count > 0:
             notification = (
-                "✨ Conversation analyzed and important information saved. "
-                "New session started!"
+                "✨ Conversation analyzed and important information saved. New session started!"
             )
         else:
             notification = "✨ New session started!"
@@ -1050,8 +1159,7 @@ class AgentService:
         if self.config.memory_enabled and self.memory_service is not None:
             try:
                 memory_context = self.memory_service.retrieve_memory_context(
-                    user_id=user_id,
-                    query=message or "image analysis"
+                    user_id=user_id, query=message or "image analysis"
                 )
             except Exception as e:
                 logger.warning("Failed to retrieve memory: %s", e)
@@ -1069,6 +1177,7 @@ class AgentService:
             # Import image_reader tool for vision processing
             try:
                 from strands_tools import image_reader
+
                 vision_tools = [image_reader]
             except ImportError:
                 logger.warning("image_reader tool not available")
@@ -1079,17 +1188,12 @@ class AgentService:
                 model=model,
                 conversation_manager=conversation_manager,
                 tools=vision_tools,
-                system_prompt=self._build_system_prompt(
-                    user_id, memory_context
-                ),
+                system_prompt=self._build_system_prompt(user_id, memory_context),
             )
 
             # Build prompt with image path and caption (Req 3.6)
             if message:
-                prompt = (
-                    f"Please analyze the image at: {image_path}\n"
-                    f"User's message: {message}"
-                )
+                prompt = f"Please analyze the image at: {image_path}\nUser's message: {message}"
             else:
                 prompt = f"Please analyze the image at: {image_path}"
 
@@ -1099,9 +1203,7 @@ class AgentService:
         except Exception as e:
             # Fall back to treating as file attachment (Req 3.4, 8.4)
             logger.warning(
-                "Vision processing failed for user %s: %s, "
-                "treating as file attachment",
-                user_id, e
+                "Vision processing failed for user %s: %s, treating as file attachment", user_id, e
             )
             response = (
                 "I received your image but couldn't process it visually. "
@@ -1143,14 +1245,13 @@ class AgentService:
         if self.config.memory_enabled and self.memory_service is not None:
             try:
                 memory_context = self.memory_service.retrieve_memory_context(
-                    user_id=user_id,
-                    query=message
+                    user_id=user_id, query=message
                 )
                 logger.info(
                     "Memory context for %s: facts=%d, prefs=%d",
                     user_id,
                     len(memory_context.get("facts", [])),
-                    len(memory_context.get("preferences", []))
+                    len(memory_context.get("preferences", [])),
                 )
             except Exception as e:
                 logger.warning("Failed to retrieve memory: %s", e)
@@ -1174,9 +1275,7 @@ class AgentService:
         # Get previous messages to maintain conversation context
         previous_messages = self._get_user_messages(user_id)
 
-        agent = self._create_agent(
-            user_id, memory_context, messages=previous_messages
-        )
+        agent = self._create_agent(user_id, memory_context, messages=previous_messages)
         result = agent(message)
         response = self._extract_response_text(result)
 
@@ -1191,9 +1290,7 @@ class AgentService:
         if current_count >= self.config.max_conversation_messages:
             # Trigger non-blocking extraction (6.2)
             if not self._extraction_in_progress.get(user_id, False):
-                asyncio.create_task(
-                    self._trigger_extraction_and_clear(user_id)
-                )
+                asyncio.create_task(self._trigger_extraction_and_clear(user_id))
                 # Append notification to response (6.4)
                 response = (
                     f"{response}\n\n"
@@ -1243,14 +1340,13 @@ class AgentService:
             try:
                 query = message if message else "file attachment"
                 memory_context = self.memory_service.retrieve_memory_context(
-                    user_id=user_id,
-                    query=query
+                    user_id=user_id, query=query
                 )
                 logger.info(
                     "Memory context for %s: facts=%d, prefs=%d",
                     user_id,
                     len(memory_context.get("facts", [])),
-                    len(memory_context.get("preferences", []))
+                    len(memory_context.get("preferences", [])),
                 )
             except Exception as e:
                 logger.warning("Failed to retrieve memory: %s", e)
@@ -1259,9 +1355,7 @@ class AgentService:
         previous_messages = self._get_user_messages(user_id)
 
         # Create agent with attachment context
-        agent = self._create_agent(
-            user_id, memory_context, attachments, messages=previous_messages
-        )
+        agent = self._create_agent(user_id, memory_context, attachments, messages=previous_messages)
 
         # Build prompt with file info if no message provided
         if message:
@@ -1280,9 +1374,7 @@ class AgentService:
         current_count = self.get_message_count(user_id)
         if current_count >= self.config.max_conversation_messages:
             if not self._extraction_in_progress.get(user_id, False):
-                asyncio.create_task(
-                    self._trigger_extraction_and_clear(user_id)
-                )
+                asyncio.create_task(self._trigger_extraction_and_clear(user_id))
                 response = (
                     f"{response}\n\n"
                     "✨ Your conversation has been summarized and important "
@@ -1338,8 +1430,7 @@ class AgentService:
                             )
                         else:
                             logger.info(
-                                "Extraction complete for user %s: "
-                                "prefs=%d, facts=%d, commits=%d",
+                                "Extraction complete for user %s: prefs=%d, facts=%d, commits=%d",
                                 user_id,
                                 len(result.preferences),
                                 len(result.facts),
@@ -1356,16 +1447,14 @@ class AgentService:
                     except Exception as e:
                         # Log error and continue (Requirement 6.1)
                         logger.error(
-                            "Extraction error for user %s: %s, "
-                            "proceeding with session clearing",
+                            "Extraction error for user %s: %s, proceeding with session clearing",
                             user_id,
                             e,
                         )
             elif not self.memory_service:
                 # Log that we're skipping due to unavailable memory service
                 logger.warning(
-                    "Memory service unavailable for user %s, "
-                    "skipping extraction",
+                    "Memory service unavailable for user %s, skipping extraction",
                     user_id,
                 )
         finally:
@@ -1385,9 +1474,7 @@ class AgentService:
         """
         return self._conversation_history.get(user_id, [])
 
-    def _add_to_conversation_history(
-        self, user_id: str, role: str, content: str
-    ) -> None:
+    def _add_to_conversation_history(self, user_id: str, role: str, content: str) -> None:
         """Add a message to the conversation history.
 
         Args:
@@ -1397,10 +1484,7 @@ class AgentService:
         """
         if user_id not in self._conversation_history:
             self._conversation_history[user_id] = []
-        self._conversation_history[user_id].append({
-            "role": role,
-            "content": content
-        })
+        self._conversation_history[user_id].append({"role": role, "content": content})
 
     def _clear_session_memory(self, user_id: str) -> None:
         """Clear session memory for a user.
@@ -1478,21 +1562,25 @@ class AgentService:
         content = []
 
         # Add image content block
-        content.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": media_type,
-                "data": image_data,
+        content.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": image_data,
+                },
             }
-        })
+        )
 
         # Add caption text if provided (Req 3.6)
         if caption:
-            content.append({
-                "type": "text",
-                "text": caption,
-            })
+            content.append(
+                {
+                    "type": "text",
+                    "text": caption,
+                }
+            )
 
         return content
 
@@ -1517,14 +1605,9 @@ class AgentService:
                 if "text" in block:
                     text = block["text"]
                     # Remove thinking blocks (content between <thinking> tags)
-                    text = re.sub(
-                        r'<thinking>.*?</thinking>',
-                        '',
-                        text,
-                        flags=re.DOTALL
-                    )
+                    text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL)
                     # Clean up any leftover whitespace from removed blocks
-                    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+                    text = re.sub(r"\n{3,}", "\n\n", text).strip()
                     if text:
                         text_parts.append(text)
 
