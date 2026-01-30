@@ -1,0 +1,87 @@
+# =============================================================================
+# Mordecai - Docker Compose Configuration
+# =============================================================================
+# Orchestrates the application with proper volume mounts, health checks,
+# and configuration management.
+# =============================================================================
+
+services:
+  # LocalStack for SQS (internal to Docker network)
+  localstack:
+    image: localstack/localstack:latest
+    container_name: mordecai-localstack
+    environment:
+      - SERVICES=sqs
+      - DEBUG=0
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    # Use port 4567 internally to avoid conflicts with host LocalStack on 4566
+    ports:
+      - "${LOCALSTACK_PORT:-4567}:4566"
+    volumes:
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  mordecai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mordecai
+
+    # Wait for LocalStack to be healthy before starting
+    depends_on:
+      localstack:
+        condition: service_healthy
+
+    # Port mapping (configurable via AGENT_API_PORT environment variable)
+    ports:
+      - "${AGENT_API_PORT:-8000}:8000"
+
+    # Volume mounts
+    volumes:
+      # Configuration files (read-only)
+      - ./secrets.yml:/app/secrets.yml:ro
+      - ./config.json:/app/config.json:ro
+      # Himalaya email config
+      - ./skills/shared/himalaya/himalaya.toml:/root/.config/himalaya/config.toml:ro
+      # Skills directory (read-write for plugin persistence)
+      - ./skills:/app/skills:rw
+      # Named volumes for persistent data
+      - agent-db:/app/data
+      - agent-sessions:/app/sessions
+        -/home/ilia/obsidian-vaults:obsidian-vaults
+
+    # Environment variables
+    environment:
+      # Database URL - use absolute path to ensure it's in the mounted volume
+      - AGENT_DATABASE_URL=sqlite+aiosqlite:////app/data/agent.db
+      - AGENT_SESSION_STORAGE_DIR=/app/sessions
+      # LocalStack endpoint - use Docker service name for internal networking
+      - AGENT_LOCALSTACK_ENDPOINT=http://localstack:4566
+      # Pass through optional environment variables
+      - SKIP_MIGRATIONS=${SKIP_MIGRATIONS:-false}
+      - AGENT_API_PORT=${AGENT_API_PORT:-8000}
+
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Restart policy - restart on failure or unhealthy status
+    restart: on-failure:5
+
+# Named volumes for data persistence
+volumes:
+  agent-db:
+    name: mordecai-db
+  agent-sessions:
+    name: mordecai-sessions
+  localstack-data:
+    name: mordecai-localstack-data
