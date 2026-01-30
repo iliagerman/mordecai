@@ -13,30 +13,30 @@ JSON Canvas is an open file format for infinite canvas data. Canvas files use th
 
 ## Vaults in this deployment
 
-This agent operates with multiple Obsidian vaults mounted under a single directory:
+This deployment uses **one** Obsidian vault directory mounted into the Mordecai container:
 
-- Vault root directory: `obsidian-vaults/`
-- Each vault is a subfolder: `obsidian-vaults/<vault-name>/`
+- **Container path (authoritative):** `/app/obsidian-vaults/`
+- **Host path:** `/home/ilia/obsidian-vaults/`
 
-Available vaults:
+Within that single vault, top-level folders are used as categories/areas:
 
-- `mordecai` (agent-owned vault; default write target)
-- `family` (shared between all family members)
-- `work` (work-related notes)
-- `personal` (personal notes)
-- `agentleague` (AgentLeague project notes)
-- `tools` (interesting tools and references)
+- `mordecai/` (agent-owned area; default write target)
+- `family/`
+- `work/`
+- `personal/`
+- `agentleague/`
+- `tools/`
 
-Vault selection rules:
+Selection rules:
 
-- If the user explicitly names a vault, use that vault.
-- If the user does not specify, default to `mordecai`.
-- Do not modify non-`mordecai` vaults unless the user explicitly asks (or clearly implies) changes in that vault.
+- If the user explicitly names a folder/category, use that folder.
+- If the user does not specify, default to `mordecai/`.
+- Do not modify non-`mordecai/` content unless the user explicitly asks (or clearly implies) changes there.
 
 Path conventions:
 
-- When you propose creating/editing a canvas file, include a concrete path like: `obsidian-vaults/mordecai/<relative-path>.canvas`.
-- In a canvas `file` node, the `file` field should be a path *within the selected vault* (e.g. `Notes/Project Overview.md` or `Attachments/diagram.png`).
+- When you propose creating/editing a canvas file, include a concrete filesystem path like: `/app/obsidian-vaults/mordecai/<relative-path>.canvas`.
+- In a canvas `file` node, the `file` field should be a path *within the vault root* (relative to `/app/obsidian-vaults`), e.g. `mordecai/Notes/Project Overview.md` or `mordecai/Attachments/diagram.png`.
 
 ## File Structure
 

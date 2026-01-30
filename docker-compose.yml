@@ -53,7 +53,7 @@ services:
       # Named volumes for persistent data
       - agent-db:/app/data
       - agent-sessions:/app/sessions
-        -/home/ilia/obsidian-vaults:obsidian-vaults
+      - /home/ilia/obsidian-vaults:/app/obsidian-vaults
 
     # Environment variables
     environment:

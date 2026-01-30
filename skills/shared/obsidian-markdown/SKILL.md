@@ -17,30 +17,32 @@ Obsidian uses a combination of Markdown flavors:
 
 ## Vaults in this deployment
 
-This agent operates with multiple Obsidian vaults mounted under a single directory:
+This deployment uses **one** Obsidian vault directory mounted into the Mordecai container:
 
-- Vault root directory: `obsidian-vaults/`
-- Each vault is a subfolder: `obsidian-vaults/<vault-name>/`
+- **Container path (authoritative):** `/app/obsidian-vaults/`
+- **Host path:** `/home/ilia/obsidian-vaults/`
 
-Available vaults:
+Within that single vault, top-level folders are used as categories/areas:
 
-- `mordecai` (agent-owned vault; default write target)
-- `family` (shared between all family members)
-- `work` (work-related notes)
-- `personal` (personal notes)
-- `agentleague` (AgentLeague project notes)
-- `tools` (interesting tools and references)
+- `mordecai/` (agent-owned area; default write target)
+- `family/`
+- `work/`
+- `personal/`
+- `agentleague/`
+- `tools/`
 
-Vault selection rules:
+Selection rules:
 
-- If the user explicitly names a vault (e.g. “in my work vault”), use that vault.
-- If the user does not specify, default to `mordecai`.
-- Do not modify non-`mordecai` vaults unless the user explicitly asks (or clearly implies) changes in that vault.
+- If the user explicitly names a folder/category (e.g. “in my work notes”), use that folder.
+- If the user does not specify, default to `mordecai/`.
+- Do not modify non-`mordecai/` content unless the user explicitly asks (or clearly implies) changes there.
 
 Path conventions:
 
-- When you propose creating/editing a note, include a concrete path like: `obsidian-vaults/mordecai/<relative-path>.md`.
-- For `obsidian://open` links, set `vault=<vault-name>` and `file=<path-within-vault>`.
+- When you propose creating/editing a note, include a concrete filesystem path like: `/app/obsidian-vaults/mordecai/<relative-path>.md`.
+- For `obsidian://open` links:
+  - `vault` should be the **vault name on that device** (it’s the folder name you opened in Obsidian).
+  - `file` should be a path *within the vault*, e.g. `mordecai/Notes/Welcome.md`.
 
 ## Basic Formatting
 
