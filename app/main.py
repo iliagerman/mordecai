@@ -47,6 +47,7 @@ from app.services.memory_service import MemoryService
 from app.sqs.message_processor import MessageProcessor
 from app.sqs.queue_manager import SQSQueueManager
 from app.telegram.bot import TelegramBotInterface
+from app.logging_filters import install_uvicorn_access_log_filters
 
 # Configure logging
 logging.basicConfig(
@@ -561,6 +562,11 @@ async def main() -> None:
             port=config.api_port,
             log_level="info",
         )
+
+        # Ensure Uvicorn logging is configured, then suppress noisy healthcheck access logs.
+        uvicorn_config.load()
+        install_uvicorn_access_log_filters()
+
         server = uvicorn.Server(uvicorn_config)
 
         # Install signal handlers for graceful shutdown

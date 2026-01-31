@@ -10,8 +10,10 @@ These tests verify:
 """
 
 import os
+import re
 import shutil
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +23,75 @@ os.environ["BYPASS_TOOL_CONSENT"] = "true"
 
 from app.config import AgentConfig
 from app.services.agent_service import AgentService
+
+
+@contextmanager
+def _patched_shell_capture():
+    """Patch the app shell wrapper so tests can assert real shell-tool invocation.
+
+    This avoids false positives where the model prints a bash snippet but never
+    calls the `shell` tool.
+    """
+
+    # Import inside to ensure we patch the same module object used by AgentService.
+    from app.tools import shell_env as shell_env_module
+
+    calls: list[dict] = []
+
+    def _fake_base_shell(**kwargs):
+        calls.append(dict(kwargs))
+
+        cmd = str(kwargs.get("command", "") or "")
+
+        # Best-effort emulate common strands_tools.shell return shape.
+        stdout = ""
+        stderr = ""
+        returncode = 0
+
+        # If the command is an echo, return what would be printed.
+        if "SKILL_EXECUTED_SUCCESSFULLY" in cmd:
+            stdout = "SKILL_EXECUTED_SUCCESSFULLY\n"
+        elif "FIRST_COMMAND_EXECUTED" in cmd:
+            stdout = "FIRST_COMMAND_EXECUTED\n"
+        elif "COMPLEX_SKILL_SUCCESS" in cmd:
+            stdout = "COMPLEX_SKILL_SUCCESS\n"
+        else:
+            m = re.search(r"(^|\s)echo\s+\"([^\"]*)\"", cmd)
+            if m:
+                stdout = f"{m.group(2)}\n"
+            elif cmd.strip().startswith("which "):
+                # Deterministic-ish stub; we don't care about the exact path.
+                stdout = "/usr/bin/echo\n"
+
+        return {
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": returncode,
+        }
+
+    with patch.object(shell_env_module, "_call_base_shell", side_effect=_fake_base_shell) as m:
+        yield calls, m
+
+
+@contextmanager
+def _patched_file_read_capture():
+    """Patch file_read wrapper to capture real invocations while preserving behavior."""
+
+    from app.tools import file_read_env as file_read_env_module
+
+    calls: list[dict] = []
+    original = file_read_env_module._call_base_file_read
+
+    def _spy_base_file_read(**kwargs):
+        calls.append(dict(kwargs))
+        return original(**kwargs)
+
+    with patch.object(
+        file_read_env_module,
+        "_call_base_file_read",
+        side_effect=_spy_base_file_read,
+    ) as m:
+        yield calls, m
 
 
 TEST_USER_ID = "test_user_skill_exec"
@@ -94,9 +165,7 @@ class TestSkillExecutionNoLoop:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_agent_reads_skill_md_only_once(
-        self, agent_service, temp_dir
-    ):
+    async def test_agent_reads_skill_md_only_once(self, agent_service, temp_dir):
         """Test that agent reads SKILL.md only once, not in a loop."""
         create_simple_skill(temp_dir, TEST_USER_ID)
 
@@ -109,8 +178,7 @@ class TestSkillExecutionNoLoop:
             return await original_process(user_id, message)
 
         response = await agent_service.process_message(
-            user_id=TEST_USER_ID,
-            message="Use the test-echo-skill to echo a message"
+            user_id=TEST_USER_ID, message="Use the test-echo-skill to echo a message"
         )
 
         # The response should not indicate repeated file reads
@@ -127,33 +195,29 @@ class TestSkillExecutionNoLoop:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_agent_uses_shell_after_reading_skill(
-        self, agent_service, temp_dir
-    ):
+    async def test_agent_uses_shell_after_reading_skill(self, agent_service, temp_dir):
         """Test that agent uses shell command after reading SKILL.md."""
         create_simple_skill(temp_dir, TEST_USER_ID)
 
-        response = await agent_service.process_message(
-            user_id=TEST_USER_ID,
-            message="Use the test-echo-skill"
-        )
+        with _patched_shell_capture() as (shell_calls, shell_mock):
+            response = await agent_service.process_message(
+                user_id=TEST_USER_ID,
+                message="Use the test-echo-skill",
+            )
 
         assert response is not None
-        response_lower = response.lower()
 
-        # Should have executed the echo command or mentioned it
-        has_echo_result = (
-            "hello from the test skill" in response_lower or
-            "echo" in response_lower
-        )
-
-        # Should NOT be stuck asking about mode parameter
-        not_stuck_on_mode = "mode" not in response_lower
+        # Must have actually invoked the shell tool.
+        assert shell_mock.called, "Agent did not call the shell tool"
+        assert any(
+            "Hello from the test skill!" in str(call.get("command", "")) for call in shell_calls
+        ), f"Agent did not run expected echo command. Shell calls: {shell_calls}"
 
         print(f"\n\nAgent response:\n{response}\n\n")
 
-        assert has_echo_result or not_stuck_on_mode, (
-            f"Agent didn't execute skill properly. Response: {response[:500]}"
+        # Should have surfaced output in the response
+        assert "Hello from the test skill!" in response, (
+            f"Echo output missing from response. Response: {response[:500]}"
         )
 
 
@@ -162,46 +226,32 @@ class TestToolCallTracking:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_file_read_not_called_excessively(
-        self, agent_service, temp_dir
-    ):
+    async def test_file_read_not_called_excessively(self, agent_service, temp_dir):
         """Test that file_read is not called more than 3 times for same file."""
         skill_dir = create_simple_skill(temp_dir, TEST_USER_ID)
         skill_md_path = str(skill_dir / "SKILL.md")
 
-        # Track file_read calls by wrapping the tool
-        file_read_calls = []
-        
-        # Import the actual file_read to wrap it
-        from strands_tools import file_read as original_file_read
-
-        def tracking_file_read(tool, **kwargs):
-            tool_input = tool.get("input", {})
-            path = tool_input.get("path", "")
-            file_read_calls.append(path)
-            return original_file_read(tool, **kwargs)
-
-        # Patch file_read in the agent's tools
-        with patch.object(
-            agent_service, '_create_agent'
-        ) as mock_create:
-            # Let the original run but we'll check calls after
-            pass
-
-        response = await agent_service.process_message(
-            user_id=TEST_USER_ID,
-            message="Use the test-echo-skill to say hello"
-        )
+        with _patched_file_read_capture() as (file_read_calls, file_read_mock):
+            response = await agent_service.process_message(
+                user_id=TEST_USER_ID,
+                message="Use the test-echo-skill to say hello",
+            )
 
         print(f"\n\nAgent response:\n{response}\n\n")
 
-        # Check response doesn't indicate a loop
         assert response is not None
 
-        # Response should not contain repeated error messages about mode
-        mode_mentions = response.lower().count("mode")
-        assert mode_mentions < 3, (
-            f"Agent mentioned 'mode' {mode_mentions} times, indicating a loop"
+        assert file_read_mock.called, "Agent did not call file_read"
+
+        reads_of_skill_md = [c for c in file_read_calls if c.get("path") == skill_md_path]
+        assert len(reads_of_skill_md) <= 3, (
+            f"file_read called {len(reads_of_skill_md)} times for SKILL.md; expected <= 3. "
+            f"Calls: {reads_of_skill_md}"
+        )
+
+        # Ensure mode is always present (wrapper should default to view).
+        assert all((c.get("mode") or "view") for c in reads_of_skill_md), (
+            f"file_read called without mode. Calls: {reads_of_skill_md}"
         )
 
 
@@ -210,9 +260,7 @@ class TestSkillInstructionFollowing:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_agent_executes_shell_from_skill_instructions(
-        self, agent_service, temp_dir
-    ):
+    async def test_agent_executes_shell_from_skill_instructions(self, agent_service, temp_dir):
         """Test that agent executes shell commands from skill instructions."""
         skill_dir = Path(temp_dir) / TEST_USER_ID / "shell-test-skill"
         skill_dir.mkdir(parents=True, exist_ok=True)
@@ -234,49 +282,47 @@ echo "SKILL_EXECUTED_SUCCESSFULLY"
 The output should contain "SKILL_EXECUTED_SUCCESSFULLY".
 """)
 
-        response = await agent_service.process_message(
-            user_id=TEST_USER_ID,
-            message="Please use the shell-test-skill"
-        )
+        with _patched_shell_capture() as (shell_calls, shell_mock):
+            response = await agent_service.process_message(
+                user_id=TEST_USER_ID,
+                message="Please use the shell-test-skill",
+            )
 
         print(f"\n\nAgent response:\n{response}\n\n")
 
         assert response is not None
 
-        # Check if the skill was executed
-        # Either the output contains the success marker, or agent mentioned running it
-        success_indicators = [
-            "SKILL_EXECUTED_SUCCESSFULLY" in response,
-            "executed" in response.lower(),
-            "echo" in response.lower() and "error" not in response.lower(),
-        ]
+        # Must have actually invoked the shell tool.
+        assert shell_mock.called, "Agent did not call the shell tool"
+        assert any(
+            "SKILL_EXECUTED_SUCCESSFULLY" in str(call.get("command", "")) for call in shell_calls
+        ), f"Agent did not run expected echo command. Shell calls: {shell_calls}"
 
-        assert any(success_indicators), (
-            f"Skill was not executed properly. Response: {response}"
+        # And the agent's response should include the expected output marker.
+        assert "SKILL_EXECUTED_SUCCESSFULLY" in response, (
+            f"Skill output marker missing from response. Response: {response}"
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.integration  
-    async def test_agent_does_not_loop_on_invalid_params(
-        self, agent_service, temp_dir
-    ):
+    @pytest.mark.integration
+    async def test_agent_does_not_loop_on_invalid_params(self, agent_service, temp_dir):
         """Test that agent doesn't loop when tool returns an error."""
         create_simple_skill(temp_dir, TEST_USER_ID)
 
         response = await agent_service.process_message(
-            user_id=TEST_USER_ID,
-            message="Use the test-echo-skill"
+            user_id=TEST_USER_ID, message="Use the test-echo-skill"
         )
 
         # Count repetitive patterns that indicate looping
-        response_lines = response.split('\n')
-        
+        response_lines = response.split("\n")
+
         # Check for repeated identical lines (sign of loop output)
         from collections import Counter
+
         line_counts = Counter(line.strip() for line in response_lines if line.strip())
-        
+
         max_repetition = max(line_counts.values()) if line_counts else 0
-        
+
         assert max_repetition < 5, (
             f"Response has {max_repetition} repeated lines, indicating a loop. "
             f"Most repeated: {line_counts.most_common(3)}"
@@ -290,9 +336,7 @@ class TestComplexSkillExecution:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_agent_handles_complex_skill_without_looping(
-        self, agent_service, temp_dir
-    ):
+    async def test_agent_handles_complex_skill_without_looping(self, agent_service, temp_dir):
         """Test that agent doesn't loop on complex multi-step skills."""
         skill_dir = Path(temp_dir) / TEST_USER_ID / "complex-skill"
         skill_dir.mkdir(parents=True, exist_ok=True)
@@ -356,8 +400,7 @@ If any step fails, inform the user.
 """)
 
         response = await agent_service.process_message(
-            user_id=TEST_USER_ID,
-            message="Please run the complex-skill"
+            user_id=TEST_USER_ID, message="Please run the complex-skill"
         )
 
         print(f"\n\nAgent response:\n{response}\n\n")
@@ -366,7 +409,7 @@ If any step fails, inform the user.
 
         # Check for success or at least shell execution
         response_lower = response.lower()
-        
+
         success_indicators = [
             "COMPLEX_SKILL_SUCCESS" in response,
             "step" in response_lower and "complete" in response_lower,
@@ -375,7 +418,7 @@ If any step fails, inform the user.
 
         # Count file_read mentions - should not be excessive
         file_read_count = response_lower.count("file_read")
-        
+
         assert any(success_indicators) or file_read_count < 3, (
             f"Skill not executed properly or looped. "
             f"file_read mentioned {file_read_count} times. "
@@ -384,9 +427,7 @@ If any step fails, inform the user.
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_agent_executes_first_command_from_complex_skill(
-        self, agent_service, temp_dir
-    ):
+    async def test_agent_executes_first_command_from_complex_skill(self, agent_service, temp_dir):
         """Test that agent at least executes the first shell command."""
         skill_dir = Path(temp_dir) / TEST_USER_ID / "first-cmd-skill"
         skill_dir.mkdir(parents=True, exist_ok=True)
@@ -409,14 +450,21 @@ echo "FIRST_COMMAND_EXECUTED"
 Then you can do other things if needed.
 """)
 
-        response = await agent_service.process_message(
-            user_id=TEST_USER_ID,
-            message="Use the first-cmd-skill"
-        )
+        with _patched_shell_capture() as (shell_calls, shell_mock):
+            response = await agent_service.process_message(
+                user_id=TEST_USER_ID,
+                message="Use the first-cmd-skill",
+            )
 
         print(f"\n\nAgent response:\n{response}\n\n")
 
-        # Should have executed the echo command
+        # Must have actually invoked the shell tool.
+        assert shell_mock.called, "Agent did not call the shell tool"
+        assert any(
+            "FIRST_COMMAND_EXECUTED" in str(call.get("command", "")) for call in shell_calls
+        ), f"Agent did not run expected first echo command. Shell calls: {shell_calls}"
+
+        # Should have surfaced output in the response
         assert "FIRST_COMMAND_EXECUTED" in response, (
-            f"First command was not executed. Response: {response}"
+            f"First command output marker missing from response. Response: {response}"
         )

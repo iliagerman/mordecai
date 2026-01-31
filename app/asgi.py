@@ -10,6 +10,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 
 from app.config import AgentConfig
+from app.logging_filters import install_uvicorn_access_log_filters
 from app.main import Application
 from app.routers import create_task_router, create_webhook_router
 
@@ -23,6 +24,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncGenerator[None, None]:
     global _application
 
     config = AgentConfig.from_json_file()
+    install_uvicorn_access_log_filters()
     _application = Application(config)
     await _application.setup()
 

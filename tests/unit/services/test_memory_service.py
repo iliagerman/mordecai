@@ -276,7 +276,7 @@ class TestMemoryServiceRetrieveContext:
         with tempfile.TemporaryDirectory() as tmp:
             mock_config.obsidian_vault_root = tmp
 
-            stm_path = Path(tmp) / "me" / "test-user" / "short_term_memories.md"
+            stm_path = Path(tmp) / "me" / "test-user" / "stm.md"
             stm_path.parent.mkdir(parents=True, exist_ok=True)
             stm_path.write_text(
                 "# Short-term memories\n\n- (fact) timezone: Asia/Jerusalem\n",
