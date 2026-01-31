@@ -16,6 +16,7 @@ Requirements:
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,15 @@ if TYPE_CHECKING:
     from app.config import AgentConfig
 
 logger = logging.getLogger(__name__)
+
+
+_KEY_VALUE_RE = re.compile(r"^(?P<key>[A-Za-z0-9 _\-]{1,32})\s*[:=]\s*(?P<value>.+)$")
+_USER_NAME_RE = re.compile(r"\b(?:my|user)\s+name\s+is\s+(?P<name>[^.\n]{1,80})", re.IGNORECASE)
+_ASSISTANT_NAME_RE = re.compile(
+    r"\b(?:assistant(?:'s)?|the assistant)\s+name\s+is\s+(?P<name>[^.\n]{1,80})",
+    re.IGNORECASE,
+)
+_TIMEZONE_RE = re.compile(r"\btime\s*zone\b\s*(?:is|:|=)\s*(?P<tz>[^.\n]{1,80})", re.IGNORECASE)
 
 
 class MemoryService:
@@ -711,6 +721,12 @@ class MemoryService:
                 except Exception as e:
                     logger.warning("Failed identity lookup in prefs: %s", e)
 
+        # Merge in Obsidian short-term memory (authoritative) when configured.
+        try:
+            result = self._merge_short_term_over_long_term(user_id, result)
+        except Exception as e:
+            logger.debug("Short-term memory merge skipped for user %s: %s", user_id, e)
+
         logger.info(
             "Final memory context: agent_name=%s, facts=%d, prefs=%d",
             result["agent_name"],
@@ -718,6 +734,125 @@ class MemoryService:
             len(result["preferences"]),
         )
         return result
+
+    def _normalize_overwrite_key(self, key: str) -> str:
+        key = (key or "").strip().lower()
+        key = re.sub(r"\s+", "_", key)
+        key = re.sub(r"[^a-z0-9_\-]", "", key)
+        return key
+
+    def _extract_overwrite_key(self, text: str) -> str | None:
+        """Extract a deterministic overwrite-key from a memory string.
+
+        This is intentionally conservative. If we can't extract a stable key,
+        we return None and fall back to exact-text dedupe.
+        """
+
+        t = (text or "").strip()
+        if not t:
+            return None
+
+        # Name facts (high-value, single-valued)
+        m = _ASSISTANT_NAME_RE.search(t)
+        if m:
+            return "assistant_name"
+        m = _USER_NAME_RE.search(t)
+        if m:
+            return "user_name"
+
+        # Timezone-like facts/preferences
+        if _TIMEZONE_RE.search(t):
+            return "timezone"
+
+        # Explicit key/value format: "Key: Value" or "Key = Value"
+        m = _KEY_VALUE_RE.match(t)
+        if m:
+            key = self._normalize_overwrite_key(m.group("key"))
+            return key or None
+
+        return None
+
+    def _merge_short_term_over_long_term(
+        self,
+        user_id: str,
+        long_term: dict,
+    ) -> dict:
+        """Merge short-term (Obsidian) memories over long-term AgentCore memories.
+
+        Conflict semantics:
+        - If a short-term and long-term memory share the same overwrite-key,
+          the short-term memory wins and the long-term one is suppressed.
+        - If no overwrite-key can be extracted, we only de-dupe by normalized
+          exact text.
+
+        The merged result lists are ordered with short-term items first.
+        """
+
+        vault_root = getattr(self.config, "obsidian_vault_root", None)
+        if not vault_root:
+            return long_term
+
+        try:
+            from app.tools.short_term_memory_vault import read_parsed
+        except Exception:
+            return long_term
+
+        stm = read_parsed(vault_root, user_id)
+        if not stm:
+            return long_term
+
+        def norm_text(s: str) -> str:
+            return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+        def merge_lists(stm_list: list[str], ltm_list: list[str]) -> list[str]:
+            stm_items = [
+                (s, self._extract_overwrite_key(s), norm_text(s)) for s in (stm_list or [])
+            ]
+            ltm_items = [
+                (s, self._extract_overwrite_key(s), norm_text(s)) for s in (ltm_list or [])
+            ]
+
+            # Keys that exist in short-term (these overwrite long-term)
+            stm_keys = {k for _s, k, _n in stm_items if k}
+
+            merged: list[str] = []
+            seen_norm: set[str] = set()
+
+            # Add STM first
+            for s, _k, n in stm_items:
+                if not s:
+                    continue
+                if n in seen_norm:
+                    continue
+                seen_norm.add(n)
+                merged.append(s)
+
+            # Add LTM, suppressing conflicts
+            for s, k, n in ltm_items:
+                if not s:
+                    continue
+                if n in seen_norm:
+                    continue
+                if k and k in stm_keys:
+                    continue
+                seen_norm.add(n)
+                merged.append(s)
+
+            return merged
+
+        merged = dict(long_term)
+        merged["facts"] = merge_lists(stm.facts, long_term.get("facts", []))
+        merged["preferences"] = merge_lists(stm.preferences, long_term.get("preferences", []))
+
+        # If STM has an assistant name (or any name), it should take precedence.
+        if not merged.get("agent_name"):
+            for candidate in merged.get("facts", []) + merged.get("preferences", []):
+                name = self._extract_name_from_text(str(candidate))
+                if name:
+                    merged["agent_name"] = name
+                    break
+
+        return merged
 
     def _find_similar_records(
         self, user_id: str, query: str, similarity_threshold: float = 0.7
@@ -818,6 +953,9 @@ class MemoryService:
         session_id: str,
         replace_similar: bool = True,
         similarity_query: str | None = None,
+        *,
+        write_to_short_term: bool = False,
+        short_term_kind: str = "fact",
     ) -> bool:
         """Store a fact in memory, optionally replacing similar facts.
 
@@ -872,6 +1010,27 @@ class MemoryService:
                 ],
             )
             logger.info("Stored fact for user %s: %s", user_id, fact[:100])
+
+            if write_to_short_term:
+                vault_root = getattr(self.config, "obsidian_vault_root", None)
+                if vault_root:
+                    try:
+                        from app.tools.short_term_memory_vault import append_memory
+
+                        append_memory(
+                            vault_root,
+                            user_id,
+                            kind=short_term_kind or "fact",
+                            text=fact,
+                            max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                        )
+                    except Exception as e:
+                        # Don't fail LTM writes if STM append fails.
+                        logger.debug(
+                            "Failed to append short-term memory for user %s: %s",
+                            user_id,
+                            e,
+                        )
             return True
         except Exception as e:
             logger.error("Failed to store fact: %s", e)
@@ -882,6 +1041,8 @@ class MemoryService:
         user_id: str,
         preference: str,
         session_id: str,
+        *,
+        write_to_short_term: bool = False,
     ) -> bool:
         """Store a user preference in memory.
 
@@ -927,6 +1088,26 @@ class MemoryService:
                 user_id,
                 preference[:100],
             )
+
+            if write_to_short_term:
+                vault_root = getattr(self.config, "obsidian_vault_root", None)
+                if vault_root:
+                    try:
+                        from app.tools.short_term_memory_vault import append_memory
+
+                        append_memory(
+                            vault_root,
+                            user_id,
+                            kind="preference",
+                            text=preference,
+                            max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to append short-term preference for user %s: %s",
+                            user_id,
+                            e,
+                        )
             return True
         except Exception as e:
             logger.error("Failed to store preference: %s", e)

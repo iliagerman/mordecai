@@ -24,12 +24,24 @@ Pending skills are staged under:
 Call:
 - `list_pending_skills(scope="all")`
 
+Example:
+
+```text
+list_pending_skills(scope="all")
+```
+
 If nothing is pending, tell the user there is nothing to onboard and stop.
 
 ### 2) Dry run (recommended)
 
 Call:
 - `onboard_pending_skills(scope="all", dry_run=true)`
+
+Example:
+
+```text
+onboard_pending_skills(scope="all", dry_run=true)
+```
 
 Show the user what would be promoted.
 
@@ -62,6 +74,12 @@ Then rerun onboarding:
 
 If the user confirms (or explicitly asks to proceed), call:
 - `onboard_pending_skills(scope="all", dry_run=false)`
+
+Example:
+
+```text
+onboard_pending_skills(scope="all", dry_run=false)
+```
 
 ## Rules
 
