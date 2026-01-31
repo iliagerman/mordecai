@@ -6,12 +6,41 @@ requires:
   bins:
     - himalaya
   config:
+    - name: EMAIL_PROVIDER
+      prompt: Which provider are we configuring? (gmail|outlook)
+      example: gmail
+    # Gmail (IMAP + SMTP)
     - name: GMAIL
       prompt: Gmail email address for the account to access
       example: ilia@example.com
+      when:
+        config: EMAIL_PROVIDER
+        equals: gmail
     - name: PASSWORD
       prompt: Gmail App Password (recommended) for IMAP/SMTP
       example: "abcd efgh ijkl mnop"
+      when:
+        config: EMAIL_PROVIDER
+        equals: gmail
+    # Outlook (Office 365 / Outlook.com)
+    - name: OUTLOOK_EMAIL
+      prompt: Outlook email address for the account to access
+      example: ilia@company.com
+      when:
+        config: EMAIL_PROVIDER
+        equals: outlook
+    - name: OUTLOOK_DISPLAY_NAME
+      prompt: Display name for the Outlook account
+      example: "Ilia (Work)"
+      when:
+        config: EMAIL_PROVIDER
+        equals: outlook
+    - name: OUTLOOK_APP_PASSWORD
+      prompt: Outlook App Password (or the password used for IMAP access, if applicable)
+      example: "abcd efgh ijkl mnop"
+      when:
+        config: EMAIL_PROVIDER
+        equals: outlook
 install:
   # Best-effort hints for installers/tools; actual install method depends on environment.
   - kind: brew
@@ -45,9 +74,16 @@ Activate this skill when the user:
 
 1. Himalaya CLI installed (`himalaya --version` to verify)
 2. Mordecai will manage a per-user Himalaya config file from the template `himalaya.toml_example`.
-3. You MUST have values for the template placeholders:
-	- `[GMAIL]` (your Gmail email address)
-	- `[PASSWORD]` (a Gmail App Password is recommended)
+3. You MUST have values for the template placeholders for the provider you are using.
+
+For **Gmail**, provide:
+  - `[GMAIL]` (your Gmail email address)
+  - `[PASSWORD]` (a Gmail App Password is recommended)
+
+For **Outlook**, provide:
+  - `[OUTLOOK_EMAIL]`
+  - `[OUTLOOK_DISPLAY_NAME]`
+  - `[OUTLOOK_APP_PASSWORD]`
 
 When the placeholders are provided and persisted, Mordecai will:
 - Render a per-user `himalaya.toml` into the **per-user skills directory root** (the same folder as `skills_secrets.yml`)
@@ -114,8 +150,11 @@ Mordecai uses a template-based approach (recommended for multi-user isolation).
 ### Mordecai-managed configuration (recommended)
 
 1. Ensure Himalaya is installed.
-2. Ask the user for the required placeholders `[GMAIL]` and `[PASSWORD]`.
-3. Persist them using `set_skill_config(skill_name="himalaya", ...)`.
+2. Ask the user which provider they want to use (`gmail` or `outlook`).
+3. Ask the user for the required placeholders for that provider:
+  - Gmail: `[GMAIL]`, `[PASSWORD]`
+  - Outlook: `[OUTLOOK_EMAIL]`, `[OUTLOOK_DISPLAY_NAME]`, `[OUTLOOK_APP_PASSWORD]`
+4. Persist them using `set_skill_config(skill_name="himalaya", ...)`.
 
 After that, Mordecai will render the per-user config file and set `HIMALAYA_CONFIG` automatically.
 

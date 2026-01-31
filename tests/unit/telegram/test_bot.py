@@ -660,18 +660,26 @@ class TestTelegramBotHtmlFormatting:
         assert '<a href="https://google.com">Google</a>' in result
 
     def test_converts_markdown_table_to_pre(self, bot):
-        """Test markdown tables are wrapped in <pre> for alignment."""
+        """Regression test: markdown tables should not be sent as tables.
+
+        Telegram does not render markdown tables well. We should convert them
+        into a human-friendly list format.
+        """
         text = """| Time | Sender | Subject |
 |------|--------|---------|
 | 16:49 | Google | Reminder |
 | 17:27 | Apple | Update |"""
         result = bot._format_for_telegram_html(text)
 
-        assert "<pre>" in result
-        assert "</pre>" in result
-        # Table content should be preserved
-        assert "Time" in result
-        assert "Sender" in result
+        # Should not preserve pipe-table formatting.
+        assert "<pre>" not in result
+        assert "|" not in result
+
+        # Should preserve the data in a readable list form.
+        assert "1." in result
+        assert "2." in result
+        assert "Google" in result
+        assert "Apple" in result
 
     def test_plain_text_unchanged(self, bot):
         """Test plain text without markdown passes through."""
