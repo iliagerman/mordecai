@@ -10,6 +10,7 @@ Requirements: 2.2, 2.3, 2.4, 4.1, 4.2, 4.3, 4.4
 import asyncio
 import uuid
 from datetime import datetime, timedelta
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -205,7 +206,9 @@ class TestLockExpiryBehavior:
                     select(CronLockModel).where(CronLockModel.task_id == task_id)
                 )
                 lock_model = result.scalar_one()
-                lock_model.lock_acquired_at = datetime.utcnow() - timedelta(minutes=minutes_old)
+                cast(Any, lock_model).lock_acquired_at = datetime.utcnow() - timedelta(
+                    minutes=minutes_old
+                )
 
             assert await lock_dao.try_acquire_lock(task_id, instance_2) is True
             lock = await lock_dao.get_lock(task_id)
@@ -239,7 +242,9 @@ class TestLockExpiryBehavior:
                     select(CronLockModel).where(CronLockModel.task_id == task_id)
                 )
                 lock_model = result.scalar_one()
-                lock_model.lock_acquired_at = datetime.utcnow() - timedelta(minutes=minutes_old)
+                cast(Any, lock_model).lock_acquired_at = datetime.utcnow() - timedelta(
+                    minutes=minutes_old
+                )
 
             assert await lock_dao.try_acquire_lock(task_id, instance_2) is False
             lock = await lock_dao.get_lock(task_id)
@@ -269,13 +274,16 @@ class TestLockExpiryBehavior:
             # to avoid timing issues
             async with db.session() as session:
                 from sqlalchemy import select
+
                 from app.models.orm import CronLockModel
 
                 result = await session.execute(
                     select(CronLockModel).where(CronLockModel.task_id == task_id)
                 )
                 lock_model = result.scalar_one()
-                lock_model.lock_acquired_at = datetime.utcnow() - timedelta(minutes=9, seconds=59)
+                cast(Any, lock_model).lock_acquired_at = datetime.utcnow() - timedelta(
+                    minutes=9, seconds=59
+                )
 
             # Lock just under 10 minutes should still be valid
             result = await lock_dao.try_acquire_lock(task_id, instance_2)
@@ -356,8 +364,8 @@ class TestAtomicLockAcquisition:
             for task_id in task_ids:
                 instance_ids = [str(uuid.uuid4()) for _ in range(num_instances)]
 
-                async def try_lock(iid: str) -> bool:
-                    return await lock_dao.try_acquire_lock(task_id, iid)
+                async def try_lock(iid: str, tid: str = task_id) -> bool:
+                    return await lock_dao.try_acquire_lock(tid, iid)
 
                 results = await asyncio.gather(
                     *[try_lock(iid) for iid in instance_ids],
@@ -397,6 +405,7 @@ class TestAtomicLockAcquisition:
 
             # Lock is held by first instance
             lock = await lock_dao.get_lock(task_id)
+            assert lock is not None
             assert lock.instance_id == instance_1
 
         finally:
@@ -434,6 +443,7 @@ class TestAtomicLockAcquisition:
             assert result3 is True
 
             lock = await lock_dao.get_lock(task_id)
+            assert lock is not None
             assert lock.instance_id == instance_2
 
         finally:

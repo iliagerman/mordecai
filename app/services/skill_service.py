@@ -29,7 +29,11 @@ from urllib.error import HTTPError, URLError
 
 from typing import Literal
 
-from app.config import AgentConfig
+from app.config import (
+    AgentConfig,
+    resolve_user_pending_skills_dir,
+    resolve_user_skills_dir,
+)
 from app.models.domain import SkillMetadata
 
 
@@ -64,6 +68,7 @@ class SkillService:
         Args:
             config: Application configuration with skills_base_dir.
         """
+        self.config = config
         self.skills_base_dir = Path(config.skills_base_dir)
         self.skills_base_dir.mkdir(parents=True, exist_ok=True)
         self.shared_skills_dir = Path(config.shared_skills_dir)
@@ -97,8 +102,8 @@ class SkillService:
         if not legacy_user_id or not user_id or legacy_user_id == user_id:
             return False
 
-        legacy_dir = self.skills_base_dir / legacy_user_id
-        new_dir = self.skills_base_dir / user_id
+        legacy_dir = resolve_user_skills_dir(self.config, legacy_user_id, create=False)
+        new_dir = resolve_user_skills_dir(self.config, user_id, create=False)
 
         if not legacy_dir.exists():
             return False
@@ -121,15 +126,11 @@ class SkillService:
         Returns:
             Path to user's skills directory.
         """
-        user_dir = self.skills_base_dir / user_id
-        user_dir.mkdir(parents=True, exist_ok=True)
-        return user_dir
+        return resolve_user_skills_dir(self.config, user_id, create=True)
 
     def _get_user_pending_skills_dir(self, user_id: str) -> Path:
         """Get the pending skills directory for a specific user."""
-        d = self._get_user_skills_dir(user_id) / "pending"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        return resolve_user_pending_skills_dir(self.config, user_id, create=True)
 
     def _get_shared_skills_dir(self) -> Path:
         """Get the shared skills directory.

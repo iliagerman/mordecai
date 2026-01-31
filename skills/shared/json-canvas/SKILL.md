@@ -41,10 +41,10 @@ Selection rules:
 
 Path conventions:
 
-- When you propose creating/editing a canvas file, include a concrete filesystem path like: `/app/obsidian-vaults/me/[USER_ID]/<relative-path>.canvas`.
 - When you propose creating/editing a canvas file, include a concrete filesystem path like:
   `<VAULT_ROOT>/me/[USER_ID]/<relative-path>.canvas`
   where `<VAULT_ROOT>` is the configured `obsidian_vault_root`.
+- In many container deployments `<VAULT_ROOT>` resolves to `/app/obsidian-vaults/`, but do not assume it.
 - In a canvas `file` node, the `file` field should be a path *within the vault root* (relative to `<VAULT_ROOT>`), e.g. `me/[USER_ID]/Notes/Project Overview.md` or `me/[USER_ID]/Attachments/diagram.png`.
 
 ## File Structure

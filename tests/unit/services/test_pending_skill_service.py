@@ -36,6 +36,19 @@ def _config_for(root: Path) -> AgentConfig:
     )
 
 
+def _config_for_template(root: Path) -> AgentConfig:
+    # Use a template that is NOT under skills_base_dir to ensure templating wins.
+    return AgentConfig(
+        telegram_bot_token="test-token",
+        skills_base_dir=str(root / "skills_base"),
+        shared_skills_dir=str(root / "shared"),
+        session_storage_dir=str(root / "sessions"),
+        pending_skills_preflight_enabled=False,
+        secrets_path=str(root / "secrets.yml"),
+        user_skills_dir_template=str(root / "tenants" / "{username}"),
+    )
+
+
 def test_pending_dirs_not_listed_as_skills(temp_skills_root: Path):
     config = _config_for(temp_skills_root)
 
@@ -104,6 +117,27 @@ def test_onboard_promotes_user_pending_skill(temp_skills_root: Path):
 
     # should no longer be under pending
     assert not pending_skill.exists()
+
+
+def test_onboard_promotes_user_pending_skill_with_template(temp_skills_root: Path):
+    config = _config_for_template(temp_skills_root)
+    pending_service = PendingSkillService(config)
+
+    pending_skill = temp_skills_root / "tenants" / "user1" / "pending" / "hello"
+    pending_skill.mkdir(parents=True)
+    (pending_skill / "skill.md").write_text("# Hello\n")
+
+    result = pending_service.onboard_pending(user_id="user1", scope="user")
+    assert result["onboarded"] == 1
+    assert result["failed"] == 0
+
+    active = temp_skills_root / "tenants" / "user1" / "hello"
+    assert active.exists()
+    assert (active / "SKILL.md").exists()
+
+    # Ensure we did NOT accidentally promote under skills_base_dir/user1.
+    wrong = temp_skills_root / "skills_base" / "user1" / "hello"
+    assert not wrong.exists()
 
 
 def test_onboard_writes_failed_json_on_syntax_error(temp_skills_root: Path):

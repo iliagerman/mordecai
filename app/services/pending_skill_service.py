@@ -35,7 +35,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from app.config import AgentConfig, refresh_runtime_env_from_secrets
+from app.config import (
+    AgentConfig,
+    refresh_runtime_env_from_secrets,
+    resolve_user_pending_skills_dir,
+    resolve_user_skills_dir,
+)
 
 
 _RESERVED_DIR_NAMES = {"pending", "failed", ".venvs", ".venv", "__pycache__"}
@@ -140,9 +145,7 @@ class PendingSkillService:
         return self.shared_skills_dir / "pending"
 
     def _pending_dir_user(self, user_id: str) -> Path:
-        d = self.skills_base_dir / user_id / "pending"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        return resolve_user_pending_skills_dir(self.config, user_id, create=True)
 
     def list_pending(
         self, *, user_id: str | None, include_shared: bool = True
@@ -1327,7 +1330,10 @@ class PendingSkillService:
             if c.scope == "shared":
                 dest = self.shared_skills_dir / c.skill_name
             else:
-                dest = self.skills_base_dir / user_id / c.skill_name
+                target_user_id = c.user_id or user_id
+                dest = (
+                    resolve_user_skills_dir(self.config, target_user_id, create=True) / c.skill_name
+                )
 
             if dest.exists():
                 # If the pending skill differs from the installed one, re-onboard
@@ -1491,7 +1497,7 @@ class PendingSkillService:
                 skill_dir=skill_dir,
             )
         else:
-            skill_dir = self.skills_base_dir / user_id / skill_name
+            skill_dir = resolve_user_skills_dir(self.config, user_id, create=False) / skill_name
             c = PendingSkillCandidate(
                 scope="user",
                 user_id=user_id,

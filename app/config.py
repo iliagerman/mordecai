@@ -16,10 +16,115 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.enums import ModelProvider
 
 
-# Container deployments commonly mount a host Obsidian vault at this path.
+def _find_repo_root(*, start: Path) -> Path:
+    """Best-effort repository root discovery.
+
+    We resolve relative config paths against the repo root so the app can be launched
+    from any working directory (macOS dev, container entrypoints, tests, etc.).
+
+    Root detection is heuristic but stable:
+    - first directory containing `pyproject.toml`
+    - otherwise fall back to the current working directory
+    """
+
+    try:
+        start = start.resolve()
+        for p in [start, *start.parents]:
+            if (p / "pyproject.toml").exists():
+                return p
+    except Exception:
+        pass
+
+    return Path.cwd()
+
+
+def _normalize_user_skills_dir_template(raw: str) -> str:
+    """Normalize supported placeholders in a user skills dir template.
+
+    Supported placeholders:
+    - {username} / {user_id}
+    - [USERNAME] / [USER_ID] (legacy docs-style)
+    """
+
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    s = s.replace("[USERNAME]", "{username}")
+    s = s.replace("[USER_ID]", "{user_id}")
+    return s
+
+
+def _validate_user_identifier_for_path(user_id: str) -> str:
+    """Validate user_id for use in filesystem paths.
+
+    Telegram usernames are already constrained, but we enforce a minimal safety check
+    to prevent path traversal if an upstream caller misbehaves.
+    """
+
+    u = (user_id or "").strip()
+    if not u:
+        raise ValueError("user_id is required")
+    if "/" in u or "\\" in u:
+        raise ValueError("user_id must not contain path separators")
+    if u == "." or u == ".." or ".." in u:
+        raise ValueError("user_id must not contain traversal segments")
+    return u
+
+
+def resolve_user_skills_dir(config: Any, user_id: str, *, create: bool = True) -> Path:
+    """Resolve the per-user skills directory in a portable way.
+
+    If `config.user_skills_dir_template` is set, it is used as the authoritative
+    path pattern (e.g. "/app/skills/{username}"). Otherwise, fall back to
+    "{skills_base_dir}/{user_id}".
+
+    Relative paths are resolved against the repository root.
+    """
+
+    u = _validate_user_identifier_for_path(user_id)
+    raw_template = getattr(config, "user_skills_dir_template", None)
+    template = _normalize_user_skills_dir_template(str(raw_template)) if raw_template else ""
+
+    if template:
+        try:
+            rendered = template.format(username=u, user_id=u)
+        except Exception as e:
+            raise ValueError(f"Invalid user_skills_dir_template: {template}") from e
+
+        p = Path(rendered).expanduser()
+    else:
+        base = Path(getattr(config, "skills_base_dir", "./skills")).expanduser()
+        p = base / u
+
+    if not p.is_absolute():
+        repo_root = _find_repo_root(start=Path(__file__))
+        p = repo_root / p
+
+    p = p.resolve()
+    if create:
+        p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def resolve_user_pending_skills_dir(config: Any, user_id: str, *, create: bool = True) -> Path:
+    """Resolve the per-user pending skills directory."""
+
+    p = resolve_user_skills_dir(config, user_id, create=create)
+    d = p / "pending"
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# Container deployments commonly mount a host Obsidian vault at a known path.
 # If the configured obsidian_vault_root does not exist *in the current runtime*,
 # we will prefer this mount when present.
-DEFAULT_CONTAINER_OBSIDIAN_VAULT_ROOT = "/app/obsidian-vaults"
+#
+# This is intentionally overridable because different deployments may mount the vault
+# at different paths.
+DEFAULT_CONTAINER_OBSIDIAN_VAULT_ROOT = os.environ.get(
+    "AGENT_CONTAINER_OBSIDIAN_VAULT_ROOT", "/app/obsidian-vaults"
+)
 
 
 def _create_config_file(path: str, config_data: dict) -> None:
@@ -669,6 +774,15 @@ class AgentConfig(BaseSettings):
     skills_base_dir: str = Field(default="./skills")
     shared_skills_dir: str = Field(default="./skills/shared")
 
+    user_skills_dir_template: str | None = Field(
+        default=None,
+        description=(
+            "Optional template for resolving the per-user skills directory. "
+            "If set, the per-user skills directory is resolved from this pattern (e.g. '/app/skills/{username}'). "
+            "Supported placeholders: {username}, {user_id} and legacy docs-style [USERNAME]/[USER_ID]."
+        ),
+    )
+
     def model_post_init(self, __context) -> None:  # type: ignore[override]
         """Post-init normalization.
 
@@ -679,8 +793,68 @@ class AgentConfig(BaseSettings):
         sync from the repository's ./skills/shared).
         """
         try:
-            if self.shared_skills_dir == "./skills/shared" and self.skills_base_dir != "./skills":
+            # 0) Normalize user_skills_dir_template early.
+            raw_template = (self.user_skills_dir_template or "").strip()
+            template = _normalize_user_skills_dir_template(raw_template) if raw_template else ""
+
+            # If a template is set and skills_base_dir is still the default,
+            # derive a scan-friendly base directory from the template.
+            #
+            # Example:
+            #   template = /app/skills/{username}
+            #   skills_base_dir becomes /app/skills
+            if template and self.skills_base_dir == "./skills":
+                try:
+                    parts = list(Path(template).parts)
+                    placeholder_idx: int | None = None
+                    for i, part in enumerate(parts):
+                        if "{username}" in part or "{user_id}" in part:
+                            placeholder_idx = i
+                            break
+                    if placeholder_idx is not None and placeholder_idx > 0:
+                        self.skills_base_dir = str(Path(*parts[:placeholder_idx]))
+                except Exception:
+                    # Never fail config initialization due to template parsing.
+                    pass
+
+            # 1) If caller overrides skills_base_dir but leaves shared_skills_dir at the
+            # default, treat shared_skills_dir as a subdirectory of skills_base_dir.
+            #
+            # IMPORTANT: when user_skills_dir_template is set, we do NOT automatically
+            # relocate shared_skills_dir based on skills_base_dir, because the template
+            # often points to a persistent volume while shared skills remain in the repo.
+            if (
+                self.shared_skills_dir == "./skills/shared"
+                and self.skills_base_dir != "./skills"
+                and not template
+            ):
                 self.shared_skills_dir = str(Path(self.skills_base_dir) / "shared")
+
+            # 2) Resolve relative paths against the repository root rather than CWD.
+            repo_root = _find_repo_root(start=Path(__file__))
+
+            skills_base = Path(self.skills_base_dir).expanduser()
+            if not skills_base.is_absolute():
+                skills_base = repo_root / skills_base
+            self.skills_base_dir = str(skills_base.resolve())
+
+            shared_skills = Path(self.shared_skills_dir).expanduser()
+            if not shared_skills.is_absolute():
+                shared_skills = repo_root / shared_skills
+            self.shared_skills_dir = str(shared_skills.resolve())
+
+            # Normalize + resolve template against repo_root for consistency.
+            if template:
+                tp = Path(template).expanduser()
+                if not tp.is_absolute():
+                    tp = repo_root / tp
+                self.user_skills_dir_template = str(tp)
+
+            # Optional: allow relative obsidian_vault_root in dev (e.g., ./vault).
+            if self.obsidian_vault_root:
+                vault = Path(str(self.obsidian_vault_root)).expanduser()
+                if not vault.is_absolute():
+                    self.obsidian_vault_root = str((repo_root / vault).resolve())
         except Exception:
             # Be conservative: never fail config construction due to normalization.
             return

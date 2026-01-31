@@ -14,8 +14,13 @@ When the user asks to **onboard pending skills**, you will:
 3. Summarize what was onboarded, what failed (with `FAILED.json`), and what was skipped.
 
 Pending skills are staged under:
-- `skills/shared/pending/<skill>/`
-- `skills/<user_id>/pending/<skill>/`
+- `<SHARED_SKILLS_DIR>/pending/<skill>/` (optional; only if shared pending is enabled)
+- `<USER_SKILLS_DIR>/pending/<skill>/`
+
+Where:
+- `<USER_SKILLS_DIR>` is the runtime directory for the current user’s installed skills
+	(a subdirectory of the configured `skills_base_dir`).
+- `<SHARED_SKILLS_DIR>` is the configured shared skills directory (if used).
 
 ## Procedure
 

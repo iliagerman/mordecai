@@ -96,6 +96,23 @@ class TestPerUserSkillInstallation:
         assert user_dir.is_dir()
         assert user_dir == Path(temp_skills_dir) / TEST_USER_ID
 
+    def test_user_skills_directory_uses_template_when_set(self, temp_skills_dir, temp_shared_dir):
+        """If user_skills_dir_template is set, it overrides skills_base_dir/<user_id>."""
+        config = AgentConfig(
+            telegram_bot_token="test-token",
+            skills_base_dir=temp_skills_dir,
+            shared_skills_dir=temp_shared_dir,
+            session_storage_dir=temp_skills_dir,
+            user_skills_dir_template=str(Path(temp_skills_dir) / "per-user" / "{username}"),
+        )
+        svc = SkillService(config)
+
+        user_dir = svc._get_user_skills_dir(TEST_USER_ID)
+        assert user_dir == Path(temp_skills_dir) / "per-user" / TEST_USER_ID
+
+        pending_dir = svc._get_user_pending_skills_dir(TEST_USER_ID)
+        assert pending_dir == user_dir / "pending"
+
     def test_different_users_have_separate_directories(self, skill_service, temp_skills_dir):
         """Test that different users get separate skill directories."""
         user1_dir = skill_service._get_user_skills_dir("user1")
