@@ -32,6 +32,7 @@ def _config_for(root: Path) -> AgentConfig:
         shared_skills_dir=str(root / "shared"),
         session_storage_dir=str(root / "sessions"),
         pending_skills_preflight_enabled=False,
+        secrets_path=str(root / "secrets.yml"),
     )
 
 
@@ -121,3 +122,92 @@ def test_onboard_writes_failed_json_on_syntax_error(temp_skills_root: Path):
     # still pending, with FAILED.json
     assert pending_skill.exists()
     assert (pending_skill / "FAILED.json").exists()
+
+
+def test_onboard_blocks_when_required_env_missing(temp_skills_root: Path):
+    config = _config_for(temp_skills_root)
+    pending_service = PendingSkillService(config)
+
+    pending_skill = temp_skills_root / "user1" / "pending" / "needs-env"
+    pending_skill.mkdir(parents=True)
+    (pending_skill / "SKILL.md").write_text(
+        "---\n"
+        "name: needs-env\n"
+        "requires:\n"
+        "  env:\n"
+        "    - name: NEEDS_ENV_TOKEN\n"
+        "      prompt: Provide the token for tests\n"
+        "---\n\n"
+        "# Needs env\n",
+        encoding="utf-8",
+    )
+    (pending_skill / "skill.py").write_text("print('ok')\n", encoding="utf-8")
+
+    result = pending_service.onboard_pending(user_id="user1", scope="user")
+    assert result["onboarded"] == 0
+    assert result["failed"] == 1
+
+    failed_path = pending_skill / "FAILED.json"
+    assert failed_path.exists()
+    failed_json = failed_path.read_text(encoding="utf-8")
+    assert "validate_required_env" in failed_json
+    assert "NEEDS_ENV_TOKEN" in failed_json
+
+
+def test_onboard_succeeds_after_required_env_set(temp_skills_root: Path):
+    from app.config import upsert_skill_env_vars
+
+    config = _config_for(temp_skills_root)
+    pending_service = PendingSkillService(config)
+
+    pending_skill = temp_skills_root / "user1" / "pending" / "needs-env"
+    pending_skill.mkdir(parents=True)
+    (pending_skill / "SKILL.md").write_text(
+        "---\nname: needs-env\nrequires:\n  env:\n    - NEEDS_ENV_TOKEN\n---\n\n# Needs env\n",
+        encoding="utf-8",
+    )
+    (pending_skill / "skill.py").write_text("print('ok')\n", encoding="utf-8")
+
+    # Store the env var for this user under skills.needs-env.users.user1.env
+    upsert_skill_env_vars(
+        secrets_path=Path(config.secrets_path),
+        skill_name="needs-env",
+        env_vars={"NEEDS_ENV_TOKEN": "secret"},
+        user_id="user1",
+    )
+
+    result = pending_service.onboard_pending(user_id="user1", scope="user")
+    assert result["failed"] == 0
+    assert result["onboarded"] == 1
+
+    active = temp_skills_root / "user1" / "needs-env"
+    assert active.exists()
+
+
+def test_onboard_updates_existing_skill_when_pending_changes(temp_skills_root: Path):
+    config = _config_for(temp_skills_root)
+    pending_service = PendingSkillService(config)
+
+    # Existing active skill
+    active = temp_skills_root / "user1" / "hello"
+    active.mkdir(parents=True)
+    (active / "SKILL.md").write_text("---\nname: hello\n---\n# hello\n", encoding="utf-8")
+    (active / "skill.py").write_text("VERSION = 'v1'\n", encoding="utf-8")
+
+    # Updated pending skill with same name
+    pending_skill = temp_skills_root / "user1" / "pending" / "hello"
+    pending_skill.mkdir(parents=True)
+    (pending_skill / "SKILL.md").write_text("---\nname: hello\n---\n# hello\n", encoding="utf-8")
+    (pending_skill / "skill.py").write_text("VERSION = 'v2'\n", encoding="utf-8")
+
+    result = pending_service.onboard_pending(user_id="user1", scope="user")
+    assert result["failed"] == 0
+    assert result["onboarded"] == 1
+
+    assert (active / "skill.py").read_text(encoding="utf-8") == "VERSION = 'v2'\n"
+
+    # Backup should exist under user1/failed
+    failed_dir = temp_skills_root / "user1" / "failed"
+    assert failed_dir.exists()
+    backups = list(failed_dir.glob("hello.*.bak"))
+    assert backups, "Expected a backup directory for the replaced skill"

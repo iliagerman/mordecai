@@ -13,9 +13,17 @@ Requires:
 - Network access to GitHub
 """
 
+# This is a manual script and should not be collected/executed by pytest.
+# It remains runnable via: python -m tests.manual.test_skill_usage
+import sys
+
+if "pytest" in sys.modules:
+    import pytest
+
+    pytest.skip("Manual script; skipped during automated test runs", allow_module_level=True)
+
 import asyncio
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 
@@ -29,12 +37,10 @@ from app.services.skill_service import SkillInstallError, SkillService
 
 # Skill URLs
 PPTX_SKILL_URL = (
-    "https://github.com/aws-samples/"
-    "sample-strands-agents-agentskills/tree/main/skills/pptx"
+    "https://github.com/aws-samples/sample-strands-agents-agentskills/tree/main/skills/pptx"
 )
 YOUTUBE_SKILL_URL = (
-    "https://github.com/michalparkola/"
-    "tapestry-skills-for-claude-code/tree/main/youtube-transcript"
+    "https://github.com/michalparkola/tapestry-skills-for-claude-code/tree/main/youtube-transcript"
 )
 
 # Test video
@@ -54,10 +60,7 @@ async def test_pptx_skill(agent_service: AgentService):
     print(f"\nUser: {message}")
 
     try:
-        response = await agent_service.process_message(
-            user_id="test-user",
-            message=message
-        )
+        response = await agent_service.process_message(user_id="test-user", message=message)
         print(f"\nAgent: {response}")
     except Exception as e:
         print(f"\nError: {e}")
@@ -70,16 +73,12 @@ async def test_youtube_skill(agent_service: AgentService):
     print("=" * 60)
 
     message = (
-        f"Using the youtube-transcript skill, get the transcript "
-        f"from this video: {TEST_VIDEO}"
+        f"Using the youtube-transcript skill, get the transcript from this video: {TEST_VIDEO}"
     )
     print(f"\nUser: {message}")
 
     try:
-        response = await agent_service.process_message(
-            user_id="test-user",
-            message=message
-        )
+        response = await agent_service.process_message(user_id="test-user", message=message)
         print(f"\nAgent: {response[:1000]}...")  # Truncate long response
     except Exception as e:
         print(f"\nError: {e}")
@@ -112,7 +111,7 @@ async def main():
 
         try:
             print(f"\nInstalling pptx skill...")
-            metadata = skill_service.install_skill(PPTX_SKILL_URL)
+            metadata = skill_service.install_skill(PPTX_SKILL_URL, "test-user")
             print(f"  ✓ Installed: {metadata.name}")
 
             # List files
@@ -125,7 +124,7 @@ async def main():
 
         try:
             print(f"\nInstalling youtube-transcript skill...")
-            metadata = skill_service.install_skill(YOUTUBE_SKILL_URL)
+            metadata = skill_service.install_skill(YOUTUBE_SKILL_URL, "test-user")
             print(f"  ✓ Installed: {metadata.name}")
 
         except SkillInstallError as e:
@@ -135,14 +134,14 @@ async def main():
         print("\n" + "-" * 40)
         print("Installed skills:")
         print("-" * 40)
-        for skill in skill_service.list_skills():
+        for skill in skill_service.list_skills("test-user"):
             print(f"  - {skill}")
 
         # Show system prompt
         print("\n" + "-" * 40)
         print("Agent system prompt (skills section):")
         print("-" * 40)
-        prompt = agent_service._build_system_prompt()
+        prompt = agent_service._build_system_prompt("test-user")
         if "Installed Skills" in prompt:
             # Extract just the skills section
             start = prompt.find("## Installed Skills")

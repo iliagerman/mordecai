@@ -28,13 +28,14 @@ import subprocess
 import sys
 import ast
 import re
+import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from app.config import AgentConfig
+from app.config import AgentConfig, refresh_runtime_env_from_secrets
 
 
 _RESERVED_DIR_NAMES = {"pending", "failed", ".venvs", ".venv", "__pycache__"}
@@ -66,6 +67,55 @@ class PendingSkillService:
         # NOTE: Per-skill venvs are created on demand during onboarding.
 
     # ---------------------------
+    # Utilities
+    # ---------------------------
+
+    def _dir_fingerprint(self, root: Path) -> str:
+        """Compute a stable fingerprint of a skill directory.
+
+        Used to decide whether onboarding should re-run when a skill already
+        exists.
+
+        Excludes common runtime artifacts.
+        """
+        ignore_names = {
+            ".venv",
+            "__pycache__",
+            "FAILED.json",
+            "onboarding_report.json",
+            "ONBOARDING_REPORT.md",
+        }
+
+        h = hashlib.sha256()
+        if not root.exists() or not root.is_dir():
+            return h.hexdigest()
+
+        for p in sorted(root.rglob("*")):
+            rel = p.relative_to(root)
+            if any(part in ignore_names for part in rel.parts):
+                continue
+            # Avoid hashing extremely large files accidentally.
+            if p.is_file():
+                h.update(str(rel).encode("utf-8"))
+                try:
+                    h.update(p.read_bytes())
+                except Exception:
+                    # If unreadable, include metadata so fingerprint still changes.
+                    h.update(str(p.stat().st_size).encode("utf-8"))
+            elif p.is_dir():
+                h.update((str(rel) + "/").encode("utf-8"))
+        return h.hexdigest()
+
+    def _backup_existing_skill_dir(self, dest: Path) -> Path:
+        """Move an existing active skill directory to a backup location."""
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        backup_root = dest.parent / "failed"
+        backup_root.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_root / f"{dest.name}.{ts}.bak"
+        shutil.move(str(dest), str(backup_path))
+        return backup_path
+
+    # ---------------------------
     # Discovery
     # ---------------------------
 
@@ -94,7 +144,9 @@ class PendingSkillService:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def list_pending(self, *, user_id: str | None, include_shared: bool = True) -> list[PendingSkillCandidate]:
+    def list_pending(
+        self, *, user_id: str | None, include_shared: bool = True
+    ) -> list[PendingSkillCandidate]:
         candidates: list[PendingSkillCandidate] = []
 
         if include_shared:
@@ -190,8 +242,7 @@ class PendingSkillService:
                 "---\n"
                 f"name: {candidate.skill_name}\n"
                 "description: Pending skill\n"
-                "---\n\n"
-                + (content.strip() + "\n" if content.strip() else "")
+                "---\n\n" + (content.strip() + "\n" if content.strip() else "")
             )
             skill_md.write_text(new_content, encoding="utf-8")
             actions.append("added frontmatter")
@@ -286,6 +337,114 @@ class PendingSkillService:
         if len(parts) < 3:
             return ""
         return parts[1].strip("\n")
+
+    def _read_skill_frontmatter_data(self, skill_dir: Path) -> dict:
+        """Parse YAML frontmatter into a dict.
+
+        Returns {} on missing/invalid YAML.
+        """
+        frontmatter = self._read_skill_frontmatter(skill_dir)
+        if not frontmatter:
+            return {}
+        try:
+            import yaml
+
+            data = yaml.safe_load(frontmatter) or {}
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _extract_required_env_from_frontmatter_data(self, data: dict) -> list[dict]:
+        """Extract required env var declarations from skill frontmatter.
+
+        Supported schema:
+            requires:
+              env:
+                - SOME_KEY
+                - name: SOME_KEY
+                  prompt: "..."
+                  example: "..."
+        """
+        requires = data.get("requires")
+        if not isinstance(requires, dict):
+            return []
+
+        env_list = requires.get("env")
+        if not isinstance(env_list, list):
+            return []
+
+        out: list[dict] = []
+        for item in env_list:
+            if isinstance(item, str):
+                name = item.strip()
+                if name:
+                    out.append({"name": name})
+                continue
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                rec = {"name": name}
+                prompt = item.get("prompt")
+                if isinstance(prompt, str) and prompt.strip():
+                    rec["prompt"] = prompt.strip()
+                example = item.get("example")
+                if isinstance(example, str) and example.strip():
+                    rec["example"] = example.strip()
+                out.append(rec)
+
+        # de-dup preserving order
+        seen: set[str] = set()
+        deduped: list[dict] = []
+        for r in out:
+            n = r.get("name")
+            if not n or n in seen:
+                continue
+            seen.add(n)
+            deduped.append(r)
+        return deduped
+
+    def validate_required_env(
+        self, candidate: PendingSkillCandidate, *, runtime_user_id: str | None
+    ) -> dict:
+        """Validate required env vars declared in SKILL.md frontmatter.
+
+        This does NOT print secret values; it only reports missing keys.
+        """
+        # Always refresh from secrets.yml so newly-provided values are visible
+        # immediately without server restart.
+        try:
+            refresh_runtime_env_from_secrets(
+                secrets_path=Path(getattr(self.config, "secrets_path", "secrets.yml")),
+                user_id=runtime_user_id,
+            )
+        except Exception:
+            # Never crash validation.
+            pass
+
+        data = self._read_skill_frontmatter_data(candidate.skill_dir)
+        reqs = self._extract_required_env_from_frontmatter_data(data)
+        if not reqs:
+            return {"ok": True, "checked": 0, "reason": "no required env declared"}
+
+        missing: list[dict] = []
+        for r in reqs:
+            name = r.get("name")
+            if not name:
+                continue
+            val = os.environ.get(name)
+            if val is None or str(val).strip() == "":
+                missing.append(r)
+
+        if missing:
+            return {
+                "ok": False,
+                "checked": len(reqs),
+                "missing": missing,
+                "note": "missing required env vars; ask the user and persist them to secrets.yml",
+            }
+
+        return {"ok": True, "checked": len(reqs)}
 
     def _extract_pip_packages_from_frontmatter(self, frontmatter: str) -> list[str]:
         """Best-effort extraction of pip packages from frontmatter.
@@ -579,12 +738,14 @@ class PendingSkillService:
         marker_end = "# --- END AUTO-GENERATED (imports) ---"
 
         if not req_path.exists():
-            content = "\n".join([
-                marker_start,
-                *inferred_pkgs,
-                marker_end,
-                "",
-            ])
+            content = "\n".join(
+                [
+                    marker_start,
+                    *inferred_pkgs,
+                    marker_end,
+                    "",
+                ]
+            )
             req_path.write_text(content, encoding="utf-8")
             return {
                 "ok": True,
@@ -719,14 +880,19 @@ class PendingSkillService:
         except Exception as e:
             return {"ok": False, "error": str(e), "venv_dir": str(venv_dir)}
 
-    def install_dependencies(self, candidate: PendingSkillCandidate) -> dict:
+    def install_dependencies(
+        self, candidate: PendingSkillCandidate, *, runtime_user_id: str | None
+    ) -> dict:
         req = self._requirements_path(candidate.skill_dir)
         if not req.exists():
             return {"ok": True, "installed": False, "reason": "no requirements.txt"}
 
         ensure = self.ensure_venv(candidate)
         if not ensure.get("ok"):
-            return {"ok": False, "error": f"Failed to create venv: {ensure.get('error', 'unknown')}"}
+            return {
+                "ok": False,
+                "error": f"Failed to create venv: {ensure.get('error', 'unknown')}",
+            }
 
         venv_dir = Path(ensure["venv_dir"])
         py = self._venv_python(venv_dir)
@@ -738,6 +904,14 @@ class PendingSkillService:
             }
 
         timeout = int(getattr(self.config, "pending_skills_pip_timeout_seconds", 180))
+
+        try:
+            refresh_runtime_env_from_secrets(
+                secrets_path=Path(getattr(self.config, "secrets_path", "secrets.yml")),
+                user_id=runtime_user_id,
+            )
+        except Exception:
+            pass
 
         env = os.environ.copy()
         env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
@@ -848,7 +1022,9 @@ class PendingSkillService:
             return mod or None
         return None
 
-    def run_scripts_smoke_test(self, candidate: PendingSkillCandidate) -> dict:
+    def run_scripts_smoke_test(
+        self, candidate: PendingSkillCandidate, *, runtime_user_id: str | None
+    ) -> dict:
         """Attempt to run a small set of skill scripts.
 
         This is meant to surface runtime missing dependencies (e.g., dynamic imports)
@@ -861,6 +1037,14 @@ class PendingSkillService:
 
         timeout = int(getattr(self.config, "pending_skills_run_scripts_timeout_seconds", 20))
         py = self._runtime_python(candidate)
+
+        try:
+            refresh_runtime_env_from_secrets(
+                secrets_path=Path(getattr(self.config, "secrets_path", "secrets.yml")),
+                user_id=runtime_user_id,
+            )
+        except Exception:
+            pass
 
         env = os.environ.copy()
         env.setdefault("PYTHONUNBUFFERED", "1")
@@ -921,6 +1105,7 @@ class PendingSkillService:
         *,
         install_deps: bool,
         run_scripts: bool = False,
+        runtime_user_id: str | None = None,
     ) -> dict:
         """Preflight a pending skill.
 
@@ -937,6 +1122,21 @@ class PendingSkillService:
 
         try:
             report["steps"]["normalize_skill_md"] = self.normalize_skill_md(candidate)
+
+            # Validate required env vars early so the agent can prompt the user.
+            # This is checked even in dry-run mode.
+            env_rep = self.validate_required_env(candidate, runtime_user_id=runtime_user_id)
+            report["steps"]["validate_required_env"] = env_rep
+            if not env_rep.get("ok"):
+                report["ok"] = False
+                self.write_failed(
+                    candidate,
+                    stage="validate_required_env",
+                    error="missing required env vars",
+                    details=env_rep,
+                )
+                self._write_preflight_reports(candidate, report)
+                return report
 
             report["steps"]["generate_requirements"] = self.generate_requirements(candidate)
             if not report["steps"]["generate_requirements"].get("ok", True):
@@ -955,12 +1155,16 @@ class PendingSkillService:
             report["steps"]["validate_python_syntax"] = syntax
             if not syntax.get("ok"):
                 report["ok"] = False
-                self.write_failed(candidate, stage="validate_python_syntax", error=syntax.get("error", "syntax error"))
+                self.write_failed(
+                    candidate,
+                    stage="validate_python_syntax",
+                    error=syntax.get("error", "syntax error"),
+                )
                 self._write_preflight_reports(candidate, report)
                 return report
 
             if install_deps:
-                deps = self.install_dependencies(candidate)
+                deps = self.install_dependencies(candidate, runtime_user_id=runtime_user_id)
                 report["steps"]["install_dependencies"] = deps
                 if not deps.get("ok"):
                     report["ok"] = False
@@ -990,7 +1194,7 @@ class PendingSkillService:
                     return report
 
             if run_scripts:
-                run_rep = self.run_scripts_smoke_test(candidate)
+                run_rep = self.run_scripts_smoke_test(candidate, runtime_user_id=runtime_user_id)
                 report["steps"]["run_scripts_smoke_test"] = run_rep
                 if not run_rep.get("ok"):
                     report["ok"] = False
@@ -1000,7 +1204,9 @@ class PendingSkillService:
                     }
                     msg = "script smoke test failed"
                     if run_rep.get("missing_modules"):
-                        msg = f"missing module(s): {', '.join(run_rep.get('missing_modules') or [])}"
+                        msg = (
+                            f"missing module(s): {', '.join(run_rep.get('missing_modules') or [])}"
+                        )
                     self.write_failed(
                         candidate,
                         stage="run_scripts_smoke_test",
@@ -1058,9 +1264,7 @@ class PendingSkillService:
 
     def preflight_all(self) -> dict:
         """Preflight all pending skills found (shared + all users)."""
-        install_deps = bool(
-            getattr(self.config, "pending_skills_preflight_install_deps", True)
-        )
+        install_deps = bool(getattr(self.config, "pending_skills_preflight_install_deps", True))
         max_skills = int(getattr(self.config, "pending_skills_preflight_max_skills", 200))
 
         processed = []
@@ -1126,17 +1330,66 @@ class PendingSkillService:
                 dest = self.skills_base_dir / user_id / c.skill_name
 
             if dest.exists():
-                # Best-effort: don't leave stale failure markers behind
-                self.clear_failed(c)
-                results.append(
-                    {
-                        "candidate": c.skill_name,
-                        "status": "skipped",
-                        "reason": "already exists",
-                        "path": str(dest),
-                    }
+                # If the pending skill differs from the installed one, re-onboard
+                # and replace (with backup). Otherwise, skip as up-to-date.
+                pending_fp = self._dir_fingerprint(c.skill_dir)
+                active_fp = self._dir_fingerprint(dest)
+
+                if pending_fp == active_fp:
+                    # Best-effort: don't leave stale failure markers behind
+                    self.clear_failed(c)
+                    results.append(
+                        {
+                            "candidate": c.skill_name,
+                            "status": "skipped",
+                            "reason": "already up-to-date",
+                            "path": str(dest),
+                        }
+                    )
+                    skipped += 1
+                    continue
+
+                # Changed skill -> run onboarding again
+                pf = self.preflight(
+                    c,
+                    install_deps=(not dry_run),
+                    run_scripts=(not dry_run),
+                    runtime_user_id=user_id,
                 )
-                skipped += 1
+                if not pf.get("ok"):
+                    results.append({"candidate": c.skill_name, "status": "failed", "report": pf})
+                    failed += 1
+                    continue
+
+                if dry_run:
+                    results.append(
+                        {
+                            "candidate": c.skill_name,
+                            "status": "dry-run",
+                            "would_update": str(dest),
+                        }
+                    )
+                    continue
+
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    backup = self._backup_existing_skill_dir(dest)
+                    shutil.move(str(c.skill_dir), str(dest))
+                    onboarded += 1
+                    results.append(
+                        {
+                            "candidate": c.skill_name,
+                            "status": "onboarded",
+                            "path": str(dest),
+                            "updated": True,
+                            "backup": str(backup),
+                        }
+                    )
+                except Exception as e:
+                    failed += 1
+                    if c.skill_dir.exists():
+                        self.write_failed(c, stage="promotion", error=str(e))
+                    results.append({"candidate": c.skill_name, "status": "failed", "error": str(e)})
                 continue
 
             # Preflight.
@@ -1146,6 +1399,7 @@ class PendingSkillService:
                 c,
                 install_deps=(not dry_run),
                 run_scripts=(not dry_run),
+                runtime_user_id=user_id,
             )
             if not pf.get("ok"):
                 results.append({"candidate": c.skill_name, "status": "failed", "report": pf})
@@ -1153,14 +1407,18 @@ class PendingSkillService:
                 continue
 
             if dry_run:
-                results.append({"candidate": c.skill_name, "status": "dry-run", "would_move_to": str(dest)})
+                results.append(
+                    {"candidate": c.skill_name, "status": "dry-run", "would_move_to": str(dest)}
+                )
                 continue
 
             try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(c.skill_dir), str(dest))
                 onboarded += 1
-                results.append({"candidate": c.skill_name, "status": "onboarded", "path": str(dest)})
+                results.append(
+                    {"candidate": c.skill_name, "status": "onboarded", "path": str(dest)}
+                )
             except Exception as e:
                 failed += 1
                 # write FAILED.json in the *source* if it still exists, else create failure marker in dest parent
@@ -1168,7 +1426,11 @@ class PendingSkillService:
                     self.write_failed(c, stage="promotion", error=str(e))
                 else:
                     # best-effort: recreate marker in a fallback location
-                    fallback = (self._pending_dir_shared() if c.scope == "shared" else self._pending_dir_user(user_id)) / c.skill_name
+                    fallback = (
+                        self._pending_dir_shared()
+                        if c.scope == "shared"
+                        else self._pending_dir_user(user_id)
+                    ) / c.skill_name
                     fallback.mkdir(parents=True, exist_ok=True)
                     self._failed_path(fallback).write_text(
                         json.dumps(
@@ -1240,7 +1502,12 @@ class PendingSkillService:
         if not skill_dir.exists() or not skill_dir.is_dir():
             return {"ok": False, "error": f"Skill not found: {skill_dir}"}
 
-        rep = self.preflight(c, install_deps=True, run_scripts=run_scripts)
+        rep = self.preflight(
+            c,
+            install_deps=True,
+            run_scripts=run_scripts,
+            runtime_user_id=user_id if scope != "shared" else user_id,
+        )
         rep["repaired"] = bool(rep.get("ok"))
         rep["skill_dir"] = str(skill_dir)
         return rep

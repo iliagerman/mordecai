@@ -89,7 +89,7 @@ FROM base AS application
 WORKDIR /app
 
 # Create directories for volumes
-RUN mkdir -p /app/data /app/sessions /app/skills /app/skills/shared
+RUN mkdir -p /app/data /app/sessions /app/skills /app/skills/shared /app/tools
 
 # Copy dependency files first (for better caching)
 COPY pyproject.toml ./
