@@ -23,17 +23,88 @@ Security/safety:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import datetime
 import re
-
+from dataclasses import dataclass
+from pathlib import Path
 
 DEFAULT_MAX_CHARS = 20_000
 
 
 STM_FILENAME = "stm.md"
 LEGACY_STM_FILENAME = "short_term_memories.md"
+
+
+def append_session_summary(
+    vault_root_raw: str,
+    user_id: str,
+    session_id: str,
+    summary: str,
+    *,
+    max_chars: int = DEFAULT_MAX_CHARS,
+) -> Path:
+    """Append a session summary block into the STM note.
+
+    This is used on session reset (/new) to persist a concise summary of the
+    *previous* session before in-memory context is cleared.
+
+    The block is appended as markdown (not a single bullet) so multi-line
+    summaries are preserved.
+
+    Returns:
+        Path to the STM file.
+    """
+
+    body = (summary or "").strip()
+    if not body:
+        raise ValueError("No summary text provided")
+
+    target = short_term_memory_path(vault_root_raw, user_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    # Migrate legacy file name if it exists (best-effort).
+    if not target.exists():
+        legacy = _legacy_short_term_memory_path(vault_root_raw, user_id)
+        if legacy.exists() and legacy.is_file():
+            try:
+                legacy.rename(target)
+            except Exception:
+                try:
+                    target.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+                    legacy.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    ts = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
+
+    block = "\n".join(
+        [
+            "",
+            f"## Session summary: {session_id}",
+            f"- created_at: {ts}",
+            "",
+            body,
+            "",
+        ]
+    )
+
+    if target.exists():
+        try:
+            current_size = target.stat().st_size
+        except Exception:
+            current_size = 0
+        if current_size + len(block) > max_chars:
+            raise ValueError(f"{STM_FILENAME} would exceed max_chars={max_chars}")
+    else:
+        header = "# STM\n\n"  # minimal Obsidian-friendly header
+        if len(header) + len(block) > max_chars:
+            raise ValueError(f"{STM_FILENAME} would exceed max_chars={max_chars}")
+        target.write_text(header, encoding="utf-8")
+
+    with target.open("a", encoding="utf-8") as f:
+        f.write(block)
+
+    return target
 
 
 @dataclass(frozen=True)

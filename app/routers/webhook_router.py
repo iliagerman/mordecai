@@ -72,7 +72,7 @@ def create_webhook_router(
             if isinstance(event.payload, dict):
                 user_id = event.payload.get("user_id") or event.payload.get("userId")
             if isinstance(user_id, str) and user_id.strip():
-                enforce_whitelist_or_403(user_id, allowed_users)
+                enforce_whitelist_or_403(user_id, allowed_users, request=request)
 
             result = await webhook_service.process_event(event)
             return WebhookResponse(status="success", result=result)

@@ -273,6 +273,38 @@ class MemoryExtractionService:
             )
             return None
 
+        # Best-effort Obsidian write:
+        # - persist per-session summary note (immutable artifact)
+        # - append summary to STM scratchpad (for next-session injection)
+        # This is independent from AgentCore availability.
+        vault_root = getattr(self.config, "obsidian_vault_root", None)
+        if vault_root:
+            try:
+                from app.tools.conversation_summary_vault import write_session_summary
+                from app.tools.short_term_memory_vault import append_session_summary
+
+                write_session_summary(
+                    vault_root,
+                    user_id,
+                    session_id,
+                    summary,
+                    max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                )
+
+                append_session_summary(
+                    vault_root,
+                    user_id,
+                    session_id,
+                    summary,
+                    max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                )
+            except Exception as e:
+                logger.debug(
+                    "Failed to write conversation summary to Obsidian for user %s: %s",
+                    user_id,
+                    e,
+                )
+
         if not self.memory_service:
             logger.warning(
                 "Memory service unavailable for user %s, summary generated but not stored",

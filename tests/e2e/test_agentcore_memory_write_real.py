@@ -42,6 +42,8 @@ from tests.e2e.aws_preflight import (
 def test_agentcore_memory_store_and_search_roundtrip_real_aws():
     require_real_tests_enabled(allow_legacy_aws_flag=True)
 
+    print("\n[e2e] === Test: AgentCore store+search roundtrip ===")
+
     # Load real creds/config (secrets.yml / env). This test is expected to fail
     # if credentials are missing or expired.
     cfg = AgentConfig.from_json_file(config_path="config.json", secrets_path="secrets.yml")
@@ -60,6 +62,8 @@ def test_agentcore_memory_store_and_search_roundtrip_real_aws():
 
     service = MemoryService(cfg)
 
+    print("[e2e] Step 1/3: Confirm AWS auth + memory resolved")
+
     print(f"[e2e] AWS env after MemoryService normalization: env={aws_env_summary()}")
 
     # Validate credentials early (avoid noisy AgentCore errors).
@@ -70,6 +74,13 @@ def test_agentcore_memory_store_and_search_roundtrip_real_aws():
     token = f"e2e-memory-{uuid.uuid4()}"
     actor_id = f"e2e_{uuid.uuid4()}"  # unique namespace
     session_id = f"e2e_{uuid.uuid4()}"
+
+    print(
+        "[e2e] Step 2/3: Store fact\n"
+        f"      actor_id={actor_id}\n"
+        f"      session_id={session_id}\n"
+        f"      token={token}"
+    )
 
     # Use a natural-language fact so the semanticMemoryStrategy can reliably
     # extract and retrieve it via semantic search.
@@ -85,6 +96,8 @@ def test_agentcore_memory_store_and_search_roundtrip_real_aws():
     )
     assert ok is True, "store_fact returned False; expected a successful AgentCore write"
 
+    print("[e2e] Step 3/3: Poll search until the newly written fact is retrievable")
+
     # AgentCore indexing/search can be eventually consistent; poll for visibility.
     deadline = time.time() + 180
     last = None
@@ -94,6 +107,7 @@ def test_agentcore_memory_store_and_search_roundtrip_real_aws():
         last = service.search_memory(user_id=actor_id, query="favorite food", memory_type="facts")
         facts = last.get("facts", []) if isinstance(last, dict) else []
         if any(token in str(x) for x in facts):
+            print("[e2e] ✅ Found token via AgentCore search")
             return
         time.sleep(5)
 

@@ -7,6 +7,7 @@ and Telegram bot handlers.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 from fastapi import HTTPException, status
 
@@ -43,7 +44,36 @@ def enforce_whitelist_or_403(
     allowed_users: Iterable[str] | None,
     *,
     detail: str = DEFAULT_FORBIDDEN_DETAIL,
+    request: Any | None = None,
 ) -> None:
     if is_whitelisted(user_id, allowed_users):
         return
+
+    # Record which condition failed so 403 logs can show *why* we rejected.
+    try:
+        allowed = normalize_allowed_users(allowed_users)
+        if request is not None:
+            request.state.authz_failure = {
+                "code": "WHITELIST_DENY",
+                "conditions": [
+                    {
+                        "name": "allowed_users_configured",
+                        "expected": True,
+                        "actual": bool(allowed),
+                    },
+                    {
+                        "name": "user_is_whitelisted",
+                        "expected": True,
+                        "actual": False,
+                        "user_id": user_id,
+                        "normalized_user_id": _normalize_user_id(user_id),
+                        "allowed_count": len(allowed),
+                    },
+                ],
+                "detail": detail,
+            }
+    except Exception:
+        # Never break auth enforcement due to logging/telemetry.
+        pass
+
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)

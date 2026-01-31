@@ -73,6 +73,8 @@ class MemoryService:
         # To avoid that, when config specifies access_key_id/secret_access_key, we
         # also clear any existing session token unless config explicitly provides one.
 
+        has_static_creds = bool(self.config.aws_access_key_id or self.config.aws_secret_access_key)
+
         if self.config.aws_access_key_id:
             os.environ["AWS_ACCESS_KEY_ID"] = self.config.aws_access_key_id
         if self.config.aws_secret_access_key:
@@ -83,8 +85,11 @@ class MemoryService:
             os.environ["AWS_SESSION_TOKEN"] = str(session_token)
             # Some SDKs still look for AWS_SECURITY_TOKEN (legacy name)
             os.environ["AWS_SECURITY_TOKEN"] = str(session_token)
-        else:
+        elif has_static_creds:
             # Clear stale session tokens to prevent mixed-credential failures.
+            # IMPORTANT: Only do this when we are explicitly setting access/secret
+            # keys from config. If the process relies on AWS_PROFILE/SSO/env-based
+            # temporary credentials, we must not clear their session token.
             os.environ.pop("AWS_SESSION_TOKEN", None)
             os.environ.pop("AWS_SECURITY_TOKEN", None)
 

@@ -196,6 +196,12 @@ class AgentService:
             str, SlidingWindowConversationManager
         ] = {}  # cached managers
 
+        # Cached copy of the user's Obsidian STM scratchpad content.
+        # This enables "handoff" behavior when we clear the STM file after
+        # writing a session summary (e.g., on /new or when max messages is hit),
+        # while still injecting the most recent STM into the next system prompt.
+        self._obsidian_stm_cache: dict[str, str] = {}
+
         # External personality/identity loader (Obsidian vault)
         self.personality_service = PersonalityService(
             config.obsidian_vault_root,
@@ -796,6 +802,47 @@ class AgentService:
         # External personality/identity injection (Obsidian vault)
         prompt += self._build_personality_section(user_id)
 
+        # Short-term memory injection (Obsidian STM scratchpad).
+        # This is intentionally independent from AgentCore LTM. We inject STM so the
+        # model has immediate access to the most recent session summary even if
+        # long-term memory retrieval is eventually consistent.
+        vault_root = getattr(self.config, "obsidian_vault_root", None)
+        if vault_root:
+            try:
+                from app.observability.redaction import redact_text
+                from app.tools.short_term_memory_vault import read_raw_text
+
+                stm_text = read_raw_text(
+                    vault_root,
+                    user_id,
+                    max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                )
+
+                # If STM was cleared on session reset, fall back to the cached copy.
+                if not stm_text:
+                    stm_text = self._obsidian_stm_cache.get(user_id)
+                else:
+                    # Cache the latest on-disk STM for future prompts.
+                    self._obsidian_stm_cache[user_id] = stm_text
+
+                if stm_text:
+                    safe_stm = redact_text(
+                        stm_text,
+                        max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                    )
+                    prompt += (
+                        "\n## Short-Term Memory (Obsidian)\n\n"
+                        "The following content comes from the user's Obsidian STM scratchpad. "
+                        "It may include recent session summaries and notes that are not yet reliably "
+                        "available via long-term memory retrieval.\n\n"
+                        "Use it as context for this session. If it conflicts with other info, "
+                        "prefer newer statements and ask clarifying questions.\n\n"
+                        f"{safe_stm.strip()}\n\n"
+                    )
+            except Exception:
+                # Never fail prompt construction due to vault IO.
+                pass
+
         # Memory capabilities section (when memory is enabled)
         if self.config.memory_enabled:
             prompt += (
@@ -1155,8 +1202,9 @@ class AgentService:
             secrets_path=getattr(self.config, "secrets_path", "secrets.yml"),
         )
 
-        # Include tools for memory and file operations
-        tools = [
+        # Built-in Strands tools (not the same thing as instruction-based “skills”).
+        # Skills are loaded separately from the skills directory via load_tools_from_directory.
+        builtin_tools = [
             shell_env_module.shell,
             file_read_env_module.file_read,
             file_write,
@@ -1164,11 +1212,13 @@ class AgentService:
             send_file_module,
         ]
 
-        # Skill secrets tool (env var persistence)
-        tools.append(skill_secrets_module.set_skill_env_vars)
+        # Built-in tools for persisting per-skill settings into secrets.yml
+        # (used during skill onboarding / setup prompts).
+        builtin_tools.append(skill_secrets_module.set_skill_env_vars)
+        builtin_tools.append(skill_secrets_module.set_skill_config)
 
         # Add personality vault tools (read/write soul.md + id.md under me/<TELEGRAM_ID>/)
-        tools.extend(
+        builtin_tools.extend(
             [
                 personality_vault_module.personality_read,
                 personality_vault_module.personality_write,
@@ -1178,8 +1228,8 @@ class AgentService:
 
         # Add search_memory tool if memory service is available
         if self.config.memory_enabled and self.memory_service is not None:
-            tools.append(search_memory_module.search_memory)
-            tools.extend(
+            builtin_tools.append(search_memory_module.search_memory)
+            builtin_tools.extend(
                 [
                     remember_memory_module.remember_fact,
                     remember_memory_module.remember_preference,
@@ -1189,7 +1239,7 @@ class AgentService:
 
         # Add cron tools if cron service is available
         if self.cron_service is not None:
-            tools.extend(
+            builtin_tools.extend(
                 [
                     cron_tools_module.create_cron_task,
                     cron_tools_module.list_cron_tasks,
@@ -1199,7 +1249,7 @@ class AgentService:
 
         # Add pending skill onboarding tools if service is available
         if self.pending_skill_service is not None:
-            tools.extend(
+            builtin_tools.extend(
                 [
                     onboard_pending_skills_module.list_pending_skills,
                     onboard_pending_skills_module.onboard_pending_skills,
@@ -1209,13 +1259,13 @@ class AgentService:
 
         # Add skill download tool if skill service is available
         if self.skill_service is not None:
-            tools.append(download_skill_module.download_skill_to_pending)
+            builtin_tools.append(download_skill_module.download_skill_to_pending)
 
         agent = Agent(
             model=model,
             messages=messages,
             conversation_manager=conversation_manager,
-            tools=tools,
+            tools=builtin_tools,
             load_tools_from_directory=user_skills_dir,
             system_prompt=self._build_system_prompt(user_id, memory_context, attachments),
         )
@@ -1277,33 +1327,42 @@ class AgentService:
         summary_text: str | None = None
         msg_count = self.get_message_count(user_id)
 
-        # Trigger extraction if we have messages and services available
-        # (Requirement 6.2: Skip if memory service unavailable)
-        if self.extraction_service and self.memory_service and msg_count > 0:
-            try:
-                # Ensure we have a session_id even if the user triggers /new
-                # very early.
-                session_id = self._get_session_id(user_id)
+        # Capture the current session_id (for tagging any summary/extraction) before
+        # we clear in-memory session state.
+        session_id = self._get_session_id(user_id)
 
+        # On /new, we want to persist a summary to Obsidian STM before wiping context,
+        # even if long-term memory is unavailable.
+        #
+        # Extraction into long-term memory is best-effort and only runs when the
+        # memory service is available.
+        if self.extraction_service and msg_count > 0:
+            try:
                 # Get conversation history
                 history = self._get_conversation_history(user_id)
 
-                # Wait for extraction with timeout (Requirement 6.4)
-                result = await asyncio.wait_for(
-                    self.extraction_service.extract_and_store(
-                        user_id=user_id,
-                        session_id=session_id,
-                        conversation_history=history,
-                    ),
-                    timeout=self.config.extraction_timeout_seconds,
-                )
-                extraction_success = result.success
-                # Log result but continue regardless (Requirement 6.1)
-                if not result.success:
+                if self.memory_service is not None:
+                    # Wait for extraction with timeout (Requirement 6.4)
+                    result = await asyncio.wait_for(
+                        self.extraction_service.extract_and_store(
+                            user_id=user_id,
+                            session_id=session_id,
+                            conversation_history=history,
+                        ),
+                        timeout=self.config.extraction_timeout_seconds,
+                    )
+                    extraction_success = bool(result and result.success)
+                    # Log result but continue regardless (Requirement 6.1)
+                    if not extraction_success:
+                        logger.warning(
+                            "Extraction failed for user %s: %s, proceeding with session clearing",
+                            user_id,
+                            getattr(result, "error", None),
+                        )
+                else:
                     logger.warning(
-                        "Extraction failed for user %s: %s, proceeding with session clearing",
+                        "Memory service unavailable for user %s, skipping extraction before new session",
                         user_id,
-                        result.error,
                     )
 
                 # Generate + store summary (best-effort). This is explicitly
@@ -1344,19 +1403,34 @@ class AgentService:
                     user_id,
                     e,
                 )
-        elif not self.memory_service and msg_count > 0:
-            # Log that we're skipping due to unavailable memory service
-            logger.warning(
-                "Memory service unavailable for user %s, skipping extraction before new session",
-                user_id,
-            )
+
+        # If we wrote a session summary into Obsidian STM, snapshot it into an
+        # in-memory cache for immediate injection into the next session prompt.
+        # Then clear the on-disk STM to start the new session fresh.
+        vault_root = getattr(self.config, "obsidian_vault_root", None)
+        if vault_root and summary_text:
+            try:
+                from app.tools.short_term_memory_vault import read_raw_text
+
+                stm_text = read_raw_text(
+                    vault_root,
+                    user_id,
+                    max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                )
+                if stm_text:
+                    self._obsidian_stm_cache[user_id] = stm_text
+            except Exception:
+                pass
+
+            try:
+                from app.tools.short_term_memory_vault import clear as clear_stm
+
+                clear_stm(vault_root, user_id)
+            except Exception:
+                pass
 
         # Always clear session and reset count (Requirement 6.2, 6.4)
-        if user_id in self._conversation_history:
-            del self._conversation_history[user_id]
-
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        self._user_sessions[user_id] = f"session_{user_id}_{timestamp}"
+        self._clear_session_memory(user_id)
         self.reset_message_count(user_id)
 
         # Clear working folder on new session (Requirement 10.4)
@@ -2148,61 +2222,101 @@ class AgentService:
         self._extraction_in_progress[user_id] = True
 
         try:
-            # Check if extraction service and memory service are available
-            # (Requirement 6.2: Skip extraction if memory service unavailable)
-            if self.extraction_service and self.memory_service:
-                session_id = self._get_session_id(user_id)
+            session_id = self._get_session_id(user_id)
+            conversation_history = self._get_conversation_history(user_id)
 
-                # Get conversation history from session manager
-                conversation_history = self._get_conversation_history(user_id)
-
-                if conversation_history:
+            # Always generate + store a session summary to Obsidian STM before clearing.
+            # This is independent from AgentCore memory availability.
+            summary_text: str | None = None
+            if self.extraction_service and conversation_history:
+                if hasattr(self.extraction_service, "summarize_and_store"):
                     try:
-                        # Use timeout to prevent blocking (Requirement 6.4)
-                        result = await asyncio.wait_for(
-                            self.extraction_service.extract_and_store(
+                        summary_text = await asyncio.wait_for(
+                            self.extraction_service.summarize_and_store(
                                 user_id=user_id,
                                 session_id=session_id,
                                 conversation_history=conversation_history,
                             ),
                             timeout=self.config.extraction_timeout_seconds,
                         )
-                        # Log result but continue regardless (Requirement 6.1)
-                        if not result.success:
-                            logger.warning(
-                                "Extraction failed for user %s: %s",
-                                user_id,
-                                result.error,
-                            )
-                        else:
-                            logger.info(
-                                "Extraction complete for user %s: prefs=%d, facts=%d, commits=%d",
-                                user_id,
-                                len(result.preferences),
-                                len(result.facts),
-                                len(result.commitments),
-                            )
                     except asyncio.TimeoutError:
-                        # Log warning and proceed (Requirement 6.4)
                         logger.warning(
-                            "Extraction timed out for user %s after %ds, "
-                            "proceeding with session clearing",
+                            "Summary generation timed out for user %s after %ds",
                             user_id,
                             self.config.extraction_timeout_seconds,
                         )
                     except Exception as e:
-                        # Log error and continue (Requirement 6.1)
-                        logger.error(
-                            "Extraction error for user %s: %s, proceeding with session clearing",
+                        logger.warning(
+                            "Summary generation failed for user %s: %s",
                             user_id,
                             e,
                         )
+
+            # Extract into long-term memory when available.
+            if self.extraction_service and self.memory_service and conversation_history:
+                try:
+                    result = await asyncio.wait_for(
+                        self.extraction_service.extract_and_store(
+                            user_id=user_id,
+                            session_id=session_id,
+                            conversation_history=conversation_history,
+                        ),
+                        timeout=self.config.extraction_timeout_seconds,
+                    )
+                    if not result.success:
+                        logger.warning(
+                            "Extraction failed for user %s: %s",
+                            user_id,
+                            result.error,
+                        )
+                    else:
+                        logger.info(
+                            "Extraction complete for user %s: prefs=%d, facts=%d, commits=%d",
+                            user_id,
+                            len(result.preferences),
+                            len(result.facts),
+                            len(result.commitments),
+                        )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Extraction timed out for user %s after %ds, proceeding with session clearing",
+                        user_id,
+                        self.config.extraction_timeout_seconds,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Extraction error for user %s: %s, proceeding with session clearing",
+                        user_id,
+                        e,
+                    )
             elif not self.memory_service:
-                # Log that we're skipping due to unavailable memory service
                 logger.warning(
                     "Memory service unavailable for user %s, skipping extraction",
                     user_id,
                 )
+
+            # Snapshot Obsidian STM into cache for the next session and clear it.
+            vault_root = getattr(self.config, "obsidian_vault_root", None)
+            if vault_root and summary_text:
+                try:
+                    from app.tools.short_term_memory_vault import read_raw_text
+
+                    stm_text = read_raw_text(
+                        vault_root,
+                        user_id,
+                        max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                    )
+                    if stm_text:
+                        self._obsidian_stm_cache[user_id] = stm_text
+                except Exception:
+                    pass
+
+                try:
+                    from app.tools.short_term_memory_vault import clear as clear_stm
+
+                    clear_stm(vault_root, user_id)
+                except Exception:
+                    pass
         finally:
             # Always clear session and reset count (Requirement 6.2, 6.4)
             self._clear_session_memory(user_id)

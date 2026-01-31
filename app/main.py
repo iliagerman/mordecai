@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 import boto3
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
 
 # Bypass tool consent prompts for automated execution
 os.environ["BYPASS_TOOL_CONSENT"] = "true"
@@ -48,6 +49,7 @@ from app.sqs.message_processor import MessageProcessor
 from app.sqs.queue_manager import SQSQueueManager
 from app.telegram.bot import TelegramBotInterface
 from app.logging_filters import install_uvicorn_access_log_filters
+from app.observability.forbidden_access_log import log_forbidden_request
 
 # Configure logging
 logging.basicConfig(
@@ -339,6 +341,46 @@ class Application:
             version="1.0.0",
             lifespan=lifespan,
         )
+
+        # Capture request data early so we can log it on errors (e.g., 403) without
+        # consuming the body for downstream handlers.
+        @self.fastapi_app.middleware("http")
+        async def _capture_request_for_error_logs(request: Request, call_next):
+            max_bytes = 32 * 1024
+            try:
+                content_type = request.headers.get("content-type", "")
+                # Avoid eagerly reading huge multipart payloads.
+                if "multipart/form-data" not in content_type:
+                    body = await request.body()
+                    if len(body) > max_bytes:
+                        request.state._captured_body = body[:max_bytes]
+                        request.state._captured_body_truncated = True
+                    else:
+                        request.state._captured_body = body
+                        request.state._captured_body_truncated = False
+
+                    async def receive():
+                        return {"type": "http.request", "body": body, "more_body": False}
+
+                    # Starlette internal hook to allow downstream body reads.
+                    request._receive = receive  # type: ignore[attr-defined]
+                else:
+                    request.state._captured_body = b"<multipart omitted>"
+                    request.state._captured_body_truncated = False
+            except Exception:
+                # Never break requests due to logging capture.
+                request.state._captured_body = b"<capture failed>"
+                request.state._captured_body_truncated = False
+
+            return await call_next(request)
+
+        # Centralized 403 handler: log full (redacted) request + the validation
+        # condition that failed, then return FastAPI's default response.
+        @self.fastapi_app.exception_handler(HTTPException)
+        async def _http_exception_handler(request: Request, exc: HTTPException):
+            if exc.status_code == 403:
+                await log_forbidden_request(request, exc)
+            return await http_exception_handler(request, exc)
 
         # Add routers
         if self.task_service:
