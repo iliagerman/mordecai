@@ -7,6 +7,8 @@ Tests memory service functionality including:
 """
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -211,6 +213,8 @@ class TestMemoryServiceRetrieveContext:
         config.memory_description = "Test memory"
         config.memory_retrieval_top_k = 10
         config.memory_retrieval_relevance_score = 0.5
+        config.obsidian_vault_root = None
+        config.personality_max_chars = 20_000
         return config
 
     @patch("app.services.memory_service.MemoryClient")
@@ -261,6 +265,38 @@ class TestMemoryServiceRetrieveContext:
 
         assert result["facts"] == ["New", "Old", "NoTs"]
         assert result["preferences"] == ["PrefNew", "PrefOld"]
+
+    @patch("app.services.memory_service.MemoryClient")
+    def test_short_term_memories_are_merged_and_overwrite_long_term_by_key(
+        self, mock_client_class, mock_config
+    ):
+        """Short-term memories should be merged and suppress conflicting long-term entries."""
+        from app.services.memory_service import MemoryService
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mock_config.obsidian_vault_root = tmp
+
+            stm_path = Path(tmp) / "me" / "test-user" / "short_term_memories.md"
+            stm_path.parent.mkdir(parents=True, exist_ok=True)
+            stm_path.write_text(
+                "# Short-term memories\n\n- (fact) timezone: Asia/Jerusalem\n",
+                encoding="utf-8",
+            )
+
+            mock_client = MagicMock()
+            mock_client.retrieve_memories.side_effect = [
+                [{"content": {"text": "timezone: UTC"}}],  # facts
+                [],  # preferences
+            ]
+            mock_client_class.return_value = mock_client
+
+            service = MemoryService(mock_config)
+            service._memory_id = "test-memory-id"
+
+            result = service.retrieve_memory_context(user_id="test-user", query="hello")
+
+            assert result["facts"][0] == "timezone: Asia/Jerusalem"
+            assert "timezone: UTC" not in result["facts"]
 
 
 class TestMemoryServiceStoreTimestamps:

@@ -248,6 +248,16 @@ class Application:
             telegram_bot=self.telegram_bot,
             logging_service=self.logging_service,
         )
+
+        # INTERNAL SYSTEM CRON (non-user-editable): consolidate per-user Obsidian
+        # short-term memories into long-term memory daily at 00:01.
+        # This is registered as a *system task* (in-memory) and is not stored
+        # in the DB, therefore users (and agent tools) cannot modify it.
+        self.cron_scheduler.register_system_task(
+            name="daily-short-term-memory-consolidation",
+            cron_expression="1 0 * * *",
+            callback=self.agent_service.consolidate_short_term_memories_daily,
+        )
         logger.info("Cron service and scheduler initialized")
 
         # Wire cron service to agent service for cron tools

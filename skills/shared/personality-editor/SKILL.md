@@ -7,6 +7,21 @@ description: Edit the agent's personality (soul.md) and identity metadata (id.md
 
 This skill explains how the agent modifies its own personality/identity **when the user asks**.
 
+## Prerequisites / install & verify
+
+- Prerequisite: the backend must be configured with an Obsidian vault root (the agent needs filesystem access to the vault).
+- Verify configuration: ensure `obsidian_vault_root` is set (or `AGENT_OBSIDIAN_VAULT_ROOT` override is provided).
+- Verify expected files:
+   - Defaults exist (or can be created): `me/default/soul.md`, `me/default/id.md`
+   - Per-user files exist (or can be created): `me/<TELEGRAM_ID>/soul.md`, `me/<TELEGRAM_ID>/id.md`
+
+Example (verification flow):
+
+```text
+personality_read(kind="soul", source="auto")
+personality_read(kind="id", source="auto")
+```
+
 ## Storage layout (Obsidian vault; NOT the repo workspace)
 
 Vault root is configured by the backend (`obsidian_vault_root`, env override `AGENT_OBSIDIAN_VAULT_ROOT`).

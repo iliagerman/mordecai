@@ -1550,6 +1550,7 @@ class AgentService:
                     user_id=user_id,
                     preference=text,
                     session_id=session_id,
+                    write_to_short_term=True,
                 )
             else:
                 self.memory_service.store_fact(
@@ -1558,6 +1559,8 @@ class AgentService:
                     session_id=session_id,
                     replace_similar=True,
                     similarity_query=text,
+                    write_to_short_term=True,
+                    short_term_kind=kind,
                 )
         except Exception as e:
             logger.warning(
@@ -1741,6 +1744,128 @@ class AgentService:
             self._clear_session_memory(user_id)
             self.reset_message_count(user_id)
             self._extraction_in_progress[user_id] = False
+
+    async def consolidate_short_term_memories_daily(self) -> None:
+        """Internal daily job: promote Obsidian short-term memories into LTM.
+
+        Source of truth for short-term memory:
+          <vault>/me/<USER_ID>/short_term_memories.md
+
+        This method is intended to be called by a *system* cron task that is
+        registered in code (not DB-backed), so it is not user-editable.
+
+        Behavior:
+        - For each user folder under <vault>/me/* (excluding 'default'):
+          - If short_term_memories.md exists and is non-empty:
+            - Extract important facts/preferences into long-term memory.
+            - Optionally store a concise summary.
+            - Delete short_term_memories.md to start fresh.
+        - If extraction fails for a user, we DO NOT delete the file.
+        """
+
+        vault_root = getattr(self.config, "obsidian_vault_root", None)
+        if not vault_root:
+            logger.debug("Short-term memory consolidation skipped: vault not configured")
+            return
+
+        if self.memory_service is None:
+            logger.debug("Short-term memory consolidation skipped: memory service unavailable")
+            return
+
+        try:
+            from app.tools.short_term_memory_vault import clear, list_user_ids, read_raw_text
+        except Exception as e:
+            logger.debug("Short-term memory consolidation skipped: %s", e)
+            return
+
+        day_stamp = datetime.utcnow().strftime("%Y%m%d")
+        session_id = f"stm_daily_{day_stamp}"
+
+        user_ids = list_user_ids(vault_root)
+        if not user_ids:
+            return
+
+        logger.info(
+            "Running daily short-term memory consolidation for %d user(s)",
+            len(user_ids),
+        )
+
+        for user_id in user_ids:
+            try:
+                raw = read_raw_text(
+                    vault_root,
+                    user_id,
+                    max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                )
+                if not raw:
+                    continue
+
+                # Provide a deterministic, two-message conversation so the
+                # extraction service doesn't skip (<2 messages).
+                conversation_history = [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Please extract and preserve the important facts and preferences from "
+                            "the following short-term memory scratchpad. "
+                            "Short-term memories may correct older long-term memories; "
+                            "prefer the newest statements.\n\n" + raw
+                        ),
+                    },
+                    {"role": "assistant", "content": "Understood."},
+                ]
+
+                promoted_ok = False
+
+                if self.extraction_service is not None:
+                    result = await self.extraction_service.extract_and_store(
+                        user_id=user_id,
+                        session_id=session_id,
+                        conversation_history=conversation_history,
+                    )
+                    promoted_ok = bool(result and result.success)
+
+                    # Best-effort: store a summary too (if available).
+                    if hasattr(self.extraction_service, "summarize_and_store"):
+                        try:
+                            await self.extraction_service.summarize_and_store(
+                                user_id=user_id,
+                                session_id=session_id,
+                                conversation_history=conversation_history,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Short-term summary storage failed for user %s: %s",
+                                user_id,
+                                e,
+                            )
+                else:
+                    # Degraded mode: store a snapshot as a fact.
+                    # NOTE: We do not write this back to short-term.
+                    promoted_ok = self.memory_service.store_fact(
+                        user_id=user_id,
+                        fact=f"Short-term memories snapshot ({session_id}):\n{raw}",
+                        session_id=session_id,
+                        replace_similar=False,
+                    )
+
+                if promoted_ok:
+                    if not clear(vault_root, user_id):
+                        logger.warning(
+                            "Failed to clear short-term memories for user %s",
+                            user_id,
+                        )
+                else:
+                    logger.warning(
+                        "Short-term consolidation failed for user %s; keeping file for retry",
+                        user_id,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Short-term consolidation error for user %s: %s",
+                    user_id,
+                    e,
+                )
 
     def _get_conversation_history(self, user_id: str) -> list[dict]:
         """Get conversation history for a user.

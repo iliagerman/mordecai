@@ -78,6 +78,8 @@ def remember_fact(
             session_id=_current_session_id,
             replace_similar=replace_similar,
             similarity_query=fact,
+            write_to_short_term=True,
+            short_term_kind="fact",
         )
         if success:
             return "Saved."
@@ -114,6 +116,8 @@ def remember_preference(preference: str) -> str:
                 session_id=_current_session_id,
                 replace_similar=True,
                 similarity_query=preference,
+                write_to_short_term=True,
+                short_term_kind="preference",
             )
             return "Saved." if success else "Failed to save to long-term memory."
         except Exception as e:
@@ -124,6 +128,7 @@ def remember_preference(preference: str) -> str:
             user_id=_current_user_id,
             preference=preference,
             session_id=_current_session_id,
+            write_to_short_term=True,
         )
         return "Saved." if success else "Failed to save to long-term memory."
     except Exception as e:
