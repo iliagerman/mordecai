@@ -1,8 +1,13 @@
-"""Configuration with JSON file, secrets.yml, and env variable support."""
+"""Configuration with JSON file, secrets.yml, and env variable support.
+
+This module also provides helpers for skill onboarding to persist and hot-reload
+skill-specific environment variables from secrets.yml.
+"""
 
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import Field
@@ -149,9 +154,21 @@ def _flatten_secrets_mapping(secrets: dict) -> dict:
         bedrock.api_key -> bedrock_api_key
 
     Special handling for 'skills' section:
-        - If a skill config has a 'path' key, create the config file at that path
-        - Simple key-value pairs are exported as environment variables
-        - Nested configs with 'path' create files and export remaining as env vars
+        - Supports both legacy and structured schemas.
+
+        Recommended schema:
+            skills:
+              <skill_name>:
+                env:
+                  SOME_KEY: some_value
+                # optional per-user overrides
+                users:
+                  <user_id>:
+                    env:
+                      SOME_KEY: other_value
+
+        NOTE: Per-user overrides are not applied here because config loading is
+        global; apply them at runtime via refresh_runtime_env_from_secrets(...).
     """
     flat = {}
     for section, values in secrets.items():
@@ -160,6 +177,14 @@ def _flatten_secrets_mapping(secrets: dict) -> dict:
                 # Process skill secrets
                 for key, value in values.items():
                     if isinstance(value, dict):
+                        # Structured schema: export env vars (global only)
+                        env_block = value.get("env")
+                        if isinstance(env_block, dict):
+                            for k, v in env_block.items():
+                                if v is None:
+                                    continue
+                                os.environ[str(k)] = str(v)
+
                         # Nested skill config - check for 'path' key
                         if "path" in value:
                             # Create config file at the specified path
@@ -172,6 +197,8 @@ def _flatten_secrets_mapping(secrets: dict) -> dict:
                         else:
                             # No path, export as env vars
                             for k, v in value.items():
+                                if k in {"env", "users"}:
+                                    continue
                                 if not isinstance(v, dict):
                                     env_key = f"{key.upper()}_{k.upper()}"
                                     os.environ[env_key] = str(v)
@@ -200,6 +227,169 @@ def _load_secrets(secrets_path: Path) -> dict:
         return {}
 
     return _flatten_secrets_mapping(secrets)
+
+
+def load_raw_secrets(secrets_path: Path) -> dict[str, Any]:
+    """Load raw secrets.yml as a mapping.
+
+    Returns an empty dict if the file does not exist or is invalid.
+    """
+    if not secrets_path.exists():
+        return {}
+    try:
+        with secrets_path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_raw_secrets(secrets_path: Path, secrets: dict[str, Any]) -> None:
+    """Persist secrets mapping to secrets.yml."""
+    secrets_path.parent.mkdir(parents=True, exist_ok=True)
+    with secrets_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            secrets,
+            f,
+            sort_keys=False,
+            default_flow_style=False,
+            allow_unicode=True,
+        )
+
+
+def upsert_skill_env_vars(
+    *,
+    secrets_path: Path,
+    skill_name: str,
+    env_vars: dict[str, str],
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """Upsert skill env vars into secrets.yml.
+
+    Writes to:
+      skills.<skill_name>.env                 (if user_id is None)
+      skills.<skill_name>.users.<user_id>.env (if user_id is provided)
+    """
+    secrets = load_raw_secrets(secrets_path)
+
+    skills = secrets.setdefault("skills", {})
+    if not isinstance(skills, dict):
+        secrets["skills"] = {}
+        skills = secrets["skills"]
+
+    skill_block = skills.setdefault(skill_name, {})
+    if not isinstance(skill_block, dict):
+        skills[skill_name] = {}
+        skill_block = skills[skill_name]
+
+    target_block: dict[str, Any]
+    if user_id is None:
+        target_block = skill_block
+    else:
+        users_block = skill_block.setdefault("users", {})
+        if not isinstance(users_block, dict):
+            skill_block["users"] = {}
+            users_block = skill_block["users"]
+
+        user_block = users_block.setdefault(str(user_id), {})
+        if not isinstance(user_block, dict):
+            users_block[str(user_id)] = {}
+            user_block = users_block[str(user_id)]
+        target_block = user_block
+
+    env_block = target_block.setdefault("env", {})
+    if not isinstance(env_block, dict):
+        target_block["env"] = {}
+        env_block = target_block["env"]
+
+    for k, v in env_vars.items():
+        if v is None:
+            continue
+        env_block[str(k)] = str(v)
+
+    save_raw_secrets(secrets_path, secrets)
+    return secrets
+
+
+def get_skill_env_vars(
+    *,
+    secrets: dict[str, Any],
+    skill_name: str,
+    user_id: str | None = None,
+) -> dict[str, str]:
+    """Return merged (global + per-user override) env vars for a skill."""
+    skills = secrets.get("skills")
+    if not isinstance(skills, dict):
+        return {}
+
+    skill_block = skills.get(skill_name)
+    if not isinstance(skill_block, dict):
+        return {}
+
+    merged: dict[str, str] = {}
+
+    base_env = skill_block.get("env")
+    if isinstance(base_env, dict):
+        for k, v in base_env.items():
+            if v is None:
+                continue
+            merged[str(k)] = str(v)
+
+    if user_id is not None:
+        users = skill_block.get("users")
+        if isinstance(users, dict):
+            user_block = users.get(str(user_id))
+            if isinstance(user_block, dict):
+                user_env = user_block.get("env")
+                if isinstance(user_env, dict):
+                    for k, v in user_env.items():
+                        if v is None:
+                            continue
+                        merged[str(k)] = str(v)
+
+    return merged
+
+
+def refresh_runtime_env_from_secrets(
+    *,
+    secrets_path: Path,
+    user_id: str | None = None,
+    skill_names: list[str] | None = None,
+) -> dict[str, Any]:
+    """Reload secrets.yml and ensure the process env sees latest skill env vars.
+
+    This supports "no restart" skill execution.
+    """
+    secrets = load_raw_secrets(secrets_path)
+    skills = secrets.get("skills")
+    if not isinstance(skills, dict):
+        # Still attempt legacy env export for non-skill sections.
+        try:
+            _flatten_secrets_mapping(secrets)
+        except Exception:
+            pass
+        return {"ok": True, "applied": 0, "skills": []}
+
+    names = list(skills.keys()) if skill_names is None else skill_names
+    applied = 0
+    applied_skills: list[str] = []
+
+    for name in names:
+        env_vars = get_skill_env_vars(secrets=secrets, skill_name=name, user_id=user_id)
+        if not env_vars:
+            continue
+        for k, v in env_vars.items():
+            os.environ[k] = v
+            applied += 1
+        applied_skills.append(name)
+
+    # Also export legacy env vars / non-skill sections for compatibility.
+    try:
+        _flatten_secrets_mapping(secrets)
+    except Exception:
+        pass
+
+    return {"ok": True, "applied": applied, "skills": applied_skills}
 
 
 class AgentConfig(BaseSettings):
@@ -253,6 +443,9 @@ class AgentConfig(BaseSettings):
 
     # Session settings
     session_storage_dir: str = Field(default="./sessions")
+
+    # Secrets file location (used for skill env persistence + hot-reload)
+    secrets_path: str = Field(default="secrets.yml")
 
     # Memory settings (AgentCore)
     memory_enabled: bool = Field(default=True)

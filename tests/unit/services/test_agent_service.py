@@ -233,15 +233,15 @@ class TestAgentServiceSession:
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
     def test_get_or_create_agent_returns_existing_agent(self, mock_model, mock_agent, config):
-        """Test get_or_create_agent creates a new agent each time (stateless)."""
+        """Test get_or_create_agent returns cached agent for the same user."""
         service = AgentService(config)
         user_id = "test-user-1"
 
         service.get_or_create_agent(user_id)
         service.get_or_create_agent(user_id)
 
-        # Current implementation creates agent each time (stateless)
-        assert mock_agent.call_count == 2
+        # Agent is cached per user within a session
+        assert mock_agent.call_count == 1
 
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")

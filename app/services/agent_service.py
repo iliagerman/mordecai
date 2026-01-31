@@ -34,9 +34,9 @@ from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.models import BedrockModel
 from strands.models.gemini import GeminiModel
 from strands.models.openai import OpenAIModel
-from strands_tools import file_read, file_write, shell
+from strands_tools import file_read, file_write
 
-from app.config import AgentConfig
+from app.config import AgentConfig, refresh_runtime_env_from_secrets
 from app.enums import ModelProvider
 from app.services.personality_service import PersonalityService
 from app.tools import cron_tools as cron_tools_module
@@ -47,6 +47,8 @@ from app.tools import search_memory as search_memory_module
 from app.tools import send_file as send_file_module
 from app.tools import set_agent_name as set_agent_name_tool
 from app.tools import personality_vault as personality_vault_module
+from app.tools import shell_env as shell_env_module
+from app.tools import skill_secrets as skill_secrets_module
 
 if TYPE_CHECKING:
     from strands.models.model import Model
@@ -71,7 +73,11 @@ _RESERVED_SKILL_DIR_NAMES = {
 
 
 def _parse_skill_frontmatter(content: str) -> dict:
-    """Parse YAML frontmatter from SKILL.md content."""
+    """Parse YAML frontmatter from SKILL.md content.
+
+    This intentionally supports nested YAML (e.g., requires.env) so skills can
+    declare required environment variables.
+    """
     if not content.startswith("---"):
         return {}
 
@@ -79,17 +85,54 @@ def _parse_skill_frontmatter(content: str) -> dict:
     if len(parts) < 3:
         return {}
 
-    frontmatter = {}
-    for line in parts[1].strip().split("\n"):
-        if ":" in line:
-            key, value = line.split(":", 1)
-            key = key.strip()
-            value = value.strip()
-            if value.startswith("-") or not value:
-                continue
-            frontmatter[key] = value
+    try:
+        import yaml
 
-    return frontmatter
+        data = yaml.safe_load(parts[1]) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _extract_required_env(frontmatter: dict) -> list[dict]:
+    """Extract requires.env entries (string or dict) from frontmatter."""
+    requires = frontmatter.get("requires")
+    if not isinstance(requires, dict):
+        return []
+
+    env_list = requires.get("env")
+    if not isinstance(env_list, list):
+        return []
+
+    out: list[dict] = []
+    for item in env_list:
+        if isinstance(item, str):
+            name = item.strip()
+            if name:
+                out.append({"name": name})
+        elif isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            rec = {"name": name}
+            prompt = item.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                rec["prompt"] = prompt.strip()
+            example = item.get("example")
+            if isinstance(example, str) and example.strip():
+                rec["example"] = example.strip()
+            out.append(rec)
+
+    # de-dup preserving order
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for r in out:
+        n = r.get("name")
+        if not n or n in seen:
+            continue
+        seen.add(n)
+        deduped.append(r)
+    return deduped
 
 
 class AgentService:
@@ -158,7 +201,6 @@ class AgentService:
           - me/<TELEGRAM_ID>/soul.md, me/<TELEGRAM_ID>/id.md
           - fallback: me/default/soul.md, me/default/id.md
         """
-
         if not getattr(self.config, "personality_enabled", True):
             return ""
         if not self.personality_service.is_enabled():
@@ -190,6 +232,58 @@ class AgentService:
 
         lines.append("")
         return "\n".join(lines)
+
+    def _get_missing_skill_env_vars(self, user_id: str) -> dict[str, list[dict]]:
+        """Return missing required env vars for installed skills.
+
+        Uses the structured schema declared in SKILL.md frontmatter:
+          requires.env
+
+        Missing values are checked against the current process env after
+        hot-reloading from secrets.yml for this user.
+        """
+        try:
+            refresh_runtime_env_from_secrets(
+                secrets_path=Path(getattr(self.config, "secrets_path", "secrets.yml")),
+                user_id=user_id,
+            )
+        except Exception:
+            pass
+
+        missing_by_skill: dict[str, list[dict]] = {}
+        for info in self._discover_skills(user_id):
+            skill_name = info.get("name") or ""
+            skill_path = info.get("path") or ""
+            if not skill_name or not skill_path:
+                continue
+
+            skill_md = Path(skill_path) / "SKILL.md"
+            if not skill_md.exists():
+                continue
+
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            frontmatter = _parse_skill_frontmatter(content)
+            reqs = _extract_required_env(frontmatter)
+            if not reqs:
+                continue
+
+            missing: list[dict] = []
+            for r in reqs:
+                n = r.get("name")
+                if not n:
+                    continue
+                val = os.environ.get(n)
+                if val is None or str(val).strip() == "":
+                    missing.append(r)
+
+            if missing:
+                missing_by_skill[skill_name] = missing
+
+        return missing_by_skill
 
     def _get_user_skills_dir(self, user_id: str) -> Path:
         """Get the skills directory for a specific user.
@@ -701,7 +795,7 @@ class AgentService:
                 "You have two types of memory:\n\n"
                 "1. **Session Memory**: Conversation history within this "
                 "session (automatically managed).\n\n"
-                "2. **Long-Term Memory**: Facts and preferences about the "
+                "2. **Long-Term Memory (persistent memory)**: Facts and preferences about the "
                 "user that persist across sessions.\n\n"
                 "**Tools:**\n"
                 "- `set_agent_name`: Store your name when the user gives "
@@ -769,6 +863,30 @@ class AgentService:
                 prompt += (
                     f'  → file_read(path="{path}/SKILL.md", mode="view") → shell(command="...")\n'
                 )
+
+            # Skill env setup (required vars)
+            missing = self._get_missing_skill_env_vars(user_id)
+            if missing:
+                prompt += "\n## Skill Setup Required\n\n"
+                prompt += (
+                    "Some installed skills declare required environment variables that are not set yet.\n"
+                    "Ask the user for the missing values and then persist them using `set_skill_env_vars`.\n\n"
+                    "Example tool call:\n"
+                    '- set_skill_env_vars(skill_name="himalaya", env_json=\'{"HIMALAYA_EMAIL":"user@gmail.com"}\', apply_to="user")\n\n'
+                    "Missing values (do NOT guess these):\n"
+                )
+                for skill_name, reqs in missing.items():
+                    prompt += f"- **{skill_name}**\n"
+                    for r in reqs:
+                        n = r.get("name")
+                        if not n:
+                            continue
+                        line = f"  - {n}"
+                        if r.get("prompt"):
+                            line += f" — {r['prompt']}"
+                        if r.get("example"):
+                            line += f" (example: {r['example']})"
+                        prompt += line + "\n"
 
         # Working folder section (Requirement 10.3)
         working_dir = self._get_user_working_dir(user_id)
@@ -956,8 +1074,24 @@ class AgentService:
         conversation_manager = self._get_or_create_conversation_manager(user_id)
 
         # Set up the set_agent_name tool with memory service context
-        if self.memory_service is not None:
+        if self.config.memory_enabled and self.memory_service is not None:
             session_id = self._get_session_id(user_id)
+
+            # Best-effort: create an AgentCore session manager so downstream
+            # tools and integrations have an initialized memory session.
+            # If AgentCore is unavailable/misconfigured, degrade gracefully.
+            try:
+                self.memory_service.create_session_manager(
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Memory session manager unavailable for user %s (degrading gracefully): %s",
+                    user_id,
+                    e,
+                )
+
             set_agent_name_tool.set_memory_service(
                 self.memory_service,
                 user_id,
@@ -1001,14 +1135,29 @@ class AgentService:
             max_chars=getattr(self.config, "personality_max_chars", 20_000),
         )
 
+        # Shell wrapper context: refresh env from secrets.yml before every shell command
+        shell_env_module.set_shell_env_context(
+            user_id=user_id,
+            secrets_path=getattr(self.config, "secrets_path", "secrets.yml"),
+        )
+
+        # Skill secrets tool context: persist env vars into secrets.yml
+        skill_secrets_module.set_skill_secrets_context(
+            user_id=user_id,
+            secrets_path=getattr(self.config, "secrets_path", "secrets.yml"),
+        )
+
         # Include tools for memory and file operations
         tools = [
-            shell,
+            shell_env_module.shell,
             file_read,
             file_write,
             set_agent_name_tool,
             send_file_module,
         ]
+
+        # Skill secrets tool (env var persistence)
+        tools.append(skill_secrets_module.set_skill_env_vars)
 
         # Add personality vault tools (read/write soul.md + id.md under me/<TELEGRAM_ID>/)
         tools.extend(
@@ -1020,7 +1169,7 @@ class AgentService:
         )
 
         # Add search_memory tool if memory service is available
-        if self.memory_service is not None:
+        if self.config.memory_enabled and self.memory_service is not None:
             tools.append(search_memory_module.search_memory)
             tools.extend(
                 [
@@ -1086,6 +1235,8 @@ class AgentService:
 
     def get_or_create_agent(self, user_id: str) -> Agent:
         """Create an agent for user."""
+        if user_id in self._user_agents:
+            return self._user_agents[user_id]
         return self._create_agent(user_id)
 
     async def new_session(self, user_id: str) -> tuple[Agent, str]:
