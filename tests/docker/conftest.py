@@ -45,17 +45,37 @@ def built_image(project_root: Path) -> Generator[str, None, None]:
     """
     image_tag = "mordecai:test"
 
-    # Build the Docker image
-    result = subprocess.run(
-        ["docker", "build", "-t", image_tag, "."],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-        timeout=600,  # 10 minute timeout for build
-    )
+    # Build the Docker image.
+    # By default we capture output (cleaner test logs). If you want to see
+    # progress live (helpful when docker builds take a while), set:
+    #   PYTEST_DOCKER_BUILD_STREAM=1
+    stream_build = os.environ.get("PYTEST_DOCKER_BUILD_STREAM", "").strip() in {
+        "1",
+        "true",
+        "yes",
+    }
 
-    if result.returncode != 0:
-        pytest.fail(f"Docker build failed:\n{result.stderr}")
+    build_cmd = ["docker", "build", "--progress=plain", "-t", image_tag, "."]
+
+    if stream_build:
+        print(f"[docker] building image {image_tag} in {project_root} ...")
+        result = subprocess.run(
+            build_cmd,
+            cwd=project_root,
+            timeout=600,  # 10 minute timeout for build
+        )
+        if result.returncode != 0:
+            pytest.fail("Docker build failed (see build output above).")
+    else:
+        result = subprocess.run(
+            build_cmd,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 minute timeout for build
+        )
+        if result.returncode != 0:
+            pytest.fail(f"Docker build failed:\n{result.stderr}")
 
     yield image_tag
 

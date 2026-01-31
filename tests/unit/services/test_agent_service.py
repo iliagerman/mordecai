@@ -1514,6 +1514,75 @@ class TestAgentServiceNewSessionClearsWorkingFolder:
         # Working folder should be cleared
         assert not test_file.exists()
 
+
+class TestAgentServicePersonalityInjection:
+    """Tests for Obsidian personality injection in system prompt.
+
+    Personality files are loaded from an external Obsidian vault root.
+
+    Layout:
+      - me/default/{soul,id}.md
+      - me/<TELEGRAM_ID>/{soul,id}.md
+
+    Resolution order: per-user file if present, else default.
+    """
+
+    @pytest.fixture
+    def vault_dir(self, tmp_path):
+        # Use pytest's tmp_path so we don't depend on other class-scoped fixtures.
+        return str(tmp_path / "vault")
+
+    @pytest.fixture
+    def config(self, tmp_path, vault_dir):
+        base = str(tmp_path / "agent")
+        return AgentConfig(
+            model_provider=ModelProvider.BEDROCK,
+            bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+            telegram_bot_token="test-token",
+            session_storage_dir=base,
+            skills_base_dir=base,
+            working_folder_base_dir=base,
+            obsidian_vault_root=vault_dir,
+            personality_enabled=True,
+            personality_max_chars=20_000,
+        )
+
+    def _write(self, vault_dir: str, relpath: str, content: str) -> None:
+        path = Path(vault_dir) / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def test_falls_back_to_default_when_user_missing(self, config, vault_dir):
+        service = AgentService(config)
+        user_id = "12345"
+
+        self._write(vault_dir, "me/default/soul.md", "DEFAULT_SOUL")
+        self._write(vault_dir, "me/default/id.md", "DEFAULT_ID")
+
+        prompt = service._build_system_prompt(user_id)
+
+        assert "## Personality (Obsidian Vault)" in prompt
+        assert "DEFAULT_SOUL" in prompt
+        assert "DEFAULT_ID" in prompt
+        assert "source: default" in prompt
+
+    def test_user_files_override_default(self, config, vault_dir):
+        service = AgentService(config)
+        user_id = "999"
+
+        self._write(vault_dir, "me/default/soul.md", "DEFAULT_SOUL")
+        self._write(vault_dir, "me/default/id.md", "DEFAULT_ID")
+        self._write(vault_dir, f"me/{user_id}/soul.md", "USER_SOUL")
+        self._write(vault_dir, f"me/{user_id}/id.md", "USER_ID")
+
+        prompt = service._build_system_prompt(user_id)
+
+        assert "USER_SOUL" in prompt
+        assert "USER_ID" in prompt
+        assert "DEFAULT_SOUL" not in prompt
+        assert "DEFAULT_ID" not in prompt
+        assert "source: user" in prompt
+
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
     @pytest.mark.asyncio

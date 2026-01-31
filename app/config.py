@@ -370,6 +370,25 @@ class AgentConfig(BaseSettings):
     temp_files_base_dir: str = Field(default="./temp_files")
     working_folder_base_dir: str = Field(default="./workspaces")
 
+    # Obsidian vault (external to repo) + personality files
+    obsidian_vault_root: str | None = Field(
+        default=None,
+        description=(
+            "Filesystem path to the Obsidian vault root (outside the repo). "
+            "Used for loading per-user personality/identity files under me/<TELEGRAM_ID>/."
+        ),
+    )
+
+    # Personality injection settings
+    personality_enabled: bool = Field(
+        default=True,
+        description="If true and obsidian_vault_root is configured, load soul/id into the system prompt.",
+    )
+    personality_max_chars: int = Field(
+        default=20_000,
+        description="Maximum characters to read from each personality markdown file (soul/id).",
+    )
+
     # Agent commands (loaded from config, shown in system prompt)
     agent_commands: list[dict] = Field(
         default_factory=lambda: [

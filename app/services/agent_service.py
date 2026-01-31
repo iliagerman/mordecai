@@ -38,6 +38,7 @@ from strands_tools import file_read, file_write, shell
 
 from app.config import AgentConfig
 from app.enums import ModelProvider
+from app.services.personality_service import PersonalityService
 from app.tools import cron_tools as cron_tools_module
 from app.tools import onboard_pending_skills as onboard_pending_skills_module
 from app.tools import download_skill as download_skill_module
@@ -45,6 +46,7 @@ from app.tools import remember_memory as remember_memory_module
 from app.tools import search_memory as search_memory_module
 from app.tools import send_file as send_file_module
 from app.tools import set_agent_name as set_agent_name_tool
+from app.tools import personality_vault as personality_vault_module
 
 if TYPE_CHECKING:
     from strands.models.model import Model
@@ -142,6 +144,52 @@ class AgentService:
         self._user_conversation_managers: dict[
             str, SlidingWindowConversationManager
         ] = {}  # cached managers
+
+        # External personality/identity loader (Obsidian vault)
+        self.personality_service = PersonalityService(
+            config.obsidian_vault_root,
+            max_chars=getattr(config, "personality_max_chars", 20_000),
+        )
+
+    def _build_personality_section(self, user_id: str) -> str:
+        """Build system-prompt sections for personality (soul) + identity (id).
+
+        Files are loaded from the configured Obsidian vault root:
+          - me/<TELEGRAM_ID>/soul.md, me/<TELEGRAM_ID>/id.md
+          - fallback: me/default/soul.md, me/default/id.md
+        """
+
+        if not getattr(self.config, "personality_enabled", True):
+            return ""
+        if not self.personality_service.is_enabled():
+            return ""
+
+        docs = self.personality_service.load(user_id)
+        if not docs:
+            return ""
+
+        lines: list[str] = []
+        lines.append("## Personality (Obsidian Vault)\n")
+        lines.append(
+            "The following files are loaded from the configured Obsidian vault and must be followed as system-level instructions.\n"
+        )
+
+        if "soul" in docs:
+            soul = docs["soul"]
+            lines.append(f"### soul.md (source: {soul.source})\n")
+            lines.append(f"Path: `{soul.path}`\n")
+            lines.append(soul.content)
+            lines.append("")
+
+        if "id" in docs:
+            ident = docs["id"]
+            lines.append(f"### id.md (source: {ident.source})\n")
+            lines.append(f"Path: `{ident.path}`\n")
+            lines.append(ident.content)
+            lines.append("")
+
+        lines.append("")
+        return "\n".join(lines)
 
     def _get_user_skills_dir(self, user_id: str) -> Path:
         """Get the skills directory for a specific user.
@@ -643,6 +691,9 @@ class AgentService:
             f"## Identity\n\n{identity}\n"
         )
 
+        # External personality/identity injection (Obsidian vault)
+        prompt += self._build_personality_section(user_id)
+
         # Memory capabilities section (when memory is enabled)
         if self.config.memory_enabled:
             prompt += (
@@ -943,6 +994,13 @@ class AgentService:
                 user_id,
             )
 
+        # Set up personality vault tools context (Obsidian vault)
+        personality_vault_module.set_personality_context(
+            getattr(self.config, "obsidian_vault_root", None),
+            user_id,
+            max_chars=getattr(self.config, "personality_max_chars", 20_000),
+        )
+
         # Include tools for memory and file operations
         tools = [
             shell,
@@ -951,6 +1009,15 @@ class AgentService:
             set_agent_name_tool,
             send_file_module,
         ]
+
+        # Add personality vault tools (read/write soul.md + id.md under me/<TELEGRAM_ID>/)
+        tools.extend(
+            [
+                personality_vault_module.personality_read,
+                personality_vault_module.personality_write,
+                personality_vault_module.personality_reset_to_default,
+            ]
+        )
 
         # Add search_memory tool if memory service is available
         if self.memory_service is not None:
