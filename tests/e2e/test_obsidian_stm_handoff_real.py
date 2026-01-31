@@ -52,8 +52,14 @@ async def test_obsidian_stm_handoff_on_new_session(tmp_path):
         }
     )
 
-    # Validate credentials early (avoid noisy AgentCore errors).
-    skip_if_aws_auth_invalid(region_name=cfg.aws_region)
+    # Validate credentials early (avoid noisy AgentCore errors). Prefer configured
+    # creds when available, to avoid stale env-session-token issues.
+    skip_if_aws_auth_invalid(
+        region_name=cfg.aws_region,
+        aws_access_key_id=cfg.aws_access_key_id,
+        aws_secret_access_key=cfg.aws_secret_access_key,
+        aws_session_token=getattr(cfg, "aws_session_token", None),
+    )
 
     memory_service = MemoryService(cfg)
     extraction_service = MemoryExtractionService(cfg, memory_service=memory_service)

@@ -75,7 +75,7 @@ async def log_forbidden_request(request: Request, exc: HTTPException) -> None:
             "status_code": 403,
             "method": request.method,
             "path": request.url.path,
-            "query": request.url.query,
+            "query": sanitize(request.url.query),
             "client_ip": _client_ip(request),
             "headers": sanitize(dict(request.headers)),
             "body": _captured_body_for_log(request),
