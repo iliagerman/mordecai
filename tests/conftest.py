@@ -2,6 +2,8 @@
 
 import logging
 import os
+import uuid
+from unittest import mock
 
 import pytest
 import pytest_asyncio
@@ -38,3 +40,27 @@ def pytest_configure(config: pytest.Config) -> None:
 def anyio_backend():
     """Use asyncio as the async backend."""
     return "asyncio"
+
+
+@pytest.fixture
+def unique_user_id() -> str:
+    """Unique user id for integration tests.
+
+    Some integration tests reference a `unique_user_id` fixture but only
+    define `test_user_id` locally. Provide a consistent unique ID here.
+    """
+
+    return f"integration_test_{uuid.uuid4().hex[:12]}"
+
+
+@pytest.fixture
+def mocker():
+    """Minimal stand-in for pytest-mock's `mocker` fixture.
+
+    Only the small surface used in this repo's tests is provided.
+    """
+
+    class _Mocker:
+        Mock = mock.Mock
+
+    return _Mocker()

@@ -144,15 +144,18 @@ class TelegramBotInterface:
 
         logger.debug("Telegram handlers registered")
 
-    def _extract_telegram_identity(self, update: Update) -> tuple[str, str | None, str]:
-        """Extract stable user identifiers from a Telegram update.
+    def _extract_telegram_identity(
+        self, update: Update
+    ) -> tuple[str | None, str | None, str | None, str]:
+        """Extract user identity from a Telegram update.
 
         Returns:
-            (telegram_user_id, telegram_username, display_name)
+            (user_id, telegram_user_id, telegram_username, display_name)
 
         Notes:
-            - Prefer numeric Telegram user ID for stability (usernames can change).
-            - Username is retained for display / whitelist compatibility.
+            - In this system, the *primary* user identifier (user_id) is the Telegram username.
+              We do not use numeric IDs as user identifiers.
+            - telegram_user_id is retained for whitelist checks and diagnostics.
         """
 
         user = getattr(update, "effective_user", None)
@@ -178,9 +181,49 @@ class TelegramBotInterface:
         except Exception:
             display_name = None
 
-        # Fallbacks for mocked updates in tests and defensive behavior.
-        stable_id = telegram_user_id or (telegram_username or "unknown")
-        return stable_id, telegram_username, (display_name or telegram_username or stable_id)
+        # Primary system identifier: username only.
+        user_id = telegram_username
+
+        # Defensive display name for logs.
+        fallback = telegram_username or telegram_user_id or "unknown"
+        return user_id, telegram_user_id, telegram_username, (display_name or fallback)
+
+    async def _reject_if_missing_username(self, chat_id: int) -> bool:
+        """Return True if request should be rejected due to missing Telegram username."""
+        await self.send_response(
+            chat_id,
+            (
+                "❌ Your Telegram account must have a username to use this bot.\n\n"
+                "Please set a username in Telegram Settings → Username, then try again."
+            ),
+        )
+        return True
+
+    def _migrate_legacy_skill_folder(self, telegram_user_id: str | None, user_id: str) -> None:
+        """One-way migration: move skills/<numeric_id>/ -> skills/<username>/.
+
+        No backward-compat behavior is kept after migration.
+        """
+        if not telegram_user_id:
+            return
+        try:
+            migrated = self.skill_service.migrate_user_skills_dir(
+                legacy_user_id=telegram_user_id,
+                user_id=user_id,
+            )
+            if migrated:
+                logger.info(
+                    "Migrated legacy skills folder from %s to %s",
+                    telegram_user_id,
+                    user_id,
+                )
+        except Exception:
+            # Never block user interactions due to migration issues.
+            logger.exception(
+                "Failed to migrate legacy skills folder from %s to %s",
+                telegram_user_id,
+                user_id,
+            )
 
     async def _reject_if_not_whitelisted(
         self,
@@ -205,7 +248,9 @@ class TelegramBotInterface:
         )
         try:
             await self.logging_service.log_action(
-                user_id=telegram_user_id,
+                # Primary identifier in this system is the Telegram username.
+                # We avoid storing numeric identifiers as user_id.
+                user_id=telegram_username or "unknown",
                 action="Rejected Telegram message: user not whitelisted",
                 severity=LogSeverity.WARNING,
                 details={
@@ -233,9 +278,15 @@ class TelegramBotInterface:
             update: Telegram update object.
             context: Callback context.
         """
-        user_id, username, _ = self._extract_telegram_identity(update)
-        if await self._reject_if_not_whitelisted(user_id, username, update.effective_chat.id):
+        user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
+        if await self._reject_if_not_whitelisted(
+            telegram_user_id or "unknown", username, update.effective_chat.id
+        ):
             return
+        if not user_id:
+            await self._reject_if_missing_username(update.effective_chat.id)
+            return
+
         logger.info("User %s started the bot", user_id)
 
         welcome_message = (
@@ -253,11 +304,14 @@ class TelegramBotInterface:
         await self.send_response(update.effective_chat.id, welcome_message)
 
         # Log the start action
-        await self.logging_service.log_action(
-            user_id=user_id,
-            action="Started bot interaction",
-            severity=LogSeverity.INFO,
-        )
+        try:
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action="Started bot interaction",
+                severity=LogSeverity.INFO,
+            )
+        except Exception:
+            logger.exception("Failed to persist start interaction log")
 
     async def _handle_help_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -273,8 +327,13 @@ class TelegramBotInterface:
         Requirements:
             - 11.5: Support basic commands (help)
         """
-        user_id, username, _ = self._extract_telegram_identity(update)
-        if await self._reject_if_not_whitelisted(user_id, username, update.effective_chat.id):
+        user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
+        if await self._reject_if_not_whitelisted(
+            telegram_user_id or "unknown", username, update.effective_chat.id
+        ):
+            return
+        if not user_id:
+            await self._reject_if_missing_username(update.effective_chat.id)
             return
 
         help_text = self.command_parser.get_help_text()
@@ -293,8 +352,13 @@ class TelegramBotInterface:
             - 11.5: Support basic commands (new)
             - 11.6: Parse and execute appropriate actions
         """
-        user_id, username, _ = self._extract_telegram_identity(update)
-        if await self._reject_if_not_whitelisted(user_id, username, update.effective_chat.id):
+        user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
+        if await self._reject_if_not_whitelisted(
+            telegram_user_id or "unknown", username, update.effective_chat.id
+        ):
+            return
+        if not user_id:
+            await self._reject_if_missing_username(update.effective_chat.id)
             return
         await self._execute_new_command(user_id, update.effective_chat.id)
 
@@ -313,8 +377,13 @@ class TelegramBotInterface:
             - 11.5: Support basic commands (logs)
             - 11.6: Parse and execute appropriate actions
         """
-        user_id, username, _ = self._extract_telegram_identity(update)
-        if await self._reject_if_not_whitelisted(user_id, username, update.effective_chat.id):
+        user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
+        if await self._reject_if_not_whitelisted(
+            telegram_user_id or "unknown", username, update.effective_chat.id
+        ):
+            return
+        if not user_id:
+            await self._reject_if_missing_username(update.effective_chat.id)
             return
         await self._execute_logs_command(user_id, update.effective_chat.id)
 
@@ -322,11 +391,17 @@ class TelegramBotInterface:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Handle /skills command - list all installed skills."""
-        user_id, username, _ = self._extract_telegram_identity(update)
+        user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
 
-        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
+        if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
+
+        if not user_id:
+            await self._reject_if_missing_username(chat_id)
+            return
+
+        self._migrate_legacy_skill_folder(telegram_user_id, user_id)
 
         skills = self.skill_service.list_skills(user_id)
 
@@ -341,11 +416,17 @@ class TelegramBotInterface:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Handle /add_skill <url> command - install a skill from URL."""
-        user_id, username, _ = self._extract_telegram_identity(update)
+        user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
 
-        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
+        if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
+
+        if not user_id:
+            await self._reject_if_missing_username(chat_id)
+            return
+
+        self._migrate_legacy_skill_folder(telegram_user_id, user_id)
 
         if not context.args:
             await self.send_response(
@@ -362,11 +443,17 @@ class TelegramBotInterface:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Handle /delete_skill <name> command - remove an installed skill."""
-        user_id, username, _ = self._extract_telegram_identity(update)
+        user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
 
-        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
+        if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
+
+        if not user_id:
+            await self._reject_if_missing_username(chat_id)
+            return
+
+        self._migrate_legacy_skill_folder(telegram_user_id, user_id)
 
         if not context.args:
             await self.send_response(
@@ -395,12 +482,18 @@ class TelegramBotInterface:
         if not update.message or not update.message.text:
             return
 
-        user_id, username, display_name = self._extract_telegram_identity(update)
+        user_id, telegram_user_id, username, display_name = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
         message_text = update.message.text
 
-        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
+        if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
+
+        if not user_id:
+            await self._reject_if_missing_username(chat_id)
+            return
+
+        self._migrate_legacy_skill_folder(telegram_user_id, user_id)
 
         if len(message_text) > 50:
             preview = message_text[:50] + "..."
@@ -443,13 +536,19 @@ class TelegramBotInterface:
         if not update.message or not update.message.document:
             return
 
-        user_id, username, _ = self._extract_telegram_identity(update)
+        user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
         document = update.message.document
         caption = update.message.caption or ""
 
-        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
+        if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
+
+        if not user_id:
+            await self._reject_if_missing_username(chat_id)
+            return
+
+        self._migrate_legacy_skill_folder(telegram_user_id, user_id)
 
         logger.info(
             "Received document from user %s: %s (%d bytes)",
@@ -557,12 +656,18 @@ class TelegramBotInterface:
         if not update.message or not update.message.photo:
             return
 
-        user_id, username, _ = self._extract_telegram_identity(update)
+        user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
         caption = update.message.caption or ""
 
-        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
+        if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
+
+        if not user_id:
+            await self._reject_if_missing_username(chat_id)
+            return
+
+        self._migrate_legacy_skill_folder(telegram_user_id, user_id)
 
         # Select highest resolution photo (Requirement 2.5)
         # Photos are sorted by size, last one is largest

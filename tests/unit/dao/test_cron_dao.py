@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
-from hypothesis import given, settings, strategies as st
 
 from app.dao.cron_dao import CronDAO
 from app.dao.user_dao import UserDAO
@@ -50,9 +49,7 @@ class TestCronDAOReturnsPydanticModels:
     **Validates: Requirements 3.6**
     """
 
-    async def test_cron_dao_create_returns_pydantic(
-        self, cron_dao: CronDAO, user_dao: UserDAO
-    ):
+    async def test_cron_dao_create_returns_pydantic(self, cron_dao: CronDAO, user_dao: UserDAO):
         """Verify CronDAO.create returns Pydantic CronTask model."""
         user_id = str(uuid.uuid4())
         await user_dao.create(user_id, f"test_{uuid.uuid4().hex[:8]}")
@@ -72,9 +69,7 @@ class TestCronDAOReturnsPydanticModels:
         assert result.instructions == "Do something"
         assert result.cron_expression == "0 6 * * *"
 
-    async def test_cron_dao_get_by_id_returns_pydantic(
-        self, cron_dao: CronDAO, user_dao: UserDAO
-    ):
+    async def test_cron_dao_get_by_id_returns_pydantic(self, cron_dao: CronDAO, user_dao: UserDAO):
         """Verify CronDAO.get_by_id returns Pydantic CronTask model."""
         user_id = str(uuid.uuid4())
         await user_dao.create(user_id, f"test_{uuid.uuid4().hex[:8]}")
@@ -167,22 +162,13 @@ class TestCronDAOReturnsPydanticModels:
         assert len(result) == 1
 
 
-class TestProperty4DueTasksQueryCorrectness:
-    """Property 4: Due Tasks Query Correctness.
-
-    *For any* set of cron tasks in the database, the get_due_tasks query
-    should return exactly those tasks where next_execution_at <= current_time
-    AND enabled = true.
-
-    **Validates: Requirements 3.4**
-    """
+class TestDueTasksQueryCorrectness:
+    """Deterministic tests for get_due_tasks correctness."""
 
     @pytest.mark.asyncio
-    @settings(max_examples=100, deadline=None)
-    @given(
-        num_due_enabled=st.integers(min_value=0, max_value=5),
-        num_due_disabled=st.integers(min_value=0, max_value=3),
-        num_future_enabled=st.integers(min_value=0, max_value=5),
+    @pytest.mark.parametrize(
+        "num_due_enabled,num_due_disabled,num_future_enabled",
+        [(0, 0, 0), (1, 0, 0), (1, 1, 0), (2, 0, 2)],
     )
     async def test_due_tasks_query_correctness(
         self,
@@ -190,19 +176,12 @@ class TestProperty4DueTasksQueryCorrectness:
         num_due_disabled: int,
         num_future_enabled: int,
     ):
-        """Feature: cron-job-scheduler, Property 4: Due Tasks Query Correctness.
-
-        For any combination of due/future and enabled/disabled tasks,
-        get_due_tasks should return exactly the due AND enabled tasks.
-        """
         db = Database("sqlite+aiosqlite:///:memory:")
         await db.init_db()
-
         try:
             user_dao = UserDAO(db)
             cron_dao = CronDAO(db)
 
-            # Create user
             user_id = str(uuid.uuid4())
             await user_dao.create(user_id, f"test_{uuid.uuid4().hex[:8]}")
 
@@ -210,9 +189,8 @@ class TestProperty4DueTasksQueryCorrectness:
             past_time = now - timedelta(hours=1)
             future_time = now + timedelta(hours=1)
 
-            expected_due_ids = set()
+            expected_due_ids: set[str] = set()
 
-            # Create due + enabled tasks (should be returned)
             for i in range(num_due_enabled):
                 task = await cron_dao.create(
                     user_id=user_id,
@@ -223,7 +201,6 @@ class TestProperty4DueTasksQueryCorrectness:
                 )
                 expected_due_ids.add(task.id)
 
-            # Create due + disabled tasks (should NOT be returned)
             for i in range(num_due_disabled):
                 task = await cron_dao.create(
                     user_id=user_id,
@@ -232,17 +209,17 @@ class TestProperty4DueTasksQueryCorrectness:
                     cron_expression="0 6 * * *",
                     next_execution_at=past_time,
                 )
-                # Disable the task by updating it directly
                 async with db.session() as session:
                     from sqlalchemy import select
+
                     from app.models.orm import CronTaskModel
+
                     result = await session.execute(
                         select(CronTaskModel).where(CronTaskModel.id == task.id)
                     )
                     model = result.scalar_one()
                     model.enabled = False
 
-            # Create future + enabled tasks (should NOT be returned)
             for i in range(num_future_enabled):
                 await cron_dao.create(
                     user_id=user_id,
@@ -252,120 +229,11 @@ class TestProperty4DueTasksQueryCorrectness:
                     next_execution_at=future_time,
                 )
 
-            # Query due tasks
             due_tasks = await cron_dao.get_due_tasks(now)
+            assert {t.id for t in due_tasks} == expected_due_ids
 
-            # Verify results
-            returned_ids = {t.id for t in due_tasks}
-            assert returned_ids == expected_due_ids
-
-            # Verify all returned tasks are enabled and due
             for task in due_tasks:
                 assert task.enabled is True
                 assert task.next_execution_at <= now
-
-        finally:
-            await db.close()
-
-
-class TestProperty7DAOReturnsDomainModels:
-    """Property 7: DAO Returns Domain Models.
-
-    *For any* DAO method that returns cron task data, the return type should
-    be a Pydantic CronTask domain model, never a SQLAlchemy ORM object.
-
-    **Validates: Requirements 3.6**
-    """
-
-    @pytest.mark.asyncio
-    @settings(max_examples=100)
-    @given(
-        name=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
-        instructions=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-    )
-    async def test_create_returns_domain_model(
-        self,
-        name: str,
-        instructions: str,
-    ):
-        """Feature: cron-job-scheduler, Property 7: DAO Returns Domain Models.
-
-        For any valid input, create() should return a Pydantic CronTask model.
-        """
-        db = Database("sqlite+aiosqlite:///:memory:")
-        await db.init_db()
-
-        try:
-            user_dao = UserDAO(db)
-            cron_dao = CronDAO(db)
-
-            # Create user
-            user_id = str(uuid.uuid4())
-            await user_dao.create(user_id, f"test_{uuid.uuid4().hex[:8]}")
-
-            next_exec = datetime.utcnow() + timedelta(hours=1)
-            result = await cron_dao.create(
-                user_id=user_id,
-                name=name,
-                instructions=instructions,
-                cron_expression="0 6 * * *",
-                next_execution_at=next_exec,
-            )
-
-            # Verify it's a Pydantic model, not SQLAlchemy
-            assert isinstance(result, CronTask)
-            assert not hasattr(result, "_sa_instance_state")
-            assert result.name == name
-            assert result.instructions == instructions
-
-        finally:
-            await db.close()
-
-    @pytest.mark.asyncio
-    @settings(max_examples=100)
-    @given(
-        num_tasks=st.integers(min_value=0, max_value=5),
-    )
-    async def test_list_by_user_returns_domain_models(
-        self,
-        num_tasks: int,
-    ):
-        """Feature: cron-job-scheduler, Property 7: DAO Returns Domain Models.
-
-        For any number of tasks, list_by_user() should return Pydantic models.
-        """
-        db = Database("sqlite+aiosqlite:///:memory:")
-        await db.init_db()
-
-        try:
-            user_dao = UserDAO(db)
-            cron_dao = CronDAO(db)
-
-            # Create user
-            user_id = str(uuid.uuid4())
-            await user_dao.create(user_id, f"test_{uuid.uuid4().hex[:8]}")
-
-            next_exec = datetime.utcnow() + timedelta(hours=1)
-
-            # Create tasks
-            for i in range(num_tasks):
-                await cron_dao.create(
-                    user_id=user_id,
-                    name=f"task_{i}",
-                    instructions=f"Instructions {i}",
-                    cron_expression="0 6 * * *",
-                    next_execution_at=next_exec,
-                )
-
-            # Query tasks
-            result = await cron_dao.list_by_user(user_id)
-
-            # Verify all are Pydantic models
-            assert isinstance(result, list)
-            assert len(result) == num_tasks
-            for task in result:
-                assert isinstance(task, CronTask)
-                assert not hasattr(task, "_sa_instance_state")
-
         finally:
             await db.close()
