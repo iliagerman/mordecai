@@ -41,7 +41,7 @@ from app.services.skill_service import (
     SkillNotFoundError,
     SkillService,
 )
-from app.security.whitelist import DEFAULT_FORBIDDEN_DETAIL, is_whitelisted
+from app.security.whitelist import DEFAULT_FORBIDDEN_DETAIL, is_whitelisted, live_allowed_users
 
 if TYPE_CHECKING:
     from mypy_boto3_sqs import SQSClient
@@ -95,6 +95,11 @@ class TelegramBotInterface:
         self.skill_service = skill_service
         self.file_service = file_service or FileService(config)
         self.command_parser = command_parser or CommandParser()
+
+        # Hot-reloading whitelist: reads allowed_users from secrets.yml on demand.
+        # This ensures updates to secrets.yml take effect immediately without
+        # restarting the bot.
+        self._allowed_users_live = live_allowed_users(config.secrets_path)
 
         # Build the application with the bot token
         self.application = Application.builder().token(config.telegram_bot_token).build()
@@ -232,7 +237,7 @@ class TelegramBotInterface:
         chat_id: int,
     ) -> bool:
         """Return True if request should be rejected due to whitelist."""
-        allowed = self.config.allowed_users
+        allowed = self._allowed_users_live
         whitelisted = is_whitelisted(telegram_user_id, allowed) or (
             telegram_username is not None and is_whitelisted(telegram_username, allowed)
         )

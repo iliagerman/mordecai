@@ -1102,6 +1102,7 @@ class TestAgentServicePersonalityInjection:
         prompt = service._build_system_prompt(user_id)
 
         assert "## Personality (Obsidian Vault)" in prompt
+        assert "## Obsidian Vault Access" in prompt
         assert "DEFAULT_SOUL" in prompt
         assert "DEFAULT_ID" in prompt
         assert "source: default" in prompt

@@ -13,6 +13,7 @@ from app.config import AgentConfig
 from app.logging_filters import install_uvicorn_access_log_filters
 from app.main import Application
 from app.routers import create_task_router, create_webhook_router
+from app.security.whitelist import live_allowed_users
 
 # Global application instance for lifespan management
 _application: Application | None = None
@@ -32,14 +33,14 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncGenerator[None, None]:
     if _application.task_service:
         task_router = create_task_router(
             _application.task_service,
-            allowed_users=config.allowed_users,
+            allowed_users=live_allowed_users(config.secrets_path),
         )
         fastapi_app.include_router(task_router)
 
     if _application.webhook_service:
         webhook_router = create_webhook_router(
             _application.webhook_service,
-            allowed_users=config.allowed_users,
+            allowed_users=live_allowed_users(config.secrets_path),
         )
         fastapi_app.include_router(webhook_router)
 

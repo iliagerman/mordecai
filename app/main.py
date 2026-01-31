@@ -50,6 +50,7 @@ from app.sqs.queue_manager import SQSQueueManager
 from app.telegram.bot import TelegramBotInterface
 from app.logging_filters import install_uvicorn_access_log_filters
 from app.observability.forbidden_access_log import log_forbidden_request
+from app.security.whitelist import live_allowed_users
 
 # Configure logging
 logging.basicConfig(
@@ -386,7 +387,7 @@ class Application:
         if self.task_service:
             task_router = create_task_router(
                 self.task_service,
-                allowed_users=self.config.allowed_users,
+                allowed_users=live_allowed_users(self.config.secrets_path),
             )
             self.fastapi_app.include_router(task_router)
             logger.info("Task router registered")
@@ -394,7 +395,7 @@ class Application:
         if self.webhook_service:
             webhook_router = create_webhook_router(
                 self.webhook_service,
-                allowed_users=self.config.allowed_users,
+                allowed_users=live_allowed_users(self.config.secrets_path),
             )
             self.fastapi_app.include_router(webhook_router)
             logger.info("Webhook router registered")
