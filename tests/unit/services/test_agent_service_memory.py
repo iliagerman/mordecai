@@ -270,6 +270,40 @@ class TestAgentServiceSystemPrompt:
         assert "Memory Capabilities" not in prompt
 
 
+class TestAgentServiceExplicitRememberExtraction:
+    @pytest.fixture
+    def temp_dir(self):
+        tmp = tempfile.mkdtemp()
+        yield tmp
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    @pytest.fixture
+    def config(self, temp_dir):
+        return AgentConfig(
+            model_provider=ModelProvider.BEDROCK,
+            bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+            telegram_bot_token="test-token",
+            session_storage_dir=temp_dir,
+            skills_base_dir=temp_dir,
+            memory_enabled=True,
+        )
+
+    def test_extracts_from_need_you_to_remember_with_typos(self, config):
+        service = AgentService(config)
+        kind, text = service._extract_explicit_memory_text(
+            "I meed you to remeber my favorite food is piza"
+        )
+        assert kind == "preference"
+        assert text == "my favorite food is piza"
+
+    def test_does_not_trigger_on_retrieval_question(self, config):
+        service = AgentService(config)
+        assert (
+            service._extract_explicit_memory_text("Do you remember when I told you about pizza?")
+            is None
+        )
+
+
 class TestAgentServiceExplicitRemember:
     """Tests for explicit 'remember ...' handling.
 

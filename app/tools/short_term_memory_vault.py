@@ -1,9 +1,14 @@
 """Short-term memory storage in an Obsidian vault.
 
-We store per-user short-term memories in:
-  me/<USER_ID>/short_term_memories.md
+We store per-user short-term memories as an Obsidian note at:
+    me/<USER_ID>/stm.md
 
 Where <USER_ID> is the same value as actor_id in AgentCore memory.
+
+Backward compatibility:
+- Older deployments used: me/<USER_ID>/short_term_memories.md
+    We will read from the legacy path if the new note doesn't exist, and we will
+    attempt to migrate the legacy file to the new path on first write.
 
 This module is intentionally *not* exposed as Strands tools.
 It is an internal system component used by:
@@ -13,7 +18,7 @@ It is an internal system component used by:
 Security/safety:
 - All filesystem operations are constrained under the configured vault root.
 - The daily consolidation cron is registered as a system task (not DB-backed),
-  so it is not editable by users.
+    so it is not editable by users.
 """
 
 from __future__ import annotations
@@ -25,6 +30,10 @@ import re
 
 
 DEFAULT_MAX_CHARS = 20_000
+
+
+STM_FILENAME = "stm.md"
+LEGACY_STM_FILENAME = "short_term_memories.md"
 
 
 @dataclass(frozen=True)
@@ -49,7 +58,13 @@ def _safe_under_root(root: Path, candidate: Path) -> Path:
 
 def short_term_memory_path(vault_root_raw: str, user_id: str) -> Path:
     root = _vault_root(vault_root_raw)
-    path = root / "me" / user_id / "short_term_memories.md"
+    path = root / "me" / user_id / STM_FILENAME
+    return _safe_under_root(root, path)
+
+
+def _legacy_short_term_memory_path(vault_root_raw: str, user_id: str) -> Path:
+    root = _vault_root(vault_root_raw)
+    path = root / "me" / user_id / LEGACY_STM_FILENAME
     return _safe_under_root(root, path)
 
 
@@ -117,6 +132,21 @@ def append_memory(
     target = short_term_memory_path(vault_root_raw, user_id)
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    # Migrate legacy file name if it exists (best-effort).
+    if not target.exists():
+        legacy = _legacy_short_term_memory_path(vault_root_raw, user_id)
+        if legacy.exists() and legacy.is_file():
+            try:
+                legacy.rename(target)
+            except Exception:
+                # If rename fails (e.g., cross-device), fall back to copy+delete.
+                try:
+                    target.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+                    legacy.unlink(missing_ok=True)
+                except Exception:
+                    # If migration fails, we'll just write to the new file.
+                    pass
+
     ts = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
 
     entry = f"- [{ts}] ({kind_norm}) {body}\n"
@@ -129,9 +159,9 @@ def append_memory(
         if current_size + len(entry) > max_chars:
             raise ValueError(f"short_term_memories.md would exceed max_chars={max_chars}")
     else:
-        header = "# Short-term memories\n\n"  # minimal Obsidian-friendly header
+        header = "# STM\n\n"  # minimal Obsidian-friendly header
         if len(header) + len(entry) > max_chars:
-            raise ValueError(f"short_term_memories.md would exceed max_chars={max_chars}")
+            raise ValueError(f"{STM_FILENAME} would exceed max_chars={max_chars}")
         target.write_text(header, encoding="utf-8")
 
     with target.open("a", encoding="utf-8") as f:
@@ -150,7 +180,10 @@ def read_raw_text(
 
     target = short_term_memory_path(vault_root_raw, user_id)
     if not target.exists() or not target.is_file():
-        return None
+        legacy = _legacy_short_term_memory_path(vault_root_raw, user_id)
+        if not legacy.exists() or not legacy.is_file():
+            return None
+        target = legacy
 
     try:
         text = target.read_text(encoding="utf-8")
@@ -240,11 +273,17 @@ def clear(
 ) -> bool:
     """Delete the short-term memory file to start over."""
 
-    target = short_term_memory_path(vault_root_raw, user_id)
-    if not target.exists():
-        return True
-    try:
-        target.unlink()
-        return True
-    except Exception:
-        return False
+    targets = [
+        short_term_memory_path(vault_root_raw, user_id),
+        _legacy_short_term_memory_path(vault_root_raw, user_id),
+    ]
+
+    ok = True
+    for target in targets:
+        if not target.exists():
+            continue
+        try:
+            target.unlink()
+        except Exception:
+            ok = False
+    return ok

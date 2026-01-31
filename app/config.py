@@ -16,6 +16,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.enums import ModelProvider
 
 
+# Container deployments commonly mount a host Obsidian vault at this path.
+# If the configured obsidian_vault_root does not exist *in the current runtime*,
+# we will prefer this mount when present.
+DEFAULT_CONTAINER_OBSIDIAN_VAULT_ROOT = "/app/obsidian-vaults"
+
+
 def _create_config_file(path: str, config_data: dict) -> None:
     """Create a config file at the specified path based on file extension.
 
@@ -484,6 +490,32 @@ class AgentConfig(BaseSettings):
                 self.shared_skills_dir = str(Path(self.skills_base_dir) / "shared")
         except Exception:
             # Be conservative: never fail config construction due to normalization.
+            return
+
+        # Obsidian vault root auto-detection:
+        # - Env override (AGENT_OBSIDIAN_VAULT_ROOT) always wins.
+        # - If we're running in a container where /app/obsidian-vaults is mounted,
+        #   use it when the configured path is missing in this runtime.
+        try:
+            if os.environ.get("AGENT_OBSIDIAN_VAULT_ROOT"):
+                return
+
+            container_root = Path(DEFAULT_CONTAINER_OBSIDIAN_VAULT_ROOT).expanduser().resolve()
+            container_root_ok = container_root.exists() and container_root.is_dir()
+            if not container_root_ok:
+                return
+
+            raw = (self.obsidian_vault_root or "").strip()
+            if not raw:
+                self.obsidian_vault_root = str(container_root)
+                return
+
+            candidate = Path(raw).expanduser()
+            # Only override when the configured path does not exist in this runtime.
+            if not candidate.exists():
+                self.obsidian_vault_root = str(container_root)
+        except Exception:
+            # Never fail config construction due to vault-path heuristics.
             return
 
     # Pending skill onboarding

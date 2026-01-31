@@ -62,7 +62,24 @@ def set_shell_env_context(*, user_id: str, secrets_path: str | Path) -> None:
         "so newly provided keys work immediately without restart."
     ),
 )
-def shell(**kwargs: Any):
+def shell(
+    command: str,
+    work_dir: str | None = None,
+    timeout_seconds: int | None = None,
+    ignore_errors: bool = False,
+    parallel: bool = False,
+    non_interactive: bool = False,
+    **kwargs: Any,
+):
+    """Run a shell command with best-effort env refresh.
+
+    We keep a mostly stable surface area for skills:
+    - required: command
+    - common: work_dir
+    - optional: timeout_seconds
+    - pass-through: **kwargs for compatibility with different strands_tools versions
+    """
+
     # kwargs are forwarded to strands_tools.shell. Typical args:
     # - command: str
     # - work_dir: str
@@ -76,4 +93,19 @@ def shell(**kwargs: Any):
         # Never block shell execution if refresh fails.
         pass
 
-    return _call_base_shell(**kwargs)
+    forwarded: dict[str, Any] = {
+        "command": command,
+        "ignore_errors": ignore_errors,
+        "parallel": parallel,
+        "non_interactive": non_interactive,
+        **kwargs,
+    }
+
+    # Some models try to pass a literal `kwargs` field. Never forward it.
+    forwarded.pop("kwargs", None)
+    if work_dir is not None:
+        forwarded["work_dir"] = work_dir
+    if timeout_seconds is not None:
+        forwarded["timeout_seconds"] = timeout_seconds
+
+    return _call_base_shell(**forwarded)

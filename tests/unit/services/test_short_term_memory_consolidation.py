@@ -1,7 +1,7 @@
 """Unit tests for daily short-term memory consolidation.
 
 These tests validate the internal (system) daily job that:
-- reads Obsidian short-term memory files under me/<USER_ID>/short_term_memories.md
+- reads Obsidian short-term memory files under me/<USER_ID>/stm.md
 - promotes important info into long-term memory via the extraction service
 - deletes the short-term file on success
 
@@ -44,7 +44,7 @@ def config(temp_vault_dir):
 @pytest.mark.asyncio
 async def test_consolidation_deletes_file_on_success(config, temp_vault_dir):
     user_id = "u1"
-    stm_path = Path(temp_vault_dir) / "me" / user_id / "short_term_memories.md"
+    stm_path = Path(temp_vault_dir) / "me" / user_id / "stm.md"
     stm_path.parent.mkdir(parents=True, exist_ok=True)
     stm_path.write_text("# Short-term memories\n\n- (fact) timezone: UTC\n", encoding="utf-8")
 
@@ -71,7 +71,7 @@ async def test_consolidation_deletes_file_on_success(config, temp_vault_dir):
 @pytest.mark.asyncio
 async def test_consolidation_keeps_file_on_failure(config, temp_vault_dir):
     user_id = "u2"
-    stm_path = Path(temp_vault_dir) / "me" / user_id / "short_term_memories.md"
+    stm_path = Path(temp_vault_dir) / "me" / user_id / "stm.md"
     stm_path.parent.mkdir(parents=True, exist_ok=True)
     stm_path.write_text("# Short-term memories\n\n- (fact) name: Alice\n", encoding="utf-8")
 

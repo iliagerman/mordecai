@@ -974,30 +974,37 @@ class MemoryService:
         Returns:
             True if stored successfully, False otherwise.
         """
+        ltm_ok = False
+        stm_ok = False
+
+        # ------------------------------------------------------------------
+        # Best-effort long-term memory write (AgentCore)
+        # ------------------------------------------------------------------
+        # If AgentCore is misconfigured/unavailable (common in local dev), we
+        # still want explicit "remember" requests to persist to the Obsidian
+        # short-term memory note when configured.
         try:
             memory_id = self.get_or_create_memory_id()
-        except Exception as e:
-            logger.warning("Cannot store fact: %s", e)
-            return False
+            client = self._get_client()
 
-        client = self._get_client()
-
-        # Find and delete similar records if requested
-        if replace_similar:
-            query = similarity_query or fact
-            similar = self._find_similar_records(user_id, query)
-            if similar:
-                record_ids = [r["memoryRecordId"] for r in similar]
-                logger.info(
-                    "Found %d similar records to replace for user %s", len(similar), user_id
-                )
-                for r in similar:
-                    logger.debug(
-                        "  - %s (score=%.2f): %s", r["memoryRecordId"], r["score"], r["text"][:100]
+            # Find and delete similar records if requested
+            if replace_similar:
+                query = similarity_query or fact
+                similar = self._find_similar_records(user_id, query)
+                if similar:
+                    record_ids = [r["memoryRecordId"] for r in similar]
+                    logger.info(
+                        "Found %d similar records to replace for user %s", len(similar), user_id
                     )
-                self._delete_records(record_ids)
+                    for r in similar:
+                        logger.debug(
+                            "  - %s (score=%.2f): %s",
+                            r["memoryRecordId"],
+                            r["score"],
+                            r["text"][:100],
+                        )
+                    self._delete_records(record_ids)
 
-        try:
             # Create event to store the fact
             client.create_event(
                 memory_id=memory_id,
@@ -1010,31 +1017,41 @@ class MemoryService:
                 ],
             )
             logger.info("Stored fact for user %s: %s", user_id, fact[:100])
-
-            if write_to_short_term:
-                vault_root = getattr(self.config, "obsidian_vault_root", None)
-                if vault_root:
-                    try:
-                        from app.tools.short_term_memory_vault import append_memory
-
-                        append_memory(
-                            vault_root,
-                            user_id,
-                            kind=short_term_kind or "fact",
-                            text=fact,
-                            max_chars=getattr(self.config, "personality_max_chars", 20_000),
-                        )
-                    except Exception as e:
-                        # Don't fail LTM writes if STM append fails.
-                        logger.debug(
-                            "Failed to append short-term memory for user %s: %s",
-                            user_id,
-                            e,
-                        )
-            return True
+            ltm_ok = True
         except Exception as e:
-            logger.error("Failed to store fact: %s", e)
-            return False
+            logger.warning(
+                "Long-term memory store unavailable for user %s (will try STM if enabled): %s",
+                user_id,
+                e,
+            )
+
+        # ------------------------------------------------------------------
+        # Best-effort short-term memory write (Obsidian vault)
+        # ------------------------------------------------------------------
+        if write_to_short_term:
+            vault_root = getattr(self.config, "obsidian_vault_root", None)
+            if vault_root:
+                try:
+                    from app.tools.short_term_memory_vault import append_memory
+
+                    append_memory(
+                        vault_root,
+                        user_id,
+                        kind=short_term_kind or "fact",
+                        text=fact,
+                        max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                    )
+                    stm_ok = True
+                except Exception as e:
+                    # Don't fail if STM append fails; just report False if we
+                    # also failed to store LTM.
+                    logger.debug(
+                        "Failed to append short-term memory for user %s: %s",
+                        user_id,
+                        e,
+                    )
+
+        return bool(ltm_ok or stm_ok)
 
     def store_preference(
         self,
@@ -1061,15 +1078,14 @@ class MemoryService:
         if not preference:
             return False
 
+        ltm_ok = False
+        stm_ok = False
+
+        # Long-term memory (AgentCore) is best-effort.
         try:
             memory_id = self.get_or_create_memory_id()
-        except Exception as e:
-            logger.warning("Cannot store preference: %s", e)
-            return False
+            client = self._get_client()
 
-        client = self._get_client()
-
-        try:
             client.create_event(
                 memory_id=memory_id,
                 actor_id=user_id,
@@ -1088,30 +1104,37 @@ class MemoryService:
                 user_id,
                 preference[:100],
             )
-
-            if write_to_short_term:
-                vault_root = getattr(self.config, "obsidian_vault_root", None)
-                if vault_root:
-                    try:
-                        from app.tools.short_term_memory_vault import append_memory
-
-                        append_memory(
-                            vault_root,
-                            user_id,
-                            kind="preference",
-                            text=preference,
-                            max_chars=getattr(self.config, "personality_max_chars", 20_000),
-                        )
-                    except Exception as e:
-                        logger.debug(
-                            "Failed to append short-term preference for user %s: %s",
-                            user_id,
-                            e,
-                        )
-            return True
+            ltm_ok = True
         except Exception as e:
-            logger.error("Failed to store preference: %s", e)
-            return False
+            logger.warning(
+                "Long-term preference store unavailable for user %s (will try STM if enabled): %s",
+                user_id,
+                e,
+            )
+
+        # Short-term memory note write (Obsidian) is best-effort.
+        if write_to_short_term:
+            vault_root = getattr(self.config, "obsidian_vault_root", None)
+            if vault_root:
+                try:
+                    from app.tools.short_term_memory_vault import append_memory
+
+                    append_memory(
+                        vault_root,
+                        user_id,
+                        kind="preference",
+                        text=preference,
+                        max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                    )
+                    stm_ok = True
+                except Exception as e:
+                    logger.debug(
+                        "Failed to append short-term preference for user %s: %s",
+                        user_id,
+                        e,
+                    )
+
+        return bool(ltm_ok or stm_ok)
 
     def store_session_summary(
         self,
