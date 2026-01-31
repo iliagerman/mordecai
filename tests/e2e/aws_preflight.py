@@ -69,7 +69,7 @@ def skip_if_aws_auth_invalid(
 
     session = get_session()
 
-    explicit = bool(aws_access_key_id or aws_secret_access_key or aws_session_token)
+    using_explicit_args = bool(aws_access_key_id or aws_secret_access_key or aws_session_token)
     try:
         sts = session.create_client(
             "sts",
@@ -82,17 +82,38 @@ def skip_if_aws_auth_invalid(
         pytest.skip(
             "Unable to create AWS STS client for e2e tests. "
             f"Error: {e}. Env: {aws_env_summary()}. "
-            f"Using explicit creds from config: {explicit} (access_key_id={mask_access_key_id(aws_access_key_id)})"
+            "Using explicit AWS creds args: "
+            f"{using_explicit_args} (access_key_id={mask_access_key_id(aws_access_key_id)})"
         )
 
     try:
         sts.get_caller_identity()
+    except BotoCoreError as e:
+        # Network/DNS/proxy/etc. When these e2e tests are run interactively,
+        # it's much more helpful to *skip* with guidance than to fail with a
+        # long stack trace.
+        pytest.skip(
+            "Unable to reach AWS STS endpoint for e2e tests (network/DNS issue). "
+            "Check internet/VPN/proxy/DNS and re-run. "
+            f"Region: {region}. Error: {e}. Env: {aws_env_summary()}. "
+            "Using explicit AWS creds args: "
+            f"{using_explicit_args} (access_key_id={mask_access_key_id(aws_access_key_id)})"
+        )
+    except OSError as e:
+        pytest.skip(
+            "Unable to reach AWS STS endpoint for e2e tests (OS/network error). "
+            "Check internet/VPN/proxy/DNS and re-run. "
+            f"Region: {region}. Error: {e}. Env: {aws_env_summary()}. "
+            "Using explicit AWS creds args: "
+            f"{using_explicit_args} (access_key_id={mask_access_key_id(aws_access_key_id)})"
+        )
     except NoCredentialsError:
         pytest.skip(
             "No AWS credentials found for e2e tests. "
             "Provide credentials (e.g. set AWS_PROFILE or AWS_* env vars). "
             f"Env: {aws_env_summary()}. "
-            f"Using explicit creds from config: {explicit} (access_key_id={mask_access_key_id(aws_access_key_id)})"
+            "Using explicit AWS creds args: "
+            f"{using_explicit_args} (access_key_id={mask_access_key_id(aws_access_key_id)})"
         )
     except ClientError as e:
         code = ((e.response or {}).get("Error") or {}).get("Code") or ""
@@ -115,7 +136,8 @@ def skip_if_aws_auth_invalid(
                 "Note: your environment currently has AWS_* env vars set; "
                 "if they are stale, unset them and use AWS_PROFILE instead. "
                 f"Env: {aws_env_summary()}. "
-                f"Using explicit creds from config: {explicit} (access_key_id={mask_access_key_id(aws_access_key_id)}). "
+                "Using explicit AWS creds args: "
+                f"{using_explicit_args} (access_key_id={mask_access_key_id(aws_access_key_id)}). "
                 f"Original error: {code}: {msg}"
             )
 
@@ -125,7 +147,8 @@ def skip_if_aws_auth_invalid(
                 "AWS credentials are present but lack permission for STS:GetCallerIdentity. "
                 "Fix the AWS principal/policies used for e2e tests and re-run. "
                 f"Env: {aws_env_summary()}. "
-                f"Using explicit creds from config: {explicit} (access_key_id={mask_access_key_id(aws_access_key_id)}). "
+                "Using explicit AWS creds args: "
+                f"{using_explicit_args} (access_key_id={mask_access_key_id(aws_access_key_id)}). "
                 f"Original error: {code}: {msg}"
             )
 

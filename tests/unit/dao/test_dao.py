@@ -79,6 +79,20 @@ class TestDAOReturnsPydanticModels:
 
         assert isinstance(result, User)
 
+    async def test_user_dao_get_or_create_reuses_existing_by_telegram_id(self, user_dao: UserDAO):
+        """Ensure get_or_create is safe when telegram_id already exists.
+
+        This simulates a retry/race where a user row exists for a given telegram_id
+        but a worker attempts to create it again.
+        """
+        telegram_id = "279033263"
+        existing = await user_dao.create(user_id=str(uuid.uuid4()), telegram_id=telegram_id)
+
+        # Different user_id, same telegram_id should not raise IntegrityError.
+        got = await user_dao.get_or_create(user_id="some-other-id", telegram_id=telegram_id)
+        assert got.id == existing.id
+        assert got.telegram_id == telegram_id
+
     async def test_task_dao_returns_pydantic_task(self, task_dao: TaskDAO, user_dao: UserDAO):
         """Verify TaskDAO.create returns Pydantic Task model."""
         user_id = str(uuid.uuid4())

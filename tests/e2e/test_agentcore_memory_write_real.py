@@ -67,9 +67,14 @@ def test_agentcore_memory_store_and_search_roundtrip_real_aws():
     print(f"[e2e] AWS env after MemoryService normalization: env={aws_env_summary()}")
 
     # Validate credentials early (avoid noisy AgentCore errors).
-    # We intentionally use the default credential chain here because MemoryService
-    # normalizes the AWS_* env vars to match cfg (and clears stale session tokens).
-    skip_if_aws_auth_invalid(region_name=cfg.aws_region)
+    # Prefer the same explicit credentials the service is configured with (when present)
+    # to avoid surprises from a stale env AWS_SESSION_TOKEN.
+    skip_if_aws_auth_invalid(
+        region_name=cfg.aws_region,
+        aws_access_key_id=cfg.aws_access_key_id,
+        aws_secret_access_key=cfg.aws_secret_access_key,
+        aws_session_token=getattr(cfg, "aws_session_token", None),
+    )
 
     token = f"e2e-memory-{uuid.uuid4()}"
     actor_id = f"e2e_{uuid.uuid4()}"  # unique namespace

@@ -425,6 +425,15 @@ def get_skill_env_vars(
     return merged
 
 
+# Runtime tracking for skill-derived env vars applied from secrets.yml.
+#
+# This prevents cross-user leakage in a long-running process.
+# We only manage variables injected from the `skills:` section.
+_RUNTIME_SKILL_ENV_CONTEXT: tuple[str, str] | None = None  # (resolved secrets_path, user_id)
+_RUNTIME_SKILL_ENV_KEYS_BY_SKILL: dict[str, set[str]] = {}
+_RUNTIME_SKILL_ENV_MANAGED_KEYS: set[str] = set()
+
+
 def refresh_runtime_env_from_secrets(
     *,
     secrets_path: Path,
@@ -435,6 +444,26 @@ def refresh_runtime_env_from_secrets(
 
     This supports "no restart" skill execution.
     """
+    # Track which env vars we injected from the `skills:` section so we can
+    # safely prevent cross-user leakage in a long-running, multi-tenant process.
+    #
+    # Important: we do NOT attempt to manage every env var in the process—only
+    # the ones we ourselves applied from secrets.yml skill blocks.
+    global \
+        _RUNTIME_SKILL_ENV_CONTEXT, \
+        _RUNTIME_SKILL_ENV_KEYS_BY_SKILL, \
+        _RUNTIME_SKILL_ENV_MANAGED_KEYS
+
+    try:
+        secrets_key = str(secrets_path.resolve())
+    except Exception:
+        secrets_key = str(secrets_path)
+
+    context = (secrets_key, str(user_id or ""))
+    context_changed = (
+        _RUNTIME_SKILL_ENV_CONTEXT is not None and _RUNTIME_SKILL_ENV_CONTEXT != context
+    )
+
     secrets = load_raw_secrets(secrets_path)
     skills = secrets.get("skills")
     if not isinstance(skills, dict):
@@ -445,18 +474,50 @@ def refresh_runtime_env_from_secrets(
             pass
         return {"ok": True, "applied": 0, "skills": []}
 
-    names = list(skills.keys()) if skill_names is None else skill_names
-    applied = 0
+    # If the user context changed, force a full refresh to ensure the environment
+    # is correct and we can safely clear keys from the previous user.
+    effective_skill_names = None if (skill_names is None or context_changed) else skill_names
+    names = list(skills.keys()) if effective_skill_names is None else effective_skill_names
+
+    # Compute desired env for the skills we're refreshing.
+    desired_env: dict[str, str] = {}
+    new_keys_by_skill: dict[str, set[str]] = {}
     applied_skills: list[str] = []
 
     for name in names:
         env_vars = get_skill_env_vars(secrets=secrets, skill_name=name, user_id=user_id)
         if not env_vars:
+            new_keys_by_skill[name] = set()
             continue
-        for k, v in env_vars.items():
-            os.environ[k] = v
-            applied += 1
+        desired_env.update(env_vars)
+        new_keys_by_skill[name] = set(env_vars.keys())
         applied_skills.append(name)
+
+    full_refresh = effective_skill_names is None
+
+    # On full refresh (including any user switch), remove keys we previously
+    # injected that are not desired for the current context.
+    if full_refresh:
+        for k in list(_RUNTIME_SKILL_ENV_MANAGED_KEYS):
+            if k not in desired_env:
+                os.environ.pop(k, None)
+
+    # Apply desired env vars.
+    applied = 0
+    for k, v in desired_env.items():
+        os.environ[k] = v
+        applied += 1
+
+    # Update tracking.
+    if full_refresh:
+        _RUNTIME_SKILL_ENV_CONTEXT = context
+        _RUNTIME_SKILL_ENV_KEYS_BY_SKILL = {k: set(v) for k, v in new_keys_by_skill.items()}
+        _RUNTIME_SKILL_ENV_MANAGED_KEYS = set(desired_env.keys())
+    else:
+        # Partial refresh: only update the touched skills; do not wipe other skills.
+        for skill, keys in new_keys_by_skill.items():
+            _RUNTIME_SKILL_ENV_KEYS_BY_SKILL[skill] = set(keys)
+        _RUNTIME_SKILL_ENV_MANAGED_KEYS.update(desired_env.keys())
 
     # Best-effort materialization of per-skill config files.
     # Global skill blocks with 'path' are handled by _flatten_secrets_mapping, but

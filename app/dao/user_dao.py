@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.dao.base import BaseDAO
 from app.models.domain import User
@@ -15,12 +16,7 @@ class UserDAO(BaseDAO[User]):
     All methods return Pydantic User models, never SQLAlchemy objects.
     """
 
-    async def create(
-        self,
-        user_id: str,
-        telegram_id: str,
-        agent_name: str | None = None
-    ) -> User:
+    async def create(self, user_id: str, telegram_id: str, agent_name: str | None = None) -> User:
         """Create a new user.
 
         Args:
@@ -72,7 +68,26 @@ class UserDAO(BaseDAO[User]):
                 await self._update_telegram_id(user_id, telegram_id)
                 existing = await self.get_by_id(user_id)
             return existing
-        return await self.create(user_id, telegram_id)
+
+        # If a user already exists for this telegram_id (e.g., retry/race or
+        # alternate id mapping), prefer returning it rather than violating the
+        # unique constraint.
+        existing_by_tg = await self.get_by_telegram_id(telegram_id)
+        if existing_by_tg:
+            return existing_by_tg
+
+        try:
+            return await self.create(user_id, telegram_id)
+        except IntegrityError:
+            # Another concurrent worker likely inserted the user after our checks.
+            # Fall back to fetching the existing row.
+            existing = await self.get_by_id(user_id)
+            if existing:
+                return existing
+            existing_by_tg = await self.get_by_telegram_id(telegram_id)
+            if existing_by_tg:
+                return existing_by_tg
+            raise
 
     async def _update_telegram_id(
         self,
@@ -86,9 +101,7 @@ class UserDAO(BaseDAO[User]):
             telegram_id: New telegram ID.
         """
         async with self._db.session() as session:
-            result = await session.execute(
-                select(UserModel).where(UserModel.id == user_id)
-            )
+            result = await session.execute(select(UserModel).where(UserModel.id == user_id))
             user_model = result.scalar_one_or_none()
             if user_model:
                 user_model.telegram_id = telegram_id
@@ -103,9 +116,7 @@ class UserDAO(BaseDAO[User]):
             User domain model if found, None otherwise.
         """
         async with self._db.session() as session:
-            result = await session.execute(
-                select(UserModel).where(UserModel.id == user_id)
-            )
+            result = await session.execute(select(UserModel).where(UserModel.id == user_id))
             user_model = result.scalar_one_or_none()
 
             if user_model is None:
@@ -155,9 +166,7 @@ class UserDAO(BaseDAO[User]):
             True if user was found and updated, False otherwise.
         """
         async with self._db.session() as session:
-            result = await session.execute(
-                select(UserModel).where(UserModel.id == user_id)
-            )
+            result = await session.execute(select(UserModel).where(UserModel.id == user_id))
             user_model = result.scalar_one_or_none()
 
             if user_model is None:
@@ -177,9 +186,7 @@ class UserDAO(BaseDAO[User]):
             True if user was found and updated, False otherwise.
         """
         async with self._db.session() as session:
-            result = await session.execute(
-                select(UserModel).where(UserModel.id == user_id)
-            )
+            result = await session.execute(select(UserModel).where(UserModel.id == user_id))
             user_model = result.scalar_one_or_none()
 
             if user_model is None:

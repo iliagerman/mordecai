@@ -71,10 +71,14 @@ async def test_real_llm_can_answer_using_agentcore_memory_context(tmp_path):
 
     print(f"[e2e] AWS env after MemoryService normalization: env={aws_env_summary()}")
 
-    # Validate credentials early (avoid noisy AgentCore errors).
-    # We intentionally use the default credential chain here because MemoryService
-    # normalizes the AWS_* env vars to match cfg (and clears stale session tokens).
-    skip_if_aws_auth_invalid(region_name=cfg.aws_region)
+    # Validate credentials early (avoid noisy AgentCore errors). Prefer configured
+    # creds when available, to avoid stale env-session-token issues.
+    skip_if_aws_auth_invalid(
+        region_name=cfg.aws_region,
+        aws_access_key_id=cfg.aws_access_key_id,
+        aws_secret_access_key=cfg.aws_secret_access_key,
+        aws_session_token=getattr(cfg, "aws_session_token", None),
+    )
     agent_service = AgentService(cfg, memory_service=memory_service)
 
     actor_id = f"e2e_llm_{uuid.uuid4()}"
