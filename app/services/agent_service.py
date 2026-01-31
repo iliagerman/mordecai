@@ -148,6 +148,10 @@ def _extract_required_env(frontmatter: dict) -> list[dict]:
             example = item.get("example")
             if isinstance(example, str) and example.strip():
                 rec["example"] = example.strip()
+            when = item.get("when")
+            if isinstance(when, dict) and when:
+                # Preserve conditional requirements (e.g. depends on EMAIL_PROVIDER)
+                rec["when"] = when
             out.append(rec)
 
     # de-dup preserving order
@@ -194,6 +198,10 @@ def _extract_required_config(frontmatter: dict) -> list[dict]:
             example = item.get("example")
             if isinstance(example, str) and example.strip():
                 rec["example"] = example.strip()
+            when = item.get("when")
+            if isinstance(when, dict) and when:
+                # Preserve conditional requirements (e.g. depends on EMAIL_PROVIDER)
+                rec["when"] = when
             out.append(rec)
 
     # de-dup preserving order
@@ -390,6 +398,43 @@ class AgentService:
         if not isinstance(skills_block, dict):
             skills_block = {}
 
+        def is_active_req(req: dict, *, skill_cfg: dict) -> bool:
+            """Return True if a requirement is active given its optional `when` clause.
+
+            Supported forms (in SKILL.md frontmatter):
+              when:
+                config: EMAIL_PROVIDER
+                equals: gmail
+
+              when:
+                env: SOME_ENV
+                equals: 1
+            """
+
+            when = req.get("when")
+            if not isinstance(when, dict) or not when:
+                return True
+
+            # config-based gating (preferred for skill setup)
+            cfg_key = when.get("config")
+            if isinstance(cfg_key, str) and cfg_key.strip():
+                actual = skill_cfg.get(cfg_key)
+                if "equals" in when:
+                    return str(actual) == str(when.get("equals"))
+                # If no equals provided, treat presence/truthiness as activation.
+                return bool(actual)
+
+            # env-based gating
+            env_key = when.get("env")
+            if isinstance(env_key, str) and env_key.strip():
+                actual = os.environ.get(env_key)
+                if "equals" in when:
+                    return str(actual) == str(when.get("equals"))
+                return bool(actual)
+
+            # Unknown/unsupported when clause: default to active.
+            return True
+
         missing_by_skill: dict[str, dict[str, list[dict]]] = {}
         for info in self._discover_skills(user_id):
             skill_name = info.get("name") or ""
@@ -412,8 +457,15 @@ class AgentService:
             if not reqs and not cfg_reqs:
                 continue
 
+            # Per-skill config block from merged secrets.
+            skill_cfg = skills_block.get(skill_name) or skills_block.get(skill_name.lower())
+            if not isinstance(skill_cfg, dict):
+                skill_cfg = {}
+
             missing_env: list[dict] = []
             for r in reqs:
+                if not is_active_req(r, skill_cfg=skill_cfg):
+                    continue
                 n = r.get("name")
                 if not n:
                     continue
@@ -423,10 +475,20 @@ class AgentService:
 
             missing_cfg: list[dict] = []
             if cfg_reqs:
-                skill_cfg = skills_block.get(skill_name) or skills_block.get(skill_name.lower())
-                if not isinstance(skill_cfg, dict):
-                    skill_cfg = {}
+                # Heuristic: if a per-user generated config file exists at the
+                # user skills root (e.g. himalaya.toml), do not keep prompting
+                # for config placeholders.
+                try:
+                    user_root = resolve_user_skills_dir(self.config, user_id, create=True)
+                    generated_cfg = user_root / f"{skill_name.lower()}.toml"
+                    if generated_cfg.exists() and generated_cfg.is_file():
+                        cfg_reqs = []
+                except Exception:
+                    pass
+
                 for r in cfg_reqs:
+                    if not is_active_req(r, skill_cfg=skill_cfg):
+                        continue
                     n = r.get("name")
                     if not n:
                         continue
@@ -992,7 +1054,7 @@ class AgentService:
                 "  - After finding candidate files, read them (file_read) until you find the requested content, or ask the user to confirm which file is correct.\n"
                 "  - Example bounded search commands (via shell):\n"
                 "    - `find <VAULT_ROOT>/family -maxdepth 4 -type f -iname '*.md' -print | head -n 50`\n"
-                "    - `find <VAULT_ROOT>/family -maxdepth 4 -type f \\\( -iname '*<keyword>*' -o -iname '*<keyword2>*' \\\) -print | head -n 20`\n"
+                "    - `find <VAULT_ROOT>/family -maxdepth 4 -type f \\( -iname '*<keyword>*' -o -iname '*<keyword2>*' \\) -print | head -n 20`\n"
                 '    - `rg -n --max-count 20 -S "<keyword>|<keyword2>" <VAULT_ROOT>/family 2>/dev/null || true`\n\n'
             )
 
@@ -1620,15 +1682,16 @@ class AgentService:
                 )
 
         # If we wrote a session summary into Obsidian STM, snapshot it into an
-        # in-memory cache for immediate injection into the next session prompt.
-        # Note: We intentionally do NOT clear stm.md here. Tests (and expected
-        # UX) rely on STM persisting across sessions, while injection logic can
-        # still pick up recent summaries.
+        # in-memory cache for immediate injection into the next session prompt,
+        # then clear stm.md on disk. This implements an explicit “handoff” model:
+        # the prior session's STM is preserved for the next prompt, but the
+        # scratchpad is reset for the new session.
         vault_root = getattr(self.config, "obsidian_vault_root", None)
         if vault_root and summary_text:
             try:
                 from app.tools.short_term_memory_vault import (
                     append_session_summary,
+                    clear as clear_stm,
                     read_raw_text,
                     short_term_memory_path,
                 )
@@ -1658,15 +1721,42 @@ class AgentService:
                     # Never fail /new due to Obsidian write issues.
                     pass
 
-                stm_text = read_raw_text(
-                    vault_root,
-                    user_id,
-                    max_chars=getattr(self.config, "personality_max_chars", 20_000),
-                )
+                # Snapshot STM into an in-memory handoff cache for the next prompt.
+                # IMPORTANT: Even if STM read fails, we still want to clear the file
+                # on disk; and we can fall back to a minimal synthesized block.
+                stm_text: str | None = None
+                try:
+                    stm_text = read_raw_text(
+                        vault_root,
+                        user_id,
+                        max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                    )
+                except Exception:
+                    stm_text = None
+
+                if not stm_text:
+                    # Fallback: construct the minimal expected handoff block so
+                    # the next session prompt still includes the prior summary.
+                    # (We don't include created_at here; it's not required for prompt injection.)
+                    stm_text = (
+                        "# STM\n\n"
+                        f"## Session summary: {session_id}\n\n"
+                        f"{(summary_text or '').strip()}\n"
+                    )
+
                 if stm_text:
                     self._obsidian_stm_cache[user_id] = stm_text
             except Exception:
+                # Never fail /new due to Obsidian handling issues.
                 pass
+            finally:
+                # Clear the on-disk scratchpad after we snapshot it.
+                try:
+                    from app.tools.short_term_memory_vault import clear as clear_stm
+
+                    clear_stm(vault_root, user_id)
+                except Exception:
+                    pass
 
         # Always clear session and reset count (Requirement 6.2, 6.4)
         self._clear_session_memory(user_id)

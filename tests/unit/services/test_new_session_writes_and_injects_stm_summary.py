@@ -5,7 +5,7 @@ import pytest
 from app.enums import ModelProvider
 from app.services.agent_service import AgentService
 from app.services.memory_extraction_service import MemoryExtractionService
-from app.tools.short_term_memory_vault import read_raw_text, short_term_memory_path
+from app.tools.short_term_memory_vault import short_term_memory_path
 
 
 @pytest.mark.asyncio
@@ -58,12 +58,10 @@ async def test_new_session_appends_summary_to_stm_and_next_prompt_injects_it(tmp
 
     _agent, _notif = await svc.new_session(user_id)
 
-    # Summary should have been appended to STM before in-memory clearing.
-    assert stm_path.exists()
-    raw = read_raw_text(cfg.obsidian_vault_root, user_id, max_chars=20_000)
-    assert raw is not None
-    assert "Session summary" in raw
-    assert "Decided B" in raw
+    # Summary should be handed off: cached for next-prompt injection, and the
+    # on-disk STM scratchpad cleared for the new session.
+    assert not stm_path.exists()
+    assert "Decided B" in (svc._obsidian_stm_cache.get(user_id) or "")
 
     # In-memory session state cleared
     assert svc._conversation_history.get(user_id) == []

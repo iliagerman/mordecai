@@ -75,6 +75,33 @@ message.send.backend.auth.cmd = "pass show google/app-password"
 
 **Note:** Gmail requires an App Password if 2FA is enabled.
 
+## Outlook (Office 365 / Outlook.com) Configuration
+
+```toml
+[accounts.outlook]
+email = "you@company.com"
+display-name = "Work"
+default = true
+
+backend.type = "imap"
+backend.host = "outlook.office365.com"
+backend.port = 993
+backend.encryption.type = "tls"
+backend.login = "you@company.com"
+backend.auth.type = "password"
+backend.auth.raw = "your-app-password"
+
+message.send.backend.type = "smtp"
+message.send.backend.host = "smtp.office365.com"
+message.send.backend.port = 587
+message.send.backend.encryption.type = "start-tls"
+message.send.backend.login = "you@company.com"
+message.send.backend.auth.type = "password"
+message.send.backend.auth.raw = "your-app-password"
+```
+
+**Note:** Many Outlook/Office365 accounts require an app password (or tenant policy changes) for IMAP/SMTP.
+
 ## iCloud Configuration
 
 ```toml

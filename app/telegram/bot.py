@@ -1298,22 +1298,50 @@ class TelegramBotInterface:
         # Now escape HTML special characters
         result = escape(result)
 
-        # Convert markdown tables to pre blocks
+        # Convert markdown tables into a human-friendly list.
+        # Telegram does not render markdown pipe tables reliably.
         def convert_table(match: re.Match) -> str:
-            lines = match.group(0).strip().split("\n")
-            if len(lines) < 2:
+            raw_lines = [ln.strip() for ln in match.group(0).strip().split("\n") if ln.strip()]
+            if len(raw_lines) < 2:
                 return match.group(0)
 
-            html_lines = ["<pre>"]
-            for i, line in enumerate(lines):
-                # Skip separator line (contains only |, -, and spaces)
-                if re.match(r"^[\|\-\s:]+$", line):
-                    continue
-                # Clean up the line
-                cells = [c.strip() for c in line.strip("|").split("|")]
-                html_lines.append("| " + " | ".join(cells) + " |")
-            html_lines.append("</pre>")
-            return "\n".join(html_lines)
+            # Drop separator lines (contains only |, -, :, and spaces)
+            lines = [ln for ln in raw_lines if not re.match(r"^[\|\-\s:]+$", ln)]
+            if not lines:
+                return ""
+
+            # Parse header + rows
+            header = [c.strip() for c in lines[0].strip("|").split("|")]
+            rows = [[c.strip() for c in ln.strip("|").split("|")] for ln in lines[1:]]
+
+            out_lines: list[str] = []
+            for idx, row in enumerate(rows, start=1):
+                # Pad/truncate to header length
+                if len(row) < len(header):
+                    row = row + [""] * (len(header) - len(row))
+                if len(row) > len(header) and header:
+                    row = row[: len(header)]
+
+                if header and any(h for h in header):
+                    parts: list[str] = []
+                    for h, v in zip(header, row, strict=False):
+                        h = (h or "").strip()
+                        v = (v or "").strip()
+                        if not h and not v:
+                            continue
+                        if h and v:
+                            parts.append(f"{h}: {v}")
+                        elif v:
+                            parts.append(v)
+                    line = f"{idx}. " + "; ".join(parts)
+                else:
+                    # Fallback: no header found
+                    parts = [c for c in row if c]
+                    line = f"{idx}. " + " ".join(parts)
+
+                out_lines.append(line.strip())
+
+            return "\n".join(out_lines)
 
         # Match markdown tables (lines starting with |)
         result = re.sub(r"(?:^\|.+\|$\n?)+", convert_table, result, flags=re.MULTILINE)

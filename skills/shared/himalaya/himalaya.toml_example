@@ -39,3 +39,24 @@ message.send.backend.encryption.type = "start-tls"
 message.send.backend.login = "[GMAIL]"
 message.send.backend.auth.type = "password"
 message.send.backend.auth.raw = "[PASSWORD]"
+
+[accounts.outlook]
+display-name = "[OUTLOOK_DISPLAY_NAME]"
+email = "[OUTLOOK_EMAIL]"
+
+backend.type = "imap"
+backend.host = "outlook.office365.com"
+backend.port = 993
+backend.login = "[OUTLOOK_EMAIL]"
+backend.auth.type = "password"
+backend.auth.raw = "[OUTLOOK_APP_PASSWORD]"
+
+# SMTP Backend for sending (Outlook)
+message.send.backend.type = "smtp"
+message.send.backend.host = "smtp.office365.com"
+message.send.backend.port = 587
+message.send.backend.encryption.type = "start-tls"
+message.send.backend.login = "[OUTLOOK_EMAIL]"
+message.send.backend.auth.type = "password"
+message.send.backend.auth.raw = "[OUTLOOK_APP_PASSWORD]"
+
