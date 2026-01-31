@@ -13,6 +13,29 @@ Mordecai is a multi-user AI agent platform built on the Strands Agents SDK, feat
 - **Kanban Dashboard**: Web-based task visualization (Pending → In Progress → Done)
 - **Per-User SQS Queues**: Async message processing with isolation
 
+## Skill secrets & per-user config templates
+
+Mordecai supports multi-user skills that may require secrets (API keys, passwords) and/or config files.
+
+### Per-user skill secrets
+
+- Global secrets live in `secrets.yml` (git-ignored).
+- Per-user skill secrets live in `skills/<USER_ID>/skills_secrets.yml` (git-ignored).
+- Example templates (e.g. `secrets.yml_example`) are always committed.
+
+The agent will ask for missing required values (declared in each skill’s `SKILL.md`) and persist them automatically.
+
+### *_example template materialization
+
+If a skill directory contains files ending in `*_example` or `*.example`, Mordecai treats them as templates:
+
+- It renders a per-user copy with the suffix removed
+   - Example: `himalaya.toml_example` → `himalaya.toml`
+- It replaces placeholders of the form `[PLACEHOLDER]` using values stored under `skills.<skill>` in `skills_secrets.yml`
+- For the canonical config pattern `{skill}.toml_example`, it also exports `{SKILL}_CONFIG` (e.g. `HIMALAYA_CONFIG`) on every skill invocation
+
+This makes it possible for each user/tenant to use their own configuration without hard-coding paths inside the skill.
+
 ## Requirements
 
 - Python 3.13+

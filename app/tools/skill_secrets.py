@@ -13,7 +13,12 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from app.config import refresh_runtime_env_from_secrets, upsert_skill_config, upsert_skill_env_vars
+from app.config import (
+    refresh_runtime_env_from_secrets,
+    resolve_user_skills_secrets_path,
+    upsert_skill_config,
+    upsert_skill_env_vars,
+)
 from app.observability.trace_context import get_trace_id
 from app.observability.trace_logging import trace_event
 
@@ -30,12 +35,14 @@ except Exception:  # pragma: no cover
 
 _current_user_id: str | None = None
 _secrets_path: Path = Path("secrets.yml")
+_config = None
 
 
-def set_skill_secrets_context(*, user_id: str, secrets_path: str | Path) -> None:
-    global _current_user_id, _secrets_path
+def set_skill_secrets_context(*, user_id: str, secrets_path: str | Path, config=None) -> None:
+    global _current_user_id, _secrets_path, _config
     _current_user_id = user_id
     _secrets_path = Path(secrets_path)
+    _config = config
 
 
 @tool(
@@ -87,11 +94,18 @@ def set_skill_env_vars(
 
     user_id = None if apply_to == "global" else _current_user_id
 
+    # Per-user values live in skills/<user>/skills_secrets.yml.
+    target_path = _secrets_path
+    if user_id is not None:
+        if _config is None:
+            return "Skill secrets context misconfigured (missing config)."
+        target_path = resolve_user_skills_secrets_path(_config, user_id)
+
     upsert_skill_env_vars(
-        secrets_path=_secrets_path,
+        secrets_path=target_path,
         skill_name=skill_name,
         env_vars=env_vars,
-        user_id=user_id,
+        user_id=None,
     )
 
     # Hot-reload into the running process so subsequent shell/subprocess calls see it.
@@ -99,14 +113,14 @@ def set_skill_env_vars(
         secrets_path=_secrets_path,
         user_id=user_id,
         skill_names=[skill_name],
+        config=_config,
     )
 
     # Do not echo values.
     keys = sorted(env_vars.keys())
     scope = "global" if user_id is None else f"user:{user_id}"
     result = (
-        f"Saved {len(keys)} env var(s) for skill '{skill_name}' ({scope}) into secrets.yml. "
-        f"Keys: {', '.join(keys)}"
+        f"Saved {len(keys)} env var(s) for skill '{skill_name}' ({scope}). Keys: {', '.join(keys)}"
     )
 
     if get_trace_id() is not None:
@@ -160,11 +174,17 @@ def set_skill_config(
 
     user_id = None if apply_to == "global" else _current_user_id
 
+    target_path = _secrets_path
+    if user_id is not None:
+        if _config is None:
+            return "Skill secrets context misconfigured (missing config)."
+        target_path = resolve_user_skills_secrets_path(_config, user_id)
+
     upsert_skill_config(
-        secrets_path=_secrets_path,
+        secrets_path=target_path,
         skill_name=skill_name,
         config_data=cfg,
-        user_id=user_id,
+        user_id=None,
     )
 
     # Best-effort: materialize config files and refresh env.
@@ -172,13 +192,14 @@ def set_skill_config(
         secrets_path=_secrets_path,
         user_id=user_id,
         skill_names=[skill_name],
+        config=_config,
     )
 
     # Do not echo values.
     keys = sorted([str(k) for k in cfg.keys() if str(k).strip()])
     scope = "global" if user_id is None else f"user:{user_id}"
     result = (
-        f"Saved config for skill '{skill_name}' ({scope}) into secrets.yml. "
+        f"Saved config for skill '{skill_name}' ({scope}). "
         f"Top-level keys: {', '.join(keys) if keys else '(none)'}"
     )
 

@@ -37,7 +37,6 @@ from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.models import BedrockModel
 from strands.models.gemini import GeminiModel
 from strands.models.openai import OpenAIModel
-from strands_tools import file_write
 
 from app.config import (
     AgentConfig,
@@ -56,6 +55,7 @@ from app.tools import search_memory as search_memory_module
 from app.tools import send_file as send_file_module
 from app.tools import set_agent_name as set_agent_name_tool
 from app.tools import file_read_env as file_read_env_module
+from app.tools import file_write_env as file_write_env_module
 from app.tools import personality_vault as personality_vault_module
 from app.tools import shell_env as shell_env_module
 from app.tools import skill_secrets as skill_secrets_module
@@ -95,10 +95,27 @@ def _parse_skill_frontmatter(content: str) -> dict:
     if len(parts) < 3:
         return {}
 
+    raw = parts[1]
+
+    # YAML forbids tab indentation. Some SKILL.md files historically used tabs.
+    # Be tolerant: normalize leading tabs to two spaces before parsing.
+    try:
+        normalized_lines: list[str] = []
+        for ln in raw.splitlines():
+            if ln.startswith("\t"):
+                # Replace all leading tabs (only) with spaces.
+                prefix_tabs = len(ln) - len(ln.lstrip("\t"))
+                normalized_lines.append(("  " * prefix_tabs) + ln.lstrip("\t"))
+            else:
+                normalized_lines.append(ln)
+        raw = "\n".join(normalized_lines)
+    except Exception:
+        pass
+
     try:
         import yaml
 
-        data = yaml.safe_load(parts[1]) or {}
+        data = yaml.safe_load(raw) or {}
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -116,6 +133,52 @@ def _extract_required_env(frontmatter: dict) -> list[dict]:
 
     out: list[dict] = []
     for item in env_list:
+        if isinstance(item, str):
+            name = item.strip()
+            if name:
+                out.append({"name": name})
+        elif isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            rec = {"name": name}
+            prompt = item.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                rec["prompt"] = prompt.strip()
+            example = item.get("example")
+            if isinstance(example, str) and example.strip():
+                rec["example"] = example.strip()
+            out.append(rec)
+
+    # de-dup preserving order
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for r in out:
+        n = r.get("name")
+        if not n or n in seen:
+            continue
+        seen.add(n)
+        deduped.append(r)
+    return deduped
+
+
+def _extract_required_config(frontmatter: dict) -> list[dict]:
+    """Extract requires.config entries (string or dict) from frontmatter.
+
+    This is for skills that need structured secrets/config values (e.g. to render
+    *_example template files).
+    """
+
+    requires = frontmatter.get("requires")
+    if not isinstance(requires, dict):
+        return []
+
+    cfg_list = requires.get("config")
+    if not isinstance(cfg_list, list):
+        return []
+
+    out: list[dict] = []
+    for item in cfg_list:
         if isinstance(item, str):
             name = item.strip()
             if name:
@@ -251,24 +314,83 @@ class AgentService:
         lines.append("")
         return "\n".join(lines)
 
-    def _get_missing_skill_env_vars(self, user_id: str) -> dict[str, list[dict]]:
-        """Return missing required env vars for installed skills.
+    def _load_merged_skill_secrets(self, user_id: str) -> dict:
+        """Load merged skill secrets for a user.
+
+        Sources (later wins):
+          - repo-root config.yml (optional) [skills: only]
+          - secrets.yml (global)
+          - skills/<user>/skills_secrets.yml (per-user) [skills: only]
+        """
+
+        merged: dict = {}
+        try:
+            repo_root = Path(__file__).resolve().parents[2]
+            cfg_yml = repo_root / "config.yml"
+            if cfg_yml.exists() and cfg_yml.is_file():
+                import yaml
+
+                cfg_data = yaml.safe_load(cfg_yml.read_text(encoding="utf-8")) or {}
+                if isinstance(cfg_data, dict) and isinstance(cfg_data.get("skills"), dict):
+                    merged["skills"] = cfg_data.get("skills")
+        except Exception:
+            pass
+
+        try:
+            from app.config import load_raw_secrets, resolve_user_skills_secrets_path
+
+            secrets_path = Path(getattr(self.config, "secrets_path", "secrets.yml"))
+            global_secrets = load_raw_secrets(secrets_path)
+            if isinstance(global_secrets, dict):
+                skills = global_secrets.get("skills")
+                if isinstance(skills, dict):
+                    merged.setdefault("skills", {})
+                    if isinstance(merged.get("skills"), dict):
+                        merged["skills"].update(skills)
+
+            user_skills_secrets_path = resolve_user_skills_secrets_path(self.config, user_id)
+            user_secrets = load_raw_secrets(user_skills_secrets_path)
+            if isinstance(user_secrets, dict):
+                user_skills = user_secrets.get("skills")
+                if isinstance(user_skills, dict):
+                    merged.setdefault("skills", {})
+                    if isinstance(merged.get("skills"), dict):
+                        # Deep merge so per-user values override nested structures.
+                        from app.config import _deep_merge_dict
+
+                        _deep_merge_dict(merged["skills"], user_skills)
+        except Exception:
+            pass
+
+        return merged
+
+    def _get_missing_skill_requirements(self, user_id: str) -> dict[str, dict[str, list[dict]]]:
+        """Return missing required env/config values for installed skills.
 
         Uses the structured schema declared in SKILL.md frontmatter:
-          requires.env
+          - requires.env
+          - requires.config
 
-        Missing values are checked against the current process env after
-        hot-reloading from secrets.yml for this user.
+        Missing env values are checked against the current process env after
+        hot-reloading from secrets + per-user skill secrets.
+
+        Missing config values are checked against the merged skill secrets mapping.
         """
         try:
             refresh_runtime_env_from_secrets(
                 secrets_path=Path(getattr(self.config, "secrets_path", "secrets.yml")),
                 user_id=user_id,
+                config=self.config,
             )
         except Exception:
             pass
 
-        missing_by_skill: dict[str, list[dict]] = {}
+        merged_skill_secrets = self._load_merged_skill_secrets(user_id)
+        skills_block = merged_skill_secrets.get("skills")
+        if not isinstance(skills_block, dict):
+            skills_block = {}
+
+        missing_by_skill: dict[str, dict[str, list[dict]]] = {}
         for info in self._discover_skills(user_id):
             skill_name = info.get("name") or ""
             skill_path = info.get("path") or ""
@@ -286,20 +408,40 @@ class AgentService:
 
             frontmatter = _parse_skill_frontmatter(content)
             reqs = _extract_required_env(frontmatter)
-            if not reqs:
+            cfg_reqs = _extract_required_config(frontmatter)
+            if not reqs and not cfg_reqs:
                 continue
 
-            missing: list[dict] = []
+            missing_env: list[dict] = []
             for r in reqs:
                 n = r.get("name")
                 if not n:
                     continue
                 val = os.environ.get(n)
                 if val is None or str(val).strip() == "":
-                    missing.append(r)
+                    missing_env.append(r)
 
-            if missing:
-                missing_by_skill[skill_name] = missing
+            missing_cfg: list[dict] = []
+            if cfg_reqs:
+                skill_cfg = skills_block.get(skill_name) or skills_block.get(skill_name.lower())
+                if not isinstance(skill_cfg, dict):
+                    skill_cfg = {}
+                for r in cfg_reqs:
+                    n = r.get("name")
+                    if not n:
+                        continue
+                    # Config keys are stored under skills.<skill>.<KEY> in skills_secrets.yml
+                    v = skill_cfg.get(n)
+                    if v is None or str(v).strip() == "":
+                        missing_cfg.append(r)
+
+            if missing_env or missing_cfg:
+                rec: dict[str, list[dict]] = {}
+                if missing_env:
+                    rec["env"] = missing_env
+                if missing_cfg:
+                    rec["config"] = missing_cfg
+                missing_by_skill[skill_name] = rec
 
         return missing_by_skill
 
@@ -958,9 +1100,8 @@ class AgentService:
                 "1. file_read the SKILL.md ONCE\n"
                 "2. Extract the bash commands from the instructions\n"
                 '3. Run them with shell(command="the bash command")\n\n'
-                "**CRITICAL:** After reading SKILL.md, your next tool call "
-                "MUST be shell(), not file_read. Skills say 'Bash' but use "
-                "shell() tool.\n\n"
+                "**CRITICAL:** After reading SKILL.md, your next tool call is usually shell(), not file_read. "
+                "However, if the skill has missing setup requirements (see 'Skill Setup Required'), you MUST ask the user and persist the values first (set_skill_env_vars / set_skill_config) before running shell commands for that skill.\n\n"
             )
             for skill in skills_info:
                 name = skill.get("name", "unknown")
@@ -972,28 +1113,48 @@ class AgentService:
                 )
 
             # Skill env setup (required vars)
-            missing = self._get_missing_skill_env_vars(user_id)
+            missing = self._get_missing_skill_requirements(user_id)
             if missing:
                 prompt += "\n## Skill Setup Required\n\n"
                 prompt += (
-                    "Some installed skills declare required environment variables that are not set yet.\n"
-                    "Ask the user for the missing values and then persist them using `set_skill_env_vars`.\n\n"
-                    "Example tool call:\n"
-                    '- set_skill_env_vars(skill_name="himalaya", env_json=\'{"HIMALAYA_EMAIL":"user@gmail.com"}\', apply_to="user")\n\n'
+                    "Some installed skills declare required setup values that are not set yet (env vars and/or config fields).\n"
+                    "If a required value is missing, ask the user for it and then persist it:\n"
+                    "- Env vars: `set_skill_env_vars(...)`\n"
+                    "- Config fields: `set_skill_config(...)` (stored in `skills/<user>/skills_secrets.yml`)\n\n"
+                    "IMPORTANT: If a skill has missing setup requirements, do NOT run its shell commands yet.\n\n"
+                    "Examples:\n"
+                    '- set_skill_env_vars(skill_name="himalaya", env_json=\'{"HIMALAYA_CONFIG":"/path/to/himalaya.toml"}\', apply_to="user")\n'
+                    '- set_skill_config(skill_name="himalaya", config_json=\'{"GMAIL":"user@gmail.com","PASSWORD":"app-password"}\', apply_to="user")\n\n'
                     "Missing values (do NOT guess these):\n"
                 )
                 for skill_name, reqs in missing.items():
                     prompt += f"- **{skill_name}**\n"
-                    for r in reqs:
-                        n = r.get("name")
-                        if not n:
-                            continue
-                        line = f"  - {n}"
-                        if r.get("prompt"):
-                            line += f" — {r['prompt']}"
-                        if r.get("example"):
-                            line += f" (example: {r['example']})"
-                        prompt += line + "\n"
+                    env_reqs = reqs.get("env", []) if isinstance(reqs, dict) else []
+                    cfg_reqs = reqs.get("config", []) if isinstance(reqs, dict) else []
+                    if env_reqs:
+                        prompt += "  - env:\n"
+                        for r in env_reqs:
+                            n = r.get("name")
+                            if not n:
+                                continue
+                            line = f"    - {n}"
+                            if r.get("prompt"):
+                                line += f" — {r['prompt']}"
+                            if r.get("example"):
+                                line += f" (example: {r['example']})"
+                            prompt += line + "\n"
+                    if cfg_reqs:
+                        prompt += "  - config:\n"
+                        for r in cfg_reqs:
+                            n = r.get("name")
+                            if not n:
+                                continue
+                            line = f"    - {n}"
+                            if r.get("prompt"):
+                                line += f" — {r['prompt']}"
+                            if r.get("example"):
+                                line += f" (example: {r['example']})"
+                            prompt += line + "\n"
 
         # Working folder section (Requirement 10.3)
         working_dir = self._get_user_working_dir(user_id)
@@ -1246,12 +1407,14 @@ class AgentService:
         shell_env_module.set_shell_env_context(
             user_id=user_id,
             secrets_path=getattr(self.config, "secrets_path", "secrets.yml"),
+            config=self.config,
         )
 
         # Skill secrets tool context: persist env vars into secrets.yml
         skill_secrets_module.set_skill_secrets_context(
             user_id=user_id,
             secrets_path=getattr(self.config, "secrets_path", "secrets.yml"),
+            config=self.config,
         )
 
         # Built-in Strands tools (not the same thing as instruction-based “skills”).
@@ -1259,7 +1422,7 @@ class AgentService:
         builtin_tools = [
             shell_env_module.shell,
             file_read_env_module.file_read,
-            file_write,
+            file_write_env_module.file_write,
             set_agent_name_tool,
             send_file_module,
         ]

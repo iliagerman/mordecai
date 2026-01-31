@@ -3,16 +3,23 @@ name: himalaya
 description: "CLI to manage emails via IMAP/SMTP. Use for listing, reading, writing, replying, forwarding, searching, and organizing emails. Activate when user asks about email, inbox, messages, or wants to send/read mail."
 allowed-tools: Bash,Read,Write
 requires:
-	bins:
-		- himalaya
+  bins:
+    - himalaya
+  config:
+    - name: GMAIL
+      prompt: Gmail email address for the account to access
+      example: ilia@example.com
+    - name: PASSWORD
+      prompt: Gmail App Password (recommended) for IMAP/SMTP
+      example: "abcd efgh ijkl mnop"
 install:
-	# Best-effort hints for installers/tools; actual install method depends on environment.
-	- kind: brew
-		package: himalaya
-	- kind: cargo
-		package: himalaya
-	- kind: apt
-		package: himalaya
+  # Best-effort hints for installers/tools; actual install method depends on environment.
+  - kind: brew
+    package: himalaya
+  - kind: cargo
+    package: himalaya
+  - kind: apt
+    package: himalaya
 ---
 
 # Himalaya Email CLI
@@ -37,8 +44,15 @@ Activate this skill when the user:
 ## Prerequisites
 
 1. Himalaya CLI installed (`himalaya --version` to verify)
-2. A configuration file at `~/.config/himalaya/config.toml` (or `/root/.config/himalaya/config.toml` in Docker containers)
-3. IMAP/SMTP credentials configured (password stored securely)
+2. Mordecai will manage a per-user Himalaya config file from the template `himalaya.toml_example`.
+3. You MUST have values for the template placeholders:
+	- `[GMAIL]` (your Gmail email address)
+	- `[PASSWORD]` (a Gmail App Password is recommended)
+
+When the placeholders are provided and persisted, Mordecai will:
+- Render a per-user `himalaya.toml` next to the template (in the user's skills folder)
+- Export `HIMALAYA_CONFIG` pointing to that file on every skill invocation
+- Write a per-user `.env` convenience file under `skills/<user>/.env` (git-ignored)
 
 ## Installation Check
 
@@ -72,35 +86,22 @@ If installation fails, inform the user and provide the GitHub link: https://gith
 
 ## Configuration Setup
 
-**Note**: Configuration requires user interaction. Guide them through setup if not configured.
+Mordecai uses a template-based approach (recommended for multi-user isolation).
 
-Run the interactive wizard to set up an account:
+### Mordecai-managed configuration (recommended)
+
+1. Ensure Himalaya is installed.
+2. Ask the user for the required placeholders `[GMAIL]` and `[PASSWORD]`.
+3. Persist them using `set_skill_config(skill_name="himalaya", ...)`.
+
+After that, Mordecai will render the per-user config file and set `HIMALAYA_CONFIG` automatically.
+
+### Manual (outside Mordecai)
+
+If the user wants to manage their own config outside Mordecai, they can use:
+
 ```bash
 himalaya account configure
-```
-
-Or create `~/.config/himalaya/config.toml` manually:
-```toml
-[accounts.personal]
-email = "you@example.com"
-display-name = "Your Name"
-default = true
-
-backend.type = "imap"
-backend.host = "imap.example.com"
-backend.port = 993
-backend.encryption.type = "tls"
-backend.login = "you@example.com"
-backend.auth.type = "password"
-backend.auth.cmd = "pass show email/imap"  # or use keyring
-
-message.send.backend.type = "smtp"
-message.send.backend.host = "smtp.example.com"
-message.send.backend.port = 587
-message.send.backend.encryption.type = "start-tls"
-message.send.backend.login = "you@example.com"
-message.send.backend.auth.type = "password"
-message.send.backend.auth.cmd = "pass show email/smtp"
 ```
 
 ## Common Operations

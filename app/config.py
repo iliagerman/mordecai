@@ -116,6 +116,26 @@ def resolve_user_pending_skills_dir(config: Any, user_id: str, *, create: bool =
     return d
 
 
+def resolve_user_skills_secrets_path(config: Any, user_id: str, *, create: bool = True) -> Path:
+    """Resolve the per-user skill secrets file path.
+
+    Convention:
+      skills/<user_id>/skills_secrets.yml
+
+    This file is intended to store ONLY per-user skill configuration/secrets.
+    It should be git-ignored.
+    """
+
+    user_dir = resolve_user_skills_dir(config, user_id, create=create)
+    p = user_dir / "skills_secrets.yml"
+    if create:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+    return p
+
+
 # Container deployments commonly mount a host Obsidian vault at a known path.
 # If the configured obsidian_vault_root does not exist *in the current runtime*,
 # we will prefer this mount when present.
@@ -544,6 +564,7 @@ def refresh_runtime_env_from_secrets(
     secrets_path: Path,
     user_id: str | None = None,
     skill_names: list[str] | None = None,
+    config: Any | None = None,
 ) -> dict[str, Any]:
     """Reload secrets.yml and ensure the process env sees latest skill env vars.
 
@@ -569,12 +590,52 @@ def refresh_runtime_env_from_secrets(
         _RUNTIME_SKILL_ENV_CONTEXT is not None and _RUNTIME_SKILL_ENV_CONTEXT != context
     )
 
+    # ------------------------------------------------------------
+    # Load + merge secrets sources
+    #
+    # Precedence (later wins):
+    #   config.yml (optional, repo-root)  < secrets.yml < skills/<user>/skills_secrets.yml
+    #
+    # Only the `skills:` section is considered from per-user skills_secrets.yml.
+    # ------------------------------------------------------------
+    merged_secrets: dict[str, Any] = {}
+
+    # Optional repo-level config.yml
+    try:
+        repo_root = _find_repo_root(start=Path(__file__))
+        cfg_yml = repo_root / "config.yml"
+        if cfg_yml.exists() and cfg_yml.is_file():
+            with cfg_yml.open("r", encoding="utf-8") as f:
+                cfg_data = yaml.safe_load(f) or {}
+            if isinstance(cfg_data, dict):
+                _deep_merge_dict(merged_secrets, cfg_data)
+    except Exception:
+        pass
+
+    # Global secrets.yml
     secrets = load_raw_secrets(secrets_path)
-    skills = secrets.get("skills")
+    if isinstance(secrets, dict):
+        _deep_merge_dict(merged_secrets, secrets)
+
+    # Per-user skill secrets (skills/<user>/skills_secrets.yml)
+    if user_id is not None and config is not None:
+        try:
+            user_skills_secrets_path = resolve_user_skills_secrets_path(config, user_id)
+            user_secrets = load_raw_secrets(user_skills_secrets_path)
+            if isinstance(user_secrets, dict):
+                user_skills = user_secrets.get("skills")
+                if isinstance(user_skills, dict):
+                    merged_secrets.setdefault("skills", {})
+                    if isinstance(merged_secrets.get("skills"), dict):
+                        _deep_merge_dict(merged_secrets["skills"], user_skills)  # type: ignore[index]
+        except Exception:
+            pass
+
+    skills = merged_secrets.get("skills")
     if not isinstance(skills, dict):
         # Still attempt legacy env export for non-skill sections.
         try:
-            _flatten_secrets_mapping(secrets)
+            _flatten_secrets_mapping(merged_secrets)
         except Exception:
             pass
         return {"ok": True, "applied": 0, "skills": []}
@@ -590,7 +651,7 @@ def refresh_runtime_env_from_secrets(
     applied_skills: list[str] = []
 
     for name in names:
-        env_vars = get_skill_env_vars(secrets=secrets, skill_name=name, user_id=user_id)
+        env_vars = get_skill_env_vars(secrets=merged_secrets, skill_name=name, user_id=user_id)
         if not env_vars:
             new_keys_by_skill[name] = set()
             continue
@@ -606,6 +667,234 @@ def refresh_runtime_env_from_secrets(
         for k in list(_RUNTIME_SKILL_ENV_MANAGED_KEYS):
             if k not in desired_env:
                 os.environ.pop(k, None)
+
+    # ------------------------------------------------------------
+    # Materialize per-user example-based config templates.
+    #
+    # Convention:
+    #   If a skill directory contains *_example or *.example files,
+    #   Mordecai will render them into the same directory with the suffix removed.
+    #
+    # Placeholders:
+    #   [PLACEHOLDER] will be replaced with values from the merged skill config.
+    #
+    # Special env export:
+    #   If a file named {skill}.toml_example exists, export {SKILL}_CONFIG pointing
+    #   to the rendered {skill}.toml (e.g., HIMALAYA_CONFIG).
+    # ------------------------------------------------------------
+    def _materialize_skill_templates() -> dict[str, str]:
+        if user_id is None or config is None:
+            return {}
+
+        import re
+
+        extra_env: dict[str, str] = {}
+
+        # Determine the per-user skills directory where shared skills are mirrored.
+        try:
+            user_dir = resolve_user_skills_dir(config, user_id, create=True)
+        except Exception:
+            return {}
+
+        skills_block = merged_secrets.get("skills")
+        if not isinstance(skills_block, dict):
+            return {}
+
+        # A conservative cap to avoid runaway IO if a skill accidentally includes many example files.
+        max_templates_total = 50
+        rendered_count = 0
+
+        # Track config env vars we set so we can also emit a per-user .env convenience file.
+        config_env_lines: dict[str, str] = {}
+
+        for skill in names:
+            if rendered_count >= max_templates_total:
+                break
+
+            skill_dir = user_dir / str(skill)
+            if not (skill_dir.exists() and skill_dir.is_dir()):
+                continue
+
+            # Merge config values from the skill block. We accept:
+            # - top-level scalar keys (e.g., skills.himalaya.GMAIL)
+            # - env vars (skills.himalaya.env)
+            # - per-user overrides in the merged mapping (already applied)
+            skill_cfg = skills_block.get(skill)
+            if not isinstance(skill_cfg, dict):
+                skill_cfg = {}
+
+            # Build replacement map.
+            replacements: dict[str, str] = {}
+
+            # Include scalar config keys.
+            for k, v in skill_cfg.items():
+                if k in {"env", "users"}:
+                    continue
+                if isinstance(v, (dict, list)):
+                    continue
+                key = str(k).strip()
+                if not key:
+                    continue
+                if v is None:
+                    continue
+                replacements[key.upper()] = str(v)
+
+            # Include env keys.
+            env_block = skill_cfg.get("env")
+            if isinstance(env_block, dict):
+                for k, v in env_block.items():
+                    if v is None:
+                        continue
+                    replacements[str(k).upper()] = str(v)
+
+            # Apply legacy per-user overrides (if present in secrets.yml) for template rendering.
+            if user_id is not None:
+                users_block = skill_cfg.get("users")
+                if isinstance(users_block, dict):
+                    user_block = users_block.get(str(user_id))
+                    if isinstance(user_block, dict):
+                        # Merge scalar keys and env keys from the user block.
+                        for k, v in user_block.items():
+                            if k in {"env", "users"}:
+                                continue
+                            if isinstance(v, (dict, list)):
+                                continue
+                            key = str(k).strip()
+                            if key and v is not None:
+                                replacements[key.upper()] = str(v)
+
+                        user_env = user_block.get("env")
+                        if isinstance(user_env, dict):
+                            for k, v in user_env.items():
+                                if v is None:
+                                    continue
+                                replacements[str(k).upper()] = str(v)
+
+            # Find example templates.
+            example_files: list[Path] = []
+            try:
+                for p in skill_dir.rglob("*_example"):
+                    if p.is_file():
+                        example_files.append(p)
+                for p in skill_dir.rglob("*.example"):
+                    if p.is_file():
+                        example_files.append(p)
+            except Exception:
+                continue
+
+            # De-dup paths.
+            seen_paths: set[str] = set()
+            uniq_example_files: list[Path] = []
+            for p in example_files:
+                s = str(p)
+                if s in seen_paths:
+                    continue
+                seen_paths.add(s)
+                uniq_example_files.append(p)
+
+            for tpl in uniq_example_files:
+                if rendered_count >= max_templates_total:
+                    break
+
+                try:
+                    raw = tpl.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+
+                # Resolve destination path.
+                if tpl.name.endswith("_example"):
+                    dest_name = tpl.name[: -len("_example")]
+                elif tpl.name.endswith(".example"):
+                    dest_name = tpl.name[: -len(".example")]
+                else:
+                    continue
+                dest = tpl.with_name(dest_name)
+
+                def _replace(match: re.Match) -> str:
+                    key = (match.group(1) or "").strip().upper()
+                    if not key:
+                        return match.group(0)
+                    if key not in replacements:
+                        return match.group(0)
+                    return replacements[key]
+
+                rendered = re.sub(r"\[([A-Z0-9_]+)\]", _replace, raw)
+
+                try:
+                    # Only write when changed to reduce churn.
+                    if dest.exists():
+                        try:
+                            existing = dest.read_text(encoding="utf-8")
+                        except Exception:
+                            existing = None
+                        if existing == rendered:
+                            pass
+                        else:
+                            dest.write_text(rendered, encoding="utf-8")
+                    else:
+                        dest.write_text(rendered, encoding="utf-8")
+                except Exception:
+                    continue
+
+                rendered_count += 1
+
+                # Auto-export <SKILL>_CONFIG for the canonical pattern: {skill}.toml_example
+                if dest.name == f"{skill}.toml":
+                    env_key = f"{str(skill).upper()}_CONFIG"
+                    extra_env[env_key] = str(dest)
+                    config_env_lines[env_key] = str(dest)
+
+        # Write a per-user .env convenience file (git-ignored) containing only *_CONFIG vars.
+        if config_env_lines:
+            try:
+                env_path = user_dir / ".env"
+                existing_lines: list[str] = []
+                if env_path.exists():
+                    try:
+                        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+                    except Exception:
+                        existing_lines = []
+
+                # Parse existing assignments.
+                kept: list[str] = []
+                for ln in existing_lines:
+                    if not ln.strip() or ln.lstrip().startswith("#"):
+                        kept.append(ln)
+                        continue
+                    if "=" not in ln:
+                        kept.append(ln)
+                        continue
+                    k = ln.split("=", 1)[0].strip()
+                    if k in config_env_lines:
+                        continue
+                    kept.append(ln)
+
+                # Append updated lines.
+                if kept and kept[-1].strip():
+                    kept.append("")
+                kept.append("# Auto-generated by Mordecai. Do not commit.")
+                for k, v in sorted(config_env_lines.items()):
+                    kept.append(f"{k}={v}")
+
+                env_path.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+            except Exception:
+                pass
+
+        return extra_env
+
+    extra_env = _materialize_skill_templates()
+    if extra_env:
+        for env_key, env_val in extra_env.items():
+            # Associate the exported config key with the corresponding skill so runtime tracking
+            # can safely unset it on user switch.
+            # Infer skill name from prefix: <SKILL>_CONFIG.
+            if not env_key.endswith("_CONFIG"):
+                continue
+            inferred_skill = env_key[: -len("_CONFIG")].lower()
+            if inferred_skill in new_keys_by_skill:
+                new_keys_by_skill[inferred_skill].add(env_key)
+            desired_env[env_key] = env_val
+            applied_skills.append(inferred_skill)
 
     # Apply desired env vars.
     applied = 0
@@ -636,25 +925,13 @@ def refresh_runtime_env_from_secrets(
             # Global config file (legacy / existing behavior)
             if isinstance(skill_block.get("path"), str) and str(skill_block.get("path")).strip():
                 _create_config_file(str(skill_block["path"]), skill_block)
-
-            # Per-user config file
-            if user_id is not None:
-                users_block = skill_block.get("users")
-                if isinstance(users_block, dict):
-                    user_block = users_block.get(str(user_id))
-                    if isinstance(user_block, dict):
-                        if (
-                            isinstance(user_block.get("path"), str)
-                            and str(user_block.get("path")).strip()
-                        ):
-                            _create_config_file(str(user_block["path"]), user_block)
     except Exception:
         # Never fail refresh due to config file IO.
         pass
 
     # Also export legacy env vars / non-skill sections for compatibility.
     try:
-        _flatten_secrets_mapping(secrets)
+        _flatten_secrets_mapping(merged_secrets)
     except Exception:
         pass
 
@@ -1027,6 +1304,19 @@ class AgentConfig(BaseSettings):
         if json_path.exists():
             with open(json_path) as f:
                 config_data = json.load(f)
+
+        # Optional config.yml overlay (repo-root). This is intended for non-secret config.
+        # Precedence: config.json < config.yml < secrets.yml < env
+        try:
+            repo_root = _find_repo_root(start=Path(__file__))
+            cfg_yml = repo_root / "config.yml"
+            if cfg_yml.exists() and cfg_yml.is_file():
+                with cfg_yml.open("r", encoding="utf-8") as f:
+                    yml_data = yaml.safe_load(f) or {}
+                if isinstance(yml_data, dict):
+                    config_data.update(yml_data)
+        except Exception:
+            pass
 
         # Merge secrets (overrides JSON values)
         secrets = _load_secrets(Path(secrets_path))
