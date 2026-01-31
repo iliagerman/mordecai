@@ -17,6 +17,13 @@ test-unit:
 test-integration:
     uv run pytest tests/integration/
 
+# Run "real" tests (non-mocked; requires real credentials and may incur costs)
+# This is intentionally opt-in.
+run-real-tests:
+    MORDECAI_RUN_REAL_TESTS=1 \
+    MORDECAI_RUN_E2E_AWS=1 \
+    uv run pytest -ra -m e2e tests/e2e/
+
 # Run tests with coverage
 test-coverage:
     uv run pytest --cov=app --cov-report=html

@@ -441,6 +441,13 @@ class AgentConfig(BaseSettings):
     aws_region: str = Field(default="us-east-1")
     aws_access_key_id: str | None = Field(default=None)
     aws_secret_access_key: str | None = Field(default=None)
+    aws_session_token: str | None = Field(
+        default=None,
+        description=(
+            "Optional AWS session token (for temporary credentials such as STS/SSO). "
+            "If set, it will be exported as AWS_SESSION_TOKEN for AWS SDK calls."
+        ),
+    )
     sqs_queue_prefix: str = Field(default="agent-user-")
     localstack_endpoint: str | None = Field(default=None)
 
@@ -470,6 +477,34 @@ class AgentConfig(BaseSettings):
     )
     conversation_window_size: int = Field(
         default=20, description="Number of messages to keep in conversation window"
+    )
+
+    # Observability / trace logging
+    trace_enabled: bool = Field(
+        default=True,
+        description=(
+            "Emit structured trace logs for agent message processing and tool calls. "
+            "These logs are redacted and size-bounded."
+        ),
+    )
+    trace_tool_io_enabled: bool = Field(
+        default=True,
+        description="Log tool/action call start/end events (inputs/outputs are sanitized).",
+    )
+    trace_model_io_enabled: bool = Field(
+        default=False,
+        description=(
+            "Log user message and model response previews (sanitized). "
+            "Enable with care if conversations may include sensitive data."
+        ),
+    )
+    trace_max_chars: int = Field(
+        default=2000,
+        description="Maximum characters to log for any single input/output preview.",
+    )
+    trace_sample_rate: float = Field(
+        default=1.0,
+        description="Fraction of traces to log (0.0-1.0).",
     )
 
     # Skills settings (base directory, per-user subdirs created automatically)

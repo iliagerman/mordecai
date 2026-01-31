@@ -10,10 +10,13 @@ We keep the public tool name as `shell` so skills continue to work.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
 from app.config import refresh_runtime_env_from_secrets
+from app.observability.trace_context import get_trace_id
+from app.observability.trace_logging import trace_event
 
 try:
     from strands import tool  # type: ignore[import-not-found]
@@ -84,6 +87,19 @@ def shell(
     # - command: str
     # - work_dir: str
     # - timeout_seconds: int
+    tool_t0 = time.perf_counter()
+
+    if get_trace_id() is not None:
+        trace_event(
+            "tool.shell.start",
+            command=command,
+            work_dir=work_dir,
+            timeout_seconds=timeout_seconds,
+            ignore_errors=ignore_errors,
+            parallel=parallel,
+            non_interactive=non_interactive,
+        )
+
     try:
         refresh_runtime_env_from_secrets(
             secrets_path=_secrets_path,
@@ -108,4 +124,34 @@ def shell(
     if timeout_seconds is not None:
         forwarded["timeout_seconds"] = timeout_seconds
 
-    return _call_base_shell(**forwarded)
+    try:
+        result = _call_base_shell(**forwarded)
+        if get_trace_id() is not None:
+            # Try to normalize common strands_tools result shapes.
+            exit_code = None
+            stdout = None
+            stderr = None
+            if isinstance(result, dict):
+                exit_code = result.get("exit_code") or result.get("returncode")
+                stdout = result.get("stdout")
+                stderr = result.get("stderr")
+
+            trace_event(
+                "tool.shell.end",
+                duration_ms=int((time.perf_counter() - tool_t0) * 1000),
+                exit_code=exit_code,
+                stdout_preview=stdout,
+                stderr_preview=stderr,
+                stdout_len=len(stdout) if isinstance(stdout, str) else None,
+                stderr_len=len(stderr) if isinstance(stderr, str) else None,
+            )
+        return result
+    except Exception as e:
+        if get_trace_id() is not None:
+            trace_event(
+                "tool.shell.error",
+                duration_ms=int((time.perf_counter() - tool_t0) * 1000),
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+        raise

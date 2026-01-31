@@ -24,7 +24,9 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,7 +40,9 @@ from strands.models.openai import OpenAIModel
 from strands_tools import file_write
 
 from app.config import AgentConfig, refresh_runtime_env_from_secrets
-from app.enums import ModelProvider
+from app.enums import LogSeverity, ModelProvider
+from app.observability.trace_context import new_trace_id, set_trace
+from app.observability.trace_logging import trace_event
 from app.services.personality_service import PersonalityService
 from app.tools import cron_tools as cron_tools_module
 from app.tools import onboard_pending_skills as onboard_pending_skills_module
@@ -160,6 +164,7 @@ class AgentService:
         extraction_service: "MemoryExtractionService | None" = None,
         file_service: "FileService | None" = None,
         pending_skill_service: "PendingSkillService | None" = None,
+        logging_service=None,
     ) -> None:
         """Initialize the agent service.
 
@@ -178,6 +183,7 @@ class AgentService:
         self.file_service = file_service
         self.pending_skill_service = pending_skill_service
         self.skill_service = skill_service
+        self.logging_service = logging_service
         self._user_sessions: dict[str, str] = {}
         self._user_agent_names: dict[str, str | None] = {}  # cached names
         self._conversation_history: dict[str, list[dict]] = {}  # extraction
@@ -1495,6 +1501,22 @@ class AgentService:
         Returns:
             Agent's response text.
         """
+        trace_this = False
+        trace_id: str | None = None
+        if getattr(self.config, "trace_enabled", False):
+            try:
+                sample_rate = float(getattr(self.config, "trace_sample_rate", 1.0) or 0.0)
+                sample_rate = min(max(sample_rate, 0.0), 1.0)
+            except Exception:
+                sample_rate = 1.0
+            trace_this = random.random() <= sample_rate
+
+        if trace_this:
+            trace_id = new_trace_id()
+            set_trace(trace_id=trace_id, actor_id=user_id)
+
+        t0 = time.perf_counter()
+
         # ------------------------------------------------------------------
         # Pytest-only deterministic fallback for simple skills
         # ------------------------------------------------------------------
@@ -1557,6 +1579,45 @@ class AgentService:
                 model_id = self.config.openai_model_id
             case _:
                 model_id = "unknown"
+
+        if trace_this:
+            fields: dict = {
+                "model_provider": str(self.config.model_provider),
+                "model_id": model_id,
+                "session_id": self._get_session_id(user_id),
+                "memory_enabled": bool(self.config.memory_enabled),
+            }
+            if getattr(self.config, "trace_model_io_enabled", False):
+                fields.update(
+                    {
+                        "user_message": message,
+                        "user_message_len": len(message or ""),
+                    }
+                )
+            trace_event(
+                "agent.message.start",
+                max_chars=getattr(self.config, "trace_max_chars", 2000),
+                **fields,
+            )
+
+            # Best-effort: persist a compact milestone into DB-backed activity logs
+            # so users can view recent agent activity via Telegram /logs.
+            if self.logging_service is not None:
+                try:
+                    details = {
+                        "trace_id": trace_id,
+                        "model_provider": str(self.config.model_provider),
+                        "model_id": model_id,
+                    }
+                    await self.logging_service.log_action(
+                        user_id=user_id,
+                        action="Processed message: started",
+                        severity=LogSeverity.INFO,
+                        details=details,
+                    )
+                except Exception:
+                    # Never break message processing due to logging.
+                    pass
         logger.info(
             "Creating agent with model_provider=%s, model_id=%s",
             self.config.model_provider,
@@ -1566,9 +1627,35 @@ class AgentService:
         # Get previous messages to maintain conversation context
         previous_messages = self._get_user_messages(user_id)
 
-        agent = self._create_agent(user_id, memory_context, messages=previous_messages)
-        result = agent(message)
-        response = self._extract_response_text(result)
+        try:
+            agent = self._create_agent(user_id, memory_context, messages=previous_messages)
+            result = agent(message)
+            response = self._extract_response_text(result)
+        except Exception as e:
+            if trace_this:
+                trace_event(
+                    "agent.message.error",
+                    max_chars=getattr(self.config, "trace_max_chars", 2000),
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    duration_ms=int((time.perf_counter() - t0) * 1000),
+                )
+
+                if self.logging_service is not None:
+                    try:
+                        await self.logging_service.log_action(
+                            user_id=user_id,
+                            action="Processed message: failed",
+                            severity=LogSeverity.ERROR,
+                            details={
+                                "trace_id": trace_id,
+                                "error": str(e),
+                                "error_type": type(e).__name__,
+                            },
+                        )
+                    except Exception:
+                        pass
+            raise
 
         # Track agent response for extraction
         self._add_to_conversation_history(user_id, "assistant", response)
@@ -1588,6 +1675,38 @@ class AgentService:
                     "✨ Your conversation has been summarized and important "
                     "information saved. Starting fresh!"
                 )
+
+        if trace_this:
+            fields = {
+                "duration_ms": int((time.perf_counter() - t0) * 1000),
+                "message_count": self.get_message_count(user_id),
+            }
+            if getattr(self.config, "trace_model_io_enabled", False):
+                fields.update(
+                    {
+                        "assistant_response": response,
+                        "assistant_response_len": len(response or ""),
+                    }
+                )
+            trace_event(
+                "agent.message.end",
+                max_chars=getattr(self.config, "trace_max_chars", 2000),
+                **fields,
+            )
+
+            if self.logging_service is not None:
+                try:
+                    await self.logging_service.log_action(
+                        user_id=user_id,
+                        action="Processed message: completed",
+                        severity=LogSeverity.INFO,
+                        details={
+                            "trace_id": trace_id,
+                            "duration_ms": fields.get("duration_ms"),
+                        },
+                    )
+                except Exception:
+                    pass
 
         return response
 

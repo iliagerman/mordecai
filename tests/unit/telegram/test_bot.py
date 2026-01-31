@@ -355,6 +355,7 @@ class TestTelegramBotSkillCommands:
         bot.skill_service.list_skills.return_value = ["weather", "calculator"]
 
         update = MagicMock()
+        update.effective_user.id = 111
         update.effective_user.username = "testuser"
         update.effective_chat.id = 123
         context = MagicMock()
@@ -373,6 +374,7 @@ class TestTelegramBotSkillCommands:
         bot.skill_service.list_skills.return_value = []
 
         update = MagicMock()
+        update.effective_user.id = 111
         update.effective_user.username = "testuser"
         update.effective_chat.id = 123
         context = MagicMock()
@@ -403,6 +405,7 @@ class TestTelegramBotSkillCommands:
         }
 
         update = MagicMock()
+        update.effective_user.id = 111
         update.effective_user.username = "testuser"
         update.effective_chat.id = 123
         context = MagicMock()
@@ -413,7 +416,7 @@ class TestTelegramBotSkillCommands:
 
             bot.skill_service.download_skill_to_pending.assert_called_once_with(
                 "https://github.com/user/repo/tree/main/weather",
-                "testuser",
+                "111",
                 scope="user",
             )
 
@@ -421,6 +424,7 @@ class TestTelegramBotSkillCommands:
     async def test_add_skill_command_no_url_shows_usage(self, bot):
         """Test /add_skill without URL shows usage message."""
         update = MagicMock()
+        update.effective_user.id = 111
         update.effective_user.username = "testuser"
         update.effective_chat.id = 123
         context = MagicMock()
@@ -439,6 +443,7 @@ class TestTelegramBotSkillCommands:
         bot.skill_service.uninstall_skill.return_value = "Skill 'weather' uninstalled"
 
         update = MagicMock()
+        update.effective_user.id = 111
         update.effective_user.username = "testuser"
         update.effective_chat.id = 123
         context = MagicMock()
@@ -447,12 +452,13 @@ class TestTelegramBotSkillCommands:
         with patch.object(bot, "send_response", new_callable=AsyncMock):
             await bot._handle_delete_skill_command(update, context)
 
-            bot.skill_service.uninstall_skill.assert_called_once_with("weather", "testuser")
+            bot.skill_service.uninstall_skill.assert_called_once_with("weather", "111")
 
     @pytest.mark.asyncio
     async def test_delete_skill_command_no_name_shows_usage(self, bot):
         """Test /delete_skill without name shows usage message."""
         update = MagicMock()
+        update.effective_user.id = 111
         update.effective_user.username = "testuser"
         update.effective_chat.id = 123
         context = MagicMock()
@@ -543,6 +549,95 @@ class TestTelegramBotEnqueueProperty:
 
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class TestTelegramBotWhitelist:
+    @pytest.fixture
+    @patch("app.telegram.bot.Application")
+    def bot_with_allowlist(self, mock_app, tmp_path):
+        """Create TelegramBotInterface instance with an allowlist enabled."""
+        mock_app_instance = MagicMock()
+        mock_app_instance.bot = MagicMock()
+        mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
+
+        mock_logging_service = MagicMock()
+        mock_logging_service.log_action = AsyncMock()
+
+        config = AgentConfig(
+            model_provider=ModelProvider.BEDROCK,
+            bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+            telegram_bot_token="test-token",
+            session_storage_dir=str(tmp_path),
+            skills_base_dir=str(tmp_path),
+            allowed_users=["someone-else"],
+        )
+
+        return TelegramBotInterface(
+            config=config,
+            sqs_client=MagicMock(),
+            queue_manager=MagicMock(),
+            agent_service=MagicMock(),
+            logging_service=mock_logging_service,
+            skill_service=MagicMock(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_message_rejected_when_not_whitelisted_logs_and_responds(
+        self, bot_with_allowlist
+    ):
+        bot = bot_with_allowlist
+
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.effective_user.username = "testuser"
+        update.effective_user.first_name = "Test"
+        update.effective_chat.id = 123
+        update.message = MagicMock()
+        update.message.text = "hello"
+
+        with patch.object(bot, "send_response", new_callable=AsyncMock) as mock_send:
+            await bot._handle_message(update, MagicMock())
+
+            # Responds with a 403 message
+            mock_send.assert_called_once()
+            assert "403 forbidden" in mock_send.call_args[0][1].lower()
+            assert "contact" in mock_send.call_args[0][1].lower()
+
+        # Persists a warning log
+        bot.logging_service.log_action.assert_called_once()
+        kwargs = bot.logging_service.log_action.call_args.kwargs
+        assert kwargs["user_id"] == "111"
+        assert "not whitelisted" in kwargs["action"].lower()
+        assert kwargs["severity"].value == "warning"
+        assert kwargs["details"]["telegram_user_id"] == "111"
+        assert kwargs["details"]["telegram_username"] == "testuser"
+
+    @pytest.mark.asyncio
+    async def test_username_in_allowlist_allows_user_even_if_id_not_listed(self, tmp_path):
+        config = AgentConfig(
+            model_provider=ModelProvider.BEDROCK,
+            bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+            telegram_bot_token="test-token",
+            session_storage_dir=str(tmp_path),
+            skills_base_dir=str(tmp_path),
+            allowed_users=["testuser"],
+        )
+
+        with patch("app.telegram.bot.Application") as mock_app:
+            mock_app_instance = MagicMock()
+            mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
+
+            bot = TelegramBotInterface(
+                config=config,
+                sqs_client=MagicMock(),
+                queue_manager=MagicMock(),
+                agent_service=MagicMock(),
+                logging_service=MagicMock(),
+                skill_service=MagicMock(),
+            )
+
+        rejected = await bot._reject_if_not_whitelisted("111", "testuser", 123)
+        assert rejected is False
 
     @given(
         user_id=st.text(

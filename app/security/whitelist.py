@@ -15,7 +15,13 @@ DEFAULT_FORBIDDEN_DETAIL = f"contact {CONTACT_EMAIL}"
 
 
 def _normalize_user_id(user_id: str) -> str:
-    return (user_id or "").strip().lower()
+    # Accept common formats:
+    # - Telegram usernames may be provided as "@name" or "name".
+    # - Numeric IDs should pass through untouched (aside from strip/lower).
+    normalized = (user_id or "").strip().lower()
+    if normalized.startswith("@"):
+        normalized = normalized[1:]
+    return normalized
 
 
 def normalize_allowed_users(allowed_users: Iterable[str] | None) -> set[str]:
