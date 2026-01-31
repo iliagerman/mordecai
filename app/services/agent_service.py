@@ -816,9 +816,7 @@ class AgentService:
                 Path(str(vault_root_raw)).expanduser().resolve() if vault_root_raw else None
             )
             vault_accessible = bool(
-                vault_root_path
-                and vault_root_path.exists()
-                and vault_root_path.is_dir()
+                vault_root_path and vault_root_path.exists() and vault_root_path.is_dir()
             )
             vault_root_display = f"`{vault_root_path}`" if vault_root_path else "(not configured)"
         except Exception:
