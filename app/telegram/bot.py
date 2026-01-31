@@ -41,7 +41,7 @@ from app.services.skill_service import (
     SkillNotFoundError,
     SkillService,
 )
-from app.security.whitelist import is_whitelisted
+from app.security.whitelist import DEFAULT_FORBIDDEN_DETAIL, is_whitelisted
 
 if TYPE_CHECKING:
     from mypy_boto3_sqs import SQSClient
@@ -144,12 +144,82 @@ class TelegramBotInterface:
 
         logger.debug("Telegram handlers registered")
 
-    async def _reject_if_not_whitelisted(self, user_id: str, chat_id: int) -> bool:
+    def _extract_telegram_identity(self, update: Update) -> tuple[str, str | None, str]:
+        """Extract stable user identifiers from a Telegram update.
+
+        Returns:
+            (telegram_user_id, telegram_username, display_name)
+
+        Notes:
+            - Prefer numeric Telegram user ID for stability (usernames can change).
+            - Username is retained for display / whitelist compatibility.
+        """
+
+        user = getattr(update, "effective_user", None)
+
+        telegram_user_id: str | None = None
+        telegram_username: str | None = None
+        display_name: str | None = None
+
+        try:
+            raw_id = getattr(user, "id", None)
+            if raw_id is not None:
+                telegram_user_id = str(raw_id)
+        except Exception:
+            telegram_user_id = None
+
+        try:
+            telegram_username = getattr(user, "username", None) or None
+        except Exception:
+            telegram_username = None
+
+        try:
+            display_name = getattr(user, "first_name", None) or None
+        except Exception:
+            display_name = None
+
+        # Fallbacks for mocked updates in tests and defensive behavior.
+        stable_id = telegram_user_id or (telegram_username or "unknown")
+        return stable_id, telegram_username, (display_name or telegram_username or stable_id)
+
+    async def _reject_if_not_whitelisted(
+        self,
+        telegram_user_id: str,
+        telegram_username: str | None,
+        chat_id: int,
+    ) -> bool:
         """Return True if request should be rejected due to whitelist."""
-        if is_whitelisted(user_id, self.config.allowed_users):
+        allowed = self.config.allowed_users
+        whitelisted = is_whitelisted(telegram_user_id, allowed) or (
+            telegram_username is not None and is_whitelisted(telegram_username, allowed)
+        )
+        if whitelisted:
             return False
 
-        await self.send_response(chat_id, "403 Forbidden, contact iliag@sela.co.il")
+        # Log to both DB-backed activity logs and server logs.
+        logger.warning(
+            "Telegram user rejected by whitelist (chat_id=%s, telegram_user_id=%s, username=%s)",
+            chat_id,
+            telegram_user_id,
+            telegram_username,
+        )
+        try:
+            await self.logging_service.log_action(
+                user_id=telegram_user_id,
+                action="Rejected Telegram message: user not whitelisted",
+                severity=LogSeverity.WARNING,
+                details={
+                    "chat_id": chat_id,
+                    "telegram_user_id": telegram_user_id,
+                    "telegram_username": telegram_username,
+                },
+            )
+        except Exception:
+            # Never block rejection response due to logging failures.
+            logger.exception("Failed to persist whitelist rejection log")
+
+        # Keep the human guidance stable across HTTP + Telegram.
+        await self.send_response(chat_id, f"403 Forbidden, {DEFAULT_FORBIDDEN_DETAIL}")
         return True
 
     async def _handle_start_command(
@@ -163,8 +233,8 @@ class TelegramBotInterface:
             update: Telegram update object.
             context: Callback context.
         """
-        user_id = update.effective_user.username or str(update.effective_user.id)
-        if await self._reject_if_not_whitelisted(user_id, update.effective_chat.id):
+        user_id, username, _ = self._extract_telegram_identity(update)
+        if await self._reject_if_not_whitelisted(user_id, username, update.effective_chat.id):
             return
         logger.info("User %s started the bot", user_id)
 
@@ -203,8 +273,8 @@ class TelegramBotInterface:
         Requirements:
             - 11.5: Support basic commands (help)
         """
-        user_id = update.effective_user.username or str(update.effective_user.id)
-        if await self._reject_if_not_whitelisted(user_id, update.effective_chat.id):
+        user_id, username, _ = self._extract_telegram_identity(update)
+        if await self._reject_if_not_whitelisted(user_id, username, update.effective_chat.id):
             return
 
         help_text = self.command_parser.get_help_text()
@@ -223,8 +293,8 @@ class TelegramBotInterface:
             - 11.5: Support basic commands (new)
             - 11.6: Parse and execute appropriate actions
         """
-        user_id = update.effective_user.username or str(update.effective_user.id)
-        if await self._reject_if_not_whitelisted(user_id, update.effective_chat.id):
+        user_id, username, _ = self._extract_telegram_identity(update)
+        if await self._reject_if_not_whitelisted(user_id, username, update.effective_chat.id):
             return
         await self._execute_new_command(user_id, update.effective_chat.id)
 
@@ -243,8 +313,8 @@ class TelegramBotInterface:
             - 11.5: Support basic commands (logs)
             - 11.6: Parse and execute appropriate actions
         """
-        user_id = update.effective_user.username or str(update.effective_user.id)
-        if await self._reject_if_not_whitelisted(user_id, update.effective_chat.id):
+        user_id, username, _ = self._extract_telegram_identity(update)
+        if await self._reject_if_not_whitelisted(user_id, username, update.effective_chat.id):
             return
         await self._execute_logs_command(user_id, update.effective_chat.id)
 
@@ -252,10 +322,10 @@ class TelegramBotInterface:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Handle /skills command - list all installed skills."""
-        user_id = update.effective_user.username or str(update.effective_user.id)
+        user_id, username, _ = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
 
-        if await self._reject_if_not_whitelisted(user_id, chat_id):
+        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
             return
 
         skills = self.skill_service.list_skills(user_id)
@@ -271,10 +341,10 @@ class TelegramBotInterface:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Handle /add_skill <url> command - install a skill from URL."""
-        user_id = update.effective_user.username or str(update.effective_user.id)
+        user_id, username, _ = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
 
-        if await self._reject_if_not_whitelisted(user_id, chat_id):
+        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
             return
 
         if not context.args:
@@ -292,10 +362,10 @@ class TelegramBotInterface:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Handle /delete_skill <name> command - remove an installed skill."""
-        user_id = update.effective_user.username or str(update.effective_user.id)
+        user_id, username, _ = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
 
-        if await self._reject_if_not_whitelisted(user_id, chat_id):
+        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
             return
 
         if not context.args:
@@ -325,13 +395,11 @@ class TelegramBotInterface:
         if not update.message or not update.message.text:
             return
 
-        # Use username if available, fallback to numeric ID
-        user_id = update.effective_user.username or str(update.effective_user.id)
-        display_name = update.effective_user.first_name or user_id
+        user_id, username, display_name = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
         message_text = update.message.text
 
-        if await self._reject_if_not_whitelisted(user_id, chat_id):
+        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
             return
 
         if len(message_text) > 50:
@@ -339,8 +407,9 @@ class TelegramBotInterface:
         else:
             preview = message_text
 
-        print(f"Received message from {display_name} (@{user_id}): {preview}")
-        logger.debug("Received message from user %s: %s", user_id, preview)
+        logger.info(
+            "Received message from %s (@%s): %s", display_name, username or user_id, preview
+        )
 
         # Parse the message for commands
         parsed = self.command_parser.parse(message_text)
@@ -374,12 +443,12 @@ class TelegramBotInterface:
         if not update.message or not update.message.document:
             return
 
-        user_id = update.effective_user.username or str(update.effective_user.id)
+        user_id, username, _ = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
         document = update.message.document
         caption = update.message.caption or ""
 
-        if await self._reject_if_not_whitelisted(user_id, chat_id):
+        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
             return
 
         logger.info(
@@ -488,11 +557,11 @@ class TelegramBotInterface:
         if not update.message or not update.message.photo:
             return
 
-        user_id = update.effective_user.username or str(update.effective_user.id)
+        user_id, username, _ = self._extract_telegram_identity(update)
         chat_id = update.effective_chat.id
         caption = update.message.caption or ""
 
-        if await self._reject_if_not_whitelisted(user_id, chat_id):
+        if await self._reject_if_not_whitelisted(user_id, username, chat_id):
             return
 
         # Select highest resolution photo (Requirement 2.5)

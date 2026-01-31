@@ -200,6 +200,7 @@ class Application:
             self.memory_service,
             pending_skill_service=self.pending_skill_service,
             skill_service=self.skill_service,
+            logging_service=self.logging_service,
         )
         self.task_service = TaskService(self.task_dao, self.user_dao, self.log_dao)
         self.webhook_service = WebhookService(self.logging_service)

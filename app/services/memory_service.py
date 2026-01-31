@@ -64,12 +64,34 @@ class MemoryService:
 
     def _setup_aws_credentials(self) -> None:
         """Set AWS credentials as environment variables if provided."""
+        # IMPORTANT:
+        # If the developer provides long-lived IAM credentials (access key + secret)
+        # but the process environment has a stale AWS_SESSION_TOKEN set (common after
+        # using STS/SSO), boto3/botocore can end up mixing them, producing confusing
+        # "security token is invalid" / UnrecognizedClientException errors.
+        #
+        # To avoid that, when config specifies access_key_id/secret_access_key, we
+        # also clear any existing session token unless config explicitly provides one.
+
         if self.config.aws_access_key_id:
             os.environ["AWS_ACCESS_KEY_ID"] = self.config.aws_access_key_id
         if self.config.aws_secret_access_key:
             os.environ["AWS_SECRET_ACCESS_KEY"] = self.config.aws_secret_access_key
+
+        session_token = getattr(self.config, "aws_session_token", None)
+        if session_token:
+            os.environ["AWS_SESSION_TOKEN"] = str(session_token)
+            # Some SDKs still look for AWS_SECURITY_TOKEN (legacy name)
+            os.environ["AWS_SECURITY_TOKEN"] = str(session_token)
+        else:
+            # Clear stale session tokens to prevent mixed-credential failures.
+            os.environ.pop("AWS_SESSION_TOKEN", None)
+            os.environ.pop("AWS_SECURITY_TOKEN", None)
+
         if self.config.aws_region:
+            # Set both for compatibility across AWS SDKs.
             os.environ["AWS_DEFAULT_REGION"] = self.config.aws_region
+            os.environ["AWS_REGION"] = self.config.aws_region
 
     def _get_client(self) -> MemoryClient:
         """Get or create the memory client.

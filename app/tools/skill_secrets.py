@@ -9,10 +9,13 @@ Secrets are never echoed back in responses.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Literal
 
 from app.config import refresh_runtime_env_from_secrets, upsert_skill_env_vars
+from app.observability.trace_context import get_trace_id
+from app.observability.trace_logging import trace_event
 
 try:
     from strands import tool  # type: ignore[import-not-found]
@@ -47,6 +50,14 @@ def set_skill_env_vars(
     env_json: str,
     apply_to: Literal["user", "global"] = "user",
 ) -> str:
+    tool_t0 = time.perf_counter()
+    if get_trace_id() is not None:
+        trace_event(
+            "tool.set_skill_env_vars.start",
+            skill_name=skill_name,
+            apply_to=apply_to,
+        )
+
     if not skill_name or not skill_name.strip():
         return "skill_name is required."
 
@@ -93,7 +104,19 @@ def set_skill_env_vars(
     # Do not echo values.
     keys = sorted(env_vars.keys())
     scope = "global" if user_id is None else f"user:{user_id}"
-    return (
+    result = (
         f"Saved {len(keys)} env var(s) for skill '{skill_name}' ({scope}) into secrets.yml. "
         f"Keys: {', '.join(keys)}"
     )
+
+    if get_trace_id() is not None:
+        trace_event(
+            "tool.set_skill_env_vars.end",
+            duration_ms=int((time.perf_counter() - tool_t0) * 1000),
+            skill_name=skill_name,
+            apply_to=apply_to,
+            keys=keys,
+            scope=scope,
+        )
+
+    return result
