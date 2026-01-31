@@ -2,7 +2,7 @@
 # Auto-generated from secrets.yml - DO NOT commit this file
 
 [accounts.gmail]
-email = "email@gmail.com"
+email = "[GMAIL]"
 display-name = "Gmail"
 default = true
 
@@ -27,7 +27,7 @@ backend.type = "imap"
 backend.host = "imap.gmail.com"
 backend.port = 993
 backend.encryption.type = "tls"
-backend.login = "email@gmail.com"
+backend.login = "[GMAIL]"
 backend.auth.type = "password"
 backend.auth.raw = "[PASSWORD]"
 

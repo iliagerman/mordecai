@@ -50,12 +50,14 @@ def _call_base_shell(**kwargs: Any):
 
 _current_user_id: str | None = None
 _secrets_path: Path = Path("secrets.yml")
+_config = None
 
 
-def set_shell_env_context(*, user_id: str, secrets_path: str | Path) -> None:
-    global _current_user_id, _secrets_path
+def set_shell_env_context(*, user_id: str, secrets_path: str | Path, config=None) -> None:
+    global _current_user_id, _secrets_path, _config
     _current_user_id = user_id
     _secrets_path = Path(secrets_path)
+    _config = config
 
 
 @tool(
@@ -104,6 +106,7 @@ def shell(
         refresh_runtime_env_from_secrets(
             secrets_path=_secrets_path,
             user_id=_current_user_id,
+            config=_config,
         )
     except Exception:
         # Never block shell execution if refresh fails.

@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 import app.config as config_module
+from app.config import AgentConfig
 from app.tools import shell_env as shell_env_module
 from app.tools import skill_secrets as skill_secrets_module
 
@@ -14,13 +15,19 @@ from app.tools import skill_secrets as skill_secrets_module
 def test_shell_sees_new_secret_without_restart(tmp_path: Path, monkeypatch):
     """Validate hot-reload: after saving secrets, next shell call sees new env without restart."""
 
+    monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
+
     secrets_path = tmp_path / "secrets.yml"
     secrets_path.write_text("skills: {}\n", encoding="utf-8")
 
     user_id = "u1"
 
-    skill_secrets_module.set_skill_secrets_context(user_id=user_id, secrets_path=secrets_path)
-    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path)
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+
+    skill_secrets_module.set_skill_secrets_context(
+        user_id=user_id, secrets_path=secrets_path, config=cfg
+    )
+    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
     # Ensure we start clean.
     os.environ.pop("DEMO_TOKEN", None)
@@ -56,7 +63,9 @@ def test_shell_calls_refresh_every_invocation_and_before_base_shell(tmp_path: Pa
     secrets_path.write_text("skills: {}\n", encoding="utf-8")
 
     user_id = "u_refresh"
-    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path)
+    monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
     # Reset runtime tracking to avoid bleed between tests.
     monkeypatch.setattr(config_module, "_RUNTIME_SKILL_ENV_CONTEXT", None, raising=False)
@@ -66,7 +75,9 @@ def test_shell_calls_refresh_every_invocation_and_before_base_shell(tmp_path: Pa
     call_order: list[str] = []
     refresh_calls: list[dict] = []
 
-    def _fake_refresh(*, secrets_path: Path, user_id: str | None = None, skill_names=None):
+    def _fake_refresh(
+        *, secrets_path: Path, user_id: str | None = None, skill_names=None, config=None
+    ):
         call_order.append("refresh")
         refresh_calls.append(
             {
@@ -101,7 +112,9 @@ def test_shell_hot_reloads_from_updated_secrets_file_without_restart(tmp_path: P
     secrets_path = tmp_path / "secrets.yml"
     user_id = "u_disk"
 
-    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path)
+    monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
     # Reset runtime tracking to avoid bleed between tests.
     monkeypatch.setattr(config_module, "_RUNTIME_SKILL_ENV_CONTEXT", None, raising=False)

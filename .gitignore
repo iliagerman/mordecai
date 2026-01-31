@@ -49,7 +49,23 @@ htmlcov/
 *.sqlite3
 
 # Secrets
-secrets.yml
+*secrets.yml*
+*secrets.yaml*
+!*secrets.yml_example
+!*secrets.yml.example
+!*secrets.yml.template
+!*secrets.yml.sample
+!*secrets.yaml_example
+!*secrets.yaml.example
+!*secrets.yaml.template
+!*secrets.yaml.sample
+
+*skills_secrets.yml*
+*skills_secrets.yaml*
+!*skills_secrets.yml_example
+!*skills_secrets.yaml_example
+
+.env
 *.env
 .env.local
 .env.*.local

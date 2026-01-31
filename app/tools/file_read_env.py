@@ -37,11 +37,33 @@ except Exception:  # pragma: no cover
 
 
 def _call_base_file_read(**kwargs: Any):
+    def _call(fn):
+        # Some strands_tools versions define: file_read(tool, path, mode, ...)
+        # Others define: file_read(path, mode, ...)
+        try:
+            return fn(**kwargs)
+        except TypeError as e:
+            msg = str(e)
+            if "required positional argument" not in msg or "tool" not in msg:
+                raise
+
+            tool_payload = {
+                "toolUseId": "file_read_env",
+                "name": "file_read",
+                "input": {k: v for k, v in kwargs.items() if k != "tool"},
+            }
+
+            # Try keyword first, then positional.
+            try:
+                return fn(tool=tool_payload, **kwargs)
+            except TypeError:
+                return fn(tool_payload, **kwargs)
+
     if callable(_base_file_read):
-        return _base_file_read(**kwargs)
+        return _call(_base_file_read)
     inner = getattr(_base_file_read, "file_read", None)
     if callable(inner):
-        return inner(**kwargs)
+        return _call(inner)
     raise TypeError("strands_tools file_read implementation is not callable")
 
 
