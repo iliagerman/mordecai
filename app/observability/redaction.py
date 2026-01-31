@@ -33,7 +33,10 @@ _SENSITIVE_VALUE_RES: list[re.Pattern[str]] = [
     # OpenAI-ish
     re.compile(r"\b(?:sk-|pk-)[A-Za-z0-9]{20,}\b"),
     # AWS access key id
-    re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
+    # Real AWS Access Key IDs are 20 chars (prefix + 16). In practice, logs/tests may
+    # contain slightly malformed values; we still prefer to redact aggressively.
+    # Common prefixes include: AKIA (long-term), ASIA (temp), plus others.
+    re.compile(r"\b(?:AKIA|ASIA|AGPA|AIDA|ANPA|ANVA|AROA|AIPA)[A-Z0-9]{12,32}\b"),
     # Bearer tokens in headers / logs
     re.compile(r"\bBearer\s+[A-Za-z0-9._\-]+\b", flags=re.IGNORECASE),
     # Generic 'key=value' patterns

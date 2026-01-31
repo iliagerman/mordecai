@@ -40,6 +40,8 @@ from tests.e2e.aws_preflight import (
 async def test_real_llm_can_answer_using_agentcore_memory_context(tmp_path):
     require_real_tests_enabled()
 
+    print("\n[e2e] === Test: Real LLM answers using AgentCore memory context ===")
+
     base = AgentConfig.from_json_file(config_path="config.json", secrets_path="secrets.yml")
 
     print(
@@ -65,6 +67,8 @@ async def test_real_llm_can_answer_using_agentcore_memory_context(tmp_path):
 
     memory_service = MemoryService(cfg)
 
+    print("[e2e] Step 1/4: Confirm AWS auth + memory resolved")
+
     print(f"[e2e] AWS env after MemoryService normalization: env={aws_env_summary()}")
 
     # Validate credentials early (avoid noisy AgentCore errors).
@@ -76,6 +80,13 @@ async def test_real_llm_can_answer_using_agentcore_memory_context(tmp_path):
     actor_id = f"e2e_llm_{uuid.uuid4()}"
     session_id = f"e2e_llm_{uuid.uuid4()}"
     token = f"tok_{uuid.uuid4()}"
+
+    print(
+        "[e2e] Step 2/4: Store a fact the model cannot guess\n"
+        f"      actor_id={actor_id}\n"
+        f"      session_id={session_id}\n"
+        f"      token={token}"
+    )
 
     # Store a fact that the model cannot guess.
     fact = f"My secret_token is {token}."
@@ -89,6 +100,8 @@ async def test_real_llm_can_answer_using_agentcore_memory_context(tmp_path):
         write_to_short_term=False,
     )
     assert ok is True
+
+    print("[e2e] Step 3/4: Poll AgentCore search until the fact becomes retrievable")
 
     # Wait for semantic extraction/indexing so retrieval actually returns the stored fact.
     deadline = time.time() + 180
@@ -115,6 +128,7 @@ async def test_real_llm_can_answer_using_agentcore_memory_context(tmp_path):
         " (If you don't know, say 'UNKNOWN'.)"
     )
 
+    print("[e2e] Step 4/4: Ask the real LLM a question that requires retrieved memory")
     response = await agent_service.process_message(actor_id, question)
 
     # The model might include extra text; assert the unique token appears.

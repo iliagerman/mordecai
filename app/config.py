@@ -317,6 +317,75 @@ def upsert_skill_env_vars(
     return secrets
 
 
+def _deep_merge_dict(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge src into dst (mutates dst), returning dst."""
+    for k, v in src.items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            _deep_merge_dict(dst[str(k)], v)  # type: ignore[index]
+        else:
+            dst[str(k)] = v
+    return dst
+
+
+def upsert_skill_config(
+    *,
+    secrets_path: Path,
+    skill_name: str,
+    config_data: dict[str, Any],
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """Upsert structured skill configuration into secrets.yml.
+
+    This is for skills that need a config file materialized on disk (e.g., TOML)
+    or non-env structured config.
+
+    Writes to:
+      skills.<skill_name>                       (if user_id is None)
+      skills.<skill_name>.users.<user_id>       (if user_id is provided)
+
+    Notes:
+    - This does NOT write into the 'env' subkey; use upsert_skill_env_vars for that.
+    - Reserved keys 'env' and 'users' in config_data are ignored.
+    """
+    secrets = load_raw_secrets(secrets_path)
+
+    skills = secrets.setdefault("skills", {})
+    if not isinstance(skills, dict):
+        secrets["skills"] = {}
+        skills = secrets["skills"]
+
+    skill_block = skills.setdefault(skill_name, {})
+    if not isinstance(skill_block, dict):
+        skills[skill_name] = {}
+        skill_block = skills[skill_name]
+
+    target_block: dict[str, Any]
+    if user_id is None:
+        target_block = skill_block
+    else:
+        users_block = skill_block.setdefault("users", {})
+        if not isinstance(users_block, dict):
+            skill_block["users"] = {}
+            users_block = skill_block["users"]
+
+        user_block = users_block.setdefault(str(user_id), {})
+        if not isinstance(user_block, dict):
+            users_block[str(user_id)] = {}
+            user_block = users_block[str(user_id)]
+        target_block = user_block
+
+    clean: dict[str, Any] = {}
+    for k, v in (config_data or {}).items():
+        key = str(k)
+        if key in {"env", "users"}:
+            continue
+        clean[key] = v
+
+    _deep_merge_dict(target_block, clean)
+    save_raw_secrets(secrets_path, secrets)
+    return secrets
+
+
 def get_skill_env_vars(
     *,
     secrets: dict[str, Any],
@@ -388,6 +457,34 @@ def refresh_runtime_env_from_secrets(
             os.environ[k] = v
             applied += 1
         applied_skills.append(name)
+
+    # Best-effort materialization of per-skill config files.
+    # Global skill blocks with 'path' are handled by _flatten_secrets_mapping, but
+    # per-user blocks are not; handle them here when user_id is provided.
+    try:
+        for name in names:
+            skill_block = skills.get(name)
+            if not isinstance(skill_block, dict):
+                continue
+
+            # Global config file (legacy / existing behavior)
+            if isinstance(skill_block.get("path"), str) and str(skill_block.get("path")).strip():
+                _create_config_file(str(skill_block["path"]), skill_block)
+
+            # Per-user config file
+            if user_id is not None:
+                users_block = skill_block.get("users")
+                if isinstance(users_block, dict):
+                    user_block = users_block.get(str(user_id))
+                    if isinstance(user_block, dict):
+                        if (
+                            isinstance(user_block.get("path"), str)
+                            and str(user_block.get("path")).strip()
+                        ):
+                            _create_config_file(str(user_block["path"]), user_block)
+    except Exception:
+        # Never fail refresh due to config file IO.
+        pass
 
     # Also export legacy env vars / non-skill sections for compatibility.
     try:
