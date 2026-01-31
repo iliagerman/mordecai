@@ -48,3 +48,27 @@ requires:
     assert "set_skill_env_vars" in prompt
     assert "**himalaya**" in prompt
     assert "HIMALAYA_EMAIL" in prompt
+
+
+def test_agent_service_uses_user_skills_dir_template(tmp_path: Path):
+    cfg = MagicMock(spec=AgentConfig)
+    cfg.skills_base_dir = str(tmp_path / "skills_base")
+    cfg.shared_skills_dir = str(tmp_path / "shared")
+    cfg.user_skills_dir_template = str(tmp_path / "tenants" / "{username}")
+
+    Path(cfg.shared_skills_dir).mkdir(parents=True, exist_ok=True)
+
+    cfg.secrets_path = str(tmp_path / "secrets.yml")
+    cfg.obsidian_vault_root = None
+    cfg.personality_max_chars = 20_000
+    cfg.personality_enabled = False
+    cfg.timezone = "UTC"
+    cfg.memory_enabled = False
+    cfg.agent_commands = []
+    cfg.working_folder_base_dir = str(tmp_path / "workspaces")
+
+    svc = AgentService(config=cfg, memory_service=None)
+    user_dir = svc._get_user_skills_dir("u1")
+
+    assert user_dir == tmp_path / "tenants" / "u1"
+    assert user_dir.exists()

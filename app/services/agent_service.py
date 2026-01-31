@@ -39,7 +39,11 @@ from strands.models.gemini import GeminiModel
 from strands.models.openai import OpenAIModel
 from strands_tools import file_write
 
-from app.config import AgentConfig, refresh_runtime_env_from_secrets
+from app.config import (
+    AgentConfig,
+    refresh_runtime_env_from_secrets,
+    resolve_user_skills_dir,
+)
 from app.enums import LogSeverity, ModelProvider
 from app.observability.trace_context import new_trace_id, set_trace
 from app.observability.trace_logging import trace_event
@@ -309,8 +313,7 @@ class AgentService:
         on every call, overwriting any existing same-named entries. This keeps
         the per-user tools directory always in sync with shared skills.
         """
-        user_dir = self._skills_base_dir / user_id
-        user_dir.mkdir(parents=True, exist_ok=True)
+        user_dir = resolve_user_skills_dir(self.config, user_id, create=True)
         self._sync_shared_skills(user_dir)
         return user_dir
 

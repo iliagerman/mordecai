@@ -23,35 +23,50 @@ Deep Research is an agent that:
 
 ## Usage
 
-### Container Paths (Docker)
+### Portable paths
 
-Inside the container, tools are mounted at `/app/tools`. Use these paths:
+Prefer commands that work regardless of whether you are running on macOS or inside a container.
+
+**Option A (recommended): run from the skill directory**
+
+This skill is typically installed/copied into a per-user skills folder at runtime, so
+avoid repo-root assumptions like `skills/shared/...`.
+
+Run from inside the skill folder:
 
 ```bash
-python /app/skills/splintermaster/gemini-deep-research/scripts/deep_research.py --query "Research the history of Google TPUs"
+python scripts/deep_research.py --query "Research the history of Google TPUs"
 ```
 
-### Local Development Paths
+**Option B: run from the parent skills directory (e.g., the user's skills dir)**
 
-When running locally from the repository root directory:
+If your current directory is the skills folder that contains `gemini-deep-research/`:
 
 ```bash
-python skills/splintermaster/gemini-deep-research/scripts/deep_research.py --query "Research the history of Google TPUs"
+python gemini-deep-research/scripts/deep_research.py --query "Research the history of Google TPUs"
 ```
+
+**Option C: use an explicit placeholder**
+
+If you need to spell out an absolute path, use a placeholder like:
+
+`<SKILL_DIR>/scripts/deep_research.py`
+
+where `<SKILL_DIR>` is the runtime path to this skill folder (portable across macOS and containers).
 
 ### Examples
 
 #### Basic Research
 
 ```bash
-python /app/skills/splintermaster/gemini-deep-research/scripts/deep_research.py \
+python scripts/deep_research.py \
   --query "Research the history of Google TPUs"
 ```
 
 #### Custom Output Format
 
 ```bash
-python /app/skills/splintermaster/gemini-deep-research/scripts/deep_research.py \
+python scripts/deep_research.py \
   --query "Research the competitive landscape of EV batteries" \
   --format "1. Executive Summary\n2. Key Players (include data table)\n3. Supply Chain Risks"
 ```
@@ -59,7 +74,7 @@ python /app/skills/splintermaster/gemini-deep-research/scripts/deep_research.py 
 #### With File Search (optional)
 
 ```bash
-python /app/skills/splintermaster/gemini-deep-research/scripts/deep_research.py \
+python scripts/deep_research.py \
   --query "Compare our 2025 fiscal year report against current public web news" \
   --file-search-store "fileSearchStores/my-store-name"
 ```
@@ -67,22 +82,22 @@ python /app/skills/splintermaster/gemini-deep-research/scripts/deep_research.py 
 #### Stream Progress
 
 ```bash
-python /app/skills/splintermaster/gemini-deep-research/scripts/deep_research.py \
+python scripts/deep_research.py \
   --query "Your research topic" --stream
 ```
 
 #### Custom Output Directory
 
 ```bash
-python /app/skills/splintermaster/gemini-deep-research/scripts/deep_research.py \
+python scripts/deep_research.py \
   --query "Your research topic" \
-  --output-dir /app/workspaces/splintermaster
+  --output-dir <OUTPUT_DIR>
 ```
 
 #### Override API Key
 
 ```bash
-python /app/skills/splintermaster/gemini-deep-research/scripts/deep_research.py \
+python scripts/deep_research.py \
   --query "Your research topic" \
   --api-key "your-api-key"
 ```
