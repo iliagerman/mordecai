@@ -211,7 +211,7 @@ class TestIdentityPersistence:
 
         # Start new session (simulates /new command)
         print("Creating new session...")
-        agent_service.new_session(test_user_id)
+        await agent_service.new_session(test_user_id)
 
         # Wait for new session to initialize
         await wait_for_memory(2)
@@ -271,7 +271,7 @@ class TestIdentityPersistence:
 
         # Multiple new sessions
         for _ in range(3):
-            agent_service.new_session(unique_user_id)
+            await agent_service.new_session(unique_user_id)
             await wait_for_memory(1)
 
         # Check name after multiple session resets
@@ -295,7 +295,7 @@ class TestMemoryStrategies:
         )
 
         await wait_for_memory(3)
-        agent_service.new_session(unique_user_id)
+        await agent_service.new_session(unique_user_id)
         await wait_for_memory(1)
 
         response = await agent_service.process_message(unique_user_id, "What name do I call you?")
@@ -314,7 +314,7 @@ class TestMemoryStrategies:
         )
 
         await wait_for_memory(3)
-        agent_service.new_session(unique_user_id)
+        await agent_service.new_session(unique_user_id)
         await wait_for_memory(1)
 
         response = await agent_service.process_message(unique_user_id, "What is your name?")

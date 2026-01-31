@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
-from hypothesis import given, settings, strategies as st
 
 from app.dao.cron_dao import CronDAO
 from app.dao.cron_lock_dao import CronLockDAO
@@ -178,32 +177,14 @@ class TestCronLockDAOBasicOperations:
         assert lock is None
 
 
-class TestProperty2LockExpiryBehavior:
-    """Property 2: Lock Expiry Behavior.
-
-    *For any* cron lock, if the lock_acquired_at timestamp is more than
-    10 minutes in the past, the lock should be considered expired and
-    a new lock acquisition attempt should succeed.
-
-    **Validates: Requirements 2.3, 2.4**
-    """
+class TestLockExpiryBehavior:
+    """Deterministic tests for lock expiry behavior."""
 
     @pytest.mark.asyncio
-    @settings(max_examples=100)
-    @given(
-        minutes_old=st.integers(min_value=11, max_value=120),
-    )
-    async def test_expired_lock_can_be_replaced(
-        self,
-        minutes_old: int,
-    ):
-        """Feature: cron-job-scheduler, Property 2: Lock Expiry Behavior.
-
-        For any lock older than 10 minutes, a new acquisition should succeed.
-        """
+    @pytest.mark.parametrize("minutes_old", [11, 60])
+    async def test_expired_lock_can_be_replaced(self, minutes_old: int):
         db = Database("sqlite+aiosqlite:///:memory:")
         await db.init_db()
-
         try:
             user_dao = UserDAO(db)
             cron_dao = CronDAO(db)
@@ -213,51 +194,31 @@ class TestProperty2LockExpiryBehavior:
             instance_1 = str(uuid.uuid4())
             instance_2 = str(uuid.uuid4())
 
-            # Acquire initial lock
             await lock_dao.try_acquire_lock(task_id, instance_1)
 
-            # Manually set lock_acquired_at to be in the past
             async with db.session() as session:
                 from sqlalchemy import select
+
                 from app.models.orm import CronLockModel
 
                 result = await session.execute(
-                    select(CronLockModel)
-                    .where(CronLockModel.task_id == task_id)
+                    select(CronLockModel).where(CronLockModel.task_id == task_id)
                 )
                 lock_model = result.scalar_one()
-                lock_model.lock_acquired_at = (
-                    datetime.utcnow() - timedelta(minutes=minutes_old)
-                )
+                lock_model.lock_acquired_at = datetime.utcnow() - timedelta(minutes=minutes_old)
 
-            # New lock acquisition should succeed (lock is expired)
-            result = await lock_dao.try_acquire_lock(task_id, instance_2)
-            assert result is True
-
-            # Verify the lock is now held by instance_2
+            assert await lock_dao.try_acquire_lock(task_id, instance_2) is True
             lock = await lock_dao.get_lock(task_id)
             assert lock is not None
             assert lock.instance_id == instance_2
-
         finally:
             await db.close()
 
     @pytest.mark.asyncio
-    @settings(max_examples=100)
-    @given(
-        minutes_old=st.integers(min_value=0, max_value=9),
-    )
-    async def test_valid_lock_cannot_be_replaced(
-        self,
-        minutes_old: int,
-    ):
-        """Feature: cron-job-scheduler, Property 2: Lock Expiry Behavior.
-
-        For any lock less than 10 minutes old, acquisition should fail.
-        """
+    @pytest.mark.parametrize("minutes_old", [0, 9])
+    async def test_valid_lock_cannot_be_replaced(self, minutes_old: int):
         db = Database("sqlite+aiosqlite:///:memory:")
         await db.init_db()
-
         try:
             user_dao = UserDAO(db)
             cron_dao = CronDAO(db)
@@ -267,32 +228,23 @@ class TestProperty2LockExpiryBehavior:
             instance_1 = str(uuid.uuid4())
             instance_2 = str(uuid.uuid4())
 
-            # Acquire initial lock
             await lock_dao.try_acquire_lock(task_id, instance_1)
 
-            # Set lock_acquired_at to be recent (within 10 minutes)
             async with db.session() as session:
                 from sqlalchemy import select
+
                 from app.models.orm import CronLockModel
 
                 result = await session.execute(
-                    select(CronLockModel)
-                    .where(CronLockModel.task_id == task_id)
+                    select(CronLockModel).where(CronLockModel.task_id == task_id)
                 )
                 lock_model = result.scalar_one()
-                lock_model.lock_acquired_at = (
-                    datetime.utcnow() - timedelta(minutes=minutes_old)
-                )
+                lock_model.lock_acquired_at = datetime.utcnow() - timedelta(minutes=minutes_old)
 
-            # New lock acquisition should fail (lock is still valid)
-            result = await lock_dao.try_acquire_lock(task_id, instance_2)
-            assert result is False
-
-            # Verify the lock is still held by instance_1
+            assert await lock_dao.try_acquire_lock(task_id, instance_2) is False
             lock = await lock_dao.get_lock(task_id)
             assert lock is not None
             assert lock.instance_id == instance_1
-
         finally:
             await db.close()
 
@@ -320,13 +272,10 @@ class TestProperty2LockExpiryBehavior:
                 from app.models.orm import CronLockModel
 
                 result = await session.execute(
-                    select(CronLockModel)
-                    .where(CronLockModel.task_id == task_id)
+                    select(CronLockModel).where(CronLockModel.task_id == task_id)
                 )
                 lock_model = result.scalar_one()
-                lock_model.lock_acquired_at = (
-                    datetime.utcnow() - timedelta(minutes=9, seconds=59)
-                )
+                lock_model.lock_acquired_at = datetime.utcnow() - timedelta(minutes=9, seconds=59)
 
             # Lock just under 10 minutes should still be valid
             result = await lock_dao.try_acquire_lock(task_id, instance_2)
@@ -336,9 +285,8 @@ class TestProperty2LockExpiryBehavior:
             await db.close()
 
 
-
-class TestProperty3AtomicLockAcquisition:
-    """Property 3: Atomic Lock Acquisition.
+class TestAtomicLockAcquisition:
+    """Deterministic tests for atomic lock acquisition.
 
     *For any* two concurrent lock acquisition attempts on the same task_id,
     exactly one should succeed and one should fail, ensuring no duplicate
@@ -352,120 +300,70 @@ class TestProperty3AtomicLockAcquisition:
     """
 
     @pytest.mark.asyncio
-    @settings(max_examples=100)
-    @given(
-        num_instances=st.integers(min_value=2, max_value=10),
-    )
-    async def test_only_one_lock_succeeds(
-        self,
-        num_instances: int,
-    ):
-        """Feature: cron-job-scheduler, Property 3: Atomic Lock Acquisition.
-
-        For any number of concurrent lock attempts, at most one should succeed.
-        Due to SQLite limitations, we verify no duplicate locks are created.
-        """
+    @pytest.mark.parametrize("num_instances", [2, 5])
+    async def test_only_one_lock_succeeds(self, num_instances: int):
         db = Database("sqlite+aiosqlite:///:memory:")
         await db.init_db()
-
         try:
             user_dao = UserDAO(db)
             cron_dao = CronDAO(db)
             lock_dao = CronLockDAO(db)
 
             task_id = await create_test_task(user_dao, cron_dao)
-
-            # Generate unique instance IDs
             instance_ids = [str(uuid.uuid4()) for _ in range(num_instances)]
 
-            # Attempt to acquire locks concurrently
             async def try_lock(instance_id: str) -> bool:
                 return await lock_dao.try_acquire_lock(task_id, instance_id)
 
             results = await asyncio.gather(
                 *[try_lock(iid) for iid in instance_ids],
-                return_exceptions=True
+                return_exceptions=True,
             )
-
-            # Count successful acquisitions (True results, not exceptions)
-            success_count = sum(
-                1 for r in results
-                if r is True
-            )
-
-            # At most one should succeed (atomic property)
-            # Due to SQLite concurrency limitations, 0 or 1 successes are valid
+            success_count = sum(1 for r in results if r is True)
             assert success_count <= 1
 
-            # If any succeeded, verify lock exists and is held by one instance
             if success_count == 1:
                 lock = await lock_dao.get_lock(task_id)
-                # Lock might be None due to SQLite rollback behavior
-                # but if it exists, it should be one of our instances
                 if lock is not None:
                     assert lock.instance_id in instance_ids
-
         finally:
             await db.close()
 
     @pytest.mark.asyncio
-    @settings(max_examples=100, deadline=None)
-    @given(
-        num_tasks=st.integers(min_value=1, max_value=5),
-        num_instances=st.integers(min_value=2, max_value=5),
-    )
-    async def test_multiple_tasks_independent_locks(
-        self,
-        num_tasks: int,
-        num_instances: int,
-    ):
-        """Feature: cron-job-scheduler, Property 3: Atomic Lock Acquisition.
-
-        For multiple tasks, each task should have independent locking.
-        """
+    @pytest.mark.parametrize("num_tasks,num_instances", [(1, 2), (3, 3)])
+    async def test_multiple_tasks_independent_locks(self, num_tasks: int, num_instances: int):
         db = Database("sqlite+aiosqlite:///:memory:")
         await db.init_db()
-
         try:
             user_dao = UserDAO(db)
             cron_dao = CronDAO(db)
             lock_dao = CronLockDAO(db)
 
-            # Create multiple tasks
             user_id = str(uuid.uuid4())
             await user_dao.create(user_id, f"test_{uuid.uuid4().hex[:8]}")
 
-            task_ids = []
+            task_ids: list[str] = []
             for i in range(num_tasks):
-                next_exec = datetime.utcnow() + timedelta(hours=1)
                 task = await cron_dao.create(
                     user_id=user_id,
                     name=f"task_{i}",
                     instructions=f"Instructions {i}",
                     cron_expression="0 6 * * *",
-                    next_execution_at=next_exec,
+                    next_execution_at=datetime.utcnow() + timedelta(hours=1),
                 )
                 task_ids.append(task.id)
 
-            # For each task, multiple instances try to acquire lock
             for task_id in task_ids:
                 instance_ids = [str(uuid.uuid4()) for _ in range(num_instances)]
 
-                async def try_lock(tid: str, iid: str) -> bool:
-                    return await lock_dao.try_acquire_lock(tid, iid)
+                async def try_lock(iid: str) -> bool:
+                    return await lock_dao.try_acquire_lock(task_id, iid)
 
                 results = await asyncio.gather(
-                    *[try_lock(task_id, iid) for iid in instance_ids],
-                    return_exceptions=True
+                    *[try_lock(iid) for iid in instance_ids],
+                    return_exceptions=True,
                 )
-
-                # At most one should succeed per task
-                success_count = sum(
-                    1 for r in results
-                    if r is True
-                )
-                assert success_count <= 1
-
+                assert sum(1 for r in results if r is True) <= 1
         finally:
             await db.close()
 

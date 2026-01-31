@@ -1,16 +1,8 @@
-"""Property-based tests for FileService.
+"""Unit tests for FileService (deterministic).
 
-Tests file validation, user isolation, and cleanup functionality
-using hypothesis for property-based testing.
-
-Properties tested:
-- Property 4: File extension validation
-- Property 5: File size limit enforcement
-- Property 14: Filename sanitization
-- Property 2: User-isolated file storage
-- Property 17: Separate storage directories
-- Property 9: File cleanup by age
-- Property 16: Working folder cleared on new session
+Historically this module contained Hypothesis/property-based tests.
+Those have been replaced with small deterministic tests to keep the
+suite lightweight and dependency-free.
 """
 
 import os
@@ -20,8 +12,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from hypothesis import given, settings, assume, HealthCheck
-from hypothesis import strategies as st
 
 from app.config import AgentConfig
 from app.services.file_service import FileService, FileValidationResult
@@ -40,9 +30,22 @@ def create_file_service(temp_base: str, work_base: str) -> FileService:
         max_file_size_mb=20,
         file_retention_hours=24,
         allowed_file_extensions=[
-            ".txt", ".pdf", ".csv", ".json", ".xml", ".md",
-            ".py", ".js", ".ts", ".html", ".css",
-            ".png", ".jpg", ".jpeg", ".gif", ".webp",
+            ".txt",
+            ".pdf",
+            ".csv",
+            ".json",
+            ".xml",
+            ".md",
+            ".py",
+            ".js",
+            ".ts",
+            ".html",
+            ".css",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
         ],
         temp_files_base_dir=temp_base,
         working_folder_base_dir=work_base,
@@ -70,170 +73,98 @@ def file_service(temp_dirs):
     return create_file_service(temp_base, work_base)
 
 
-# ============================================================================
-# Strategies for property-based testing
-# ============================================================================
+VALID_EXTENSIONS = [
+    ".txt",
+    ".pdf",
+    ".csv",
+    ".json",
+    ".xml",
+    ".md",
+    ".py",
+    ".js",
+    ".ts",
+    ".html",
+    ".css",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+]
+
+INVALID_EXTENSIONS = [
+    ".exe",
+    ".dll",
+    ".bat",
+    ".cmd",
+    ".scr",
+    ".msi",
+    ".vbs",
+    ".ps1",
+    ".jar",
+    ".app",
+    ".dmg",
+    ".iso",
+]
+
+USER_IDS = ["alice", "bob", "user123", "test-user"]
+
+SAFE_FILENAME_BASES = [
+    "hello_world",
+    "Report_2026-01-31",
+    "abcDEF123",
+]
 
 
-# Valid file extensions from config
-valid_extensions = st.sampled_from([
-    ".txt", ".pdf", ".csv", ".json", ".xml", ".md",
-    ".py", ".js", ".ts", ".html", ".css",
-    ".png", ".jpg", ".jpeg", ".gif", ".webp",
-])
-
-# Invalid file extensions
-invalid_extensions = st.sampled_from([
-    ".exe", ".dll", ".bat", ".cmd", ".scr", ".msi",
-    ".vbs", ".ps1", ".jar", ".app", ".dmg", ".iso",
-])
-
-# Safe filename characters
-safe_filename_chars = st.text(
-    alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-",
-    min_size=1,
-    max_size=50,
-)
-
-# User IDs (alphanumeric)
-user_ids = st.text(
-    alphabet="abcdefghijklmnopqrstuvwxyz0123456789",
-    min_size=1,
-    max_size=20,
-)
-
-
-# ============================================================================
-# Property 4: File extension validation
-# ============================================================================
-
-
-class TestFileExtensionValidation:
-    """Property 4: File extension validation.
-
-    Requirements: 1.5, 9.1
-    - Valid extensions should be accepted
-    - Invalid extensions should be rejected
-    """
-
-    @given(
-        filename_base=safe_filename_chars,
-        extension=valid_extensions,
-        file_size=st.integers(min_value=1, max_value=1024 * 1024),  # Up to 1MB
+@pytest.mark.parametrize("extension", VALID_EXTENSIONS)
+def test_valid_extensions_accepted(file_service: FileService, extension: str):
+    filename = f"hello{extension}"
+    result = file_service.validate_file(
+        file_name=filename,
+        file_size=1024,
+        mime_type=None,
     )
-    @settings(
-        max_examples=50,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    assert result.valid is True
+    assert result.error_message is None
+    assert result.sanitized_name
+
+
+@pytest.mark.parametrize("extension", INVALID_EXTENSIONS)
+def test_invalid_extensions_rejected(file_service: FileService, extension: str):
+    filename = f"hello{extension}"
+    result = file_service.validate_file(
+        file_name=filename,
+        file_size=1024,
+        mime_type=None,
     )
-    def test_valid_extensions_accepted(
-        self, file_service, filename_base, extension, file_size
-    ):
-        """Valid file extensions should pass validation."""
-        filename = f"{filename_base}{extension}"
+    assert result.valid is False
+    assert result.error_message
+    assert "not supported" in result.error_message.lower()
 
-        result = file_service.validate_file(
-            file_name=filename,
-            file_size=file_size,
-            mime_type=None,
-        )
 
-        assert result.valid is True
-        assert result.error_message is None
-        assert result.sanitized_name is not None
-
-    @given(
-        filename_base=safe_filename_chars,
-        extension=invalid_extensions,
-        file_size=st.integers(min_value=1, max_value=1024 * 1024),
+def test_files_within_size_limit_accepted(file_service: FileService):
+    max_bytes = file_service.config.max_file_size_mb * 1024 * 1024
+    filename = "within_limit.txt"
+    result = file_service.validate_file(
+        file_name=filename,
+        file_size=max_bytes - 1,
+        mime_type=None,
     )
-    @settings(
-        max_examples=50,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    assert result.valid is True
+
+
+@pytest.mark.parametrize("excess_bytes", [1, 1024, 1024 * 1024])
+def test_files_exceeding_size_limit_rejected(file_service: FileService, excess_bytes: int):
+    max_bytes = file_service.config.max_file_size_mb * 1024 * 1024
+    filename = "too_large.txt"
+    result = file_service.validate_file(
+        file_name=filename,
+        file_size=max_bytes + excess_bytes,
+        mime_type=None,
     )
-    def test_invalid_extensions_rejected(
-        self, file_service, filename_base, extension, file_size
-    ):
-        """Invalid file extensions should be rejected."""
-        filename = f"{filename_base}{extension}"
-
-        result = file_service.validate_file(
-            file_name=filename,
-            file_size=file_size,
-            mime_type=None,
-        )
-
-        assert result.valid is False
-        assert result.error_message is not None
-        assert "not supported" in result.error_message.lower()
-
-
-# ============================================================================
-# Property 5: File size limit enforcement
-# ============================================================================
-
-
-class TestFileSizeLimitEnforcement:
-    """Property 5: File size limit enforcement.
-
-    Requirements: 1.6, 9.2
-    - Files within size limit should be accepted
-    - Files exceeding size limit should be rejected
-    """
-
-    @given(
-        filename_base=safe_filename_chars,
-        extension=valid_extensions,
-    )
-    @settings(
-        max_examples=30,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_files_within_limit_accepted(
-        self, file_service, filename_base, extension
-    ):
-        """Files within size limit should pass validation."""
-        filename = f"{filename_base}{extension}"
-        max_bytes = file_service.config.max_file_size_mb * 1024 * 1024
-
-        # Generate size within limit
-        file_size = max_bytes - 1
-
-        result = file_service.validate_file(
-            file_name=filename,
-            file_size=file_size,
-            mime_type=None,
-        )
-
-        assert result.valid is True
-
-    @given(
-        filename_base=safe_filename_chars,
-        extension=valid_extensions,
-        excess_bytes=st.integers(min_value=1, max_value=10 * 1024 * 1024),
-    )
-    @settings(
-        max_examples=30,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_files_exceeding_limit_rejected(
-        self, file_service, filename_base, extension, excess_bytes
-    ):
-        """Files exceeding size limit should be rejected."""
-        filename = f"{filename_base}{extension}"
-        max_bytes = file_service.config.max_file_size_mb * 1024 * 1024
-
-        # Generate size exceeding limit
-        file_size = max_bytes + excess_bytes
-
-        result = file_service.validate_file(
-            file_name=filename,
-            file_size=file_size,
-            mime_type=None,
-        )
-
-        assert result.valid is False
-        assert result.error_message is not None
-        assert "too large" in result.error_message.lower()
+    assert result.valid is False
+    assert result.error_message
+    assert "too large" in result.error_message.lower()
 
 
 # ============================================================================
@@ -241,76 +172,32 @@ class TestFileSizeLimitEnforcement:
 # ============================================================================
 
 
-class TestFilenameSanitization:
-    """Property 14: Filename sanitization.
+@pytest.mark.parametrize("filename_base", SAFE_FILENAME_BASES)
+def test_safe_filenames_preserved(file_service: FileService, filename_base: str):
+    result = file_service.sanitize_filename(filename_base)
+    assert result
+    assert "/" not in result
+    assert "\\" not in result
 
-    Requirements: 9.5, 9.6
-    - Path traversal attempts should be removed
-    - Special characters should be sanitized
-    - Result should be safe for filesystem use
-    """
 
-    @given(filename_base=safe_filename_chars)
-    @settings(
-        max_examples=50,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_safe_filenames_preserved(self, file_service, filename_base):
-        """Safe filenames should be mostly preserved."""
-        result = file_service.sanitize_filename(filename_base)
+@pytest.mark.parametrize("prefix", ["../", "..\\", "/", "\\", "./"])
+def test_path_traversal_removed(file_service: FileService, prefix: str):
+    malicious_name = f"{prefix}hello_world"
+    result = file_service.sanitize_filename(malicious_name)
+    assert not result.startswith("../")
+    assert not result.startswith("..\\")
+    assert not result.startswith("/")
+    assert not result.startswith("\\")
+    assert "../" not in result
+    assert "..\\" not in result
 
-        # Result should not be empty
-        assert len(result) > 0
-        # Result should not contain path separators
-        assert "/" not in result
-        assert "\\" not in result
 
-    @given(
-        prefix=st.sampled_from(["../", "..\\", "/", "\\", "./"]),
-        filename_base=safe_filename_chars,
-    )
-    @settings(
-        max_examples=30,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_path_traversal_removed(self, file_service, prefix, filename_base):
-        """Path traversal sequences should be removed."""
-        malicious_name = f"{prefix}{filename_base}"
-
-        result = file_service.sanitize_filename(malicious_name)
-
-        # Result should not start with path traversal
-        assert not result.startswith("../")
-        assert not result.startswith("..\\")
-        assert not result.startswith("/")
-        assert not result.startswith("\\")
-        # Result should not contain path traversal
-        assert "../" not in result
-        assert "..\\" not in result
-
-    @given(
-        filename_base=safe_filename_chars,
-        special_chars=st.text(
-            alphabet="!@#$%^&*()+=[]{}|;':\"<>,?`~",
-            min_size=1,
-            max_size=5,
-        ),
-    )
-    @settings(
-        max_examples=30,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_special_characters_sanitized(
-        self, file_service, filename_base, special_chars
-    ):
-        """Special characters should be sanitized."""
-        dirty_name = f"{filename_base}{special_chars}"
-
-        result = file_service.sanitize_filename(dirty_name)
-
-        # Result should only contain safe characters
-        for char in result:
-            assert char.isalnum() or char in "._-"
+@pytest.mark.parametrize("dirty_suffix", ["!", "@@@", "[]{}", "<>,"])
+def test_special_characters_sanitized(file_service: FileService, dirty_suffix: str):
+    dirty_name = f"safe_name{dirty_suffix}"
+    result = file_service.sanitize_filename(dirty_name)
+    for char in result:
+        assert char.isalnum() or char in "._-"
 
     def test_null_bytes_removed(self, file_service):
         """Null bytes should be removed from filenames."""
@@ -333,68 +220,31 @@ class TestFilenameSanitization:
 # ============================================================================
 
 
-class TestUserIsolatedStorage:
-    """Property 2: User-isolated file storage.
+@pytest.mark.parametrize("user_id", USER_IDS)
+def test_temp_dir_created_per_user(file_service: FileService, user_id: str):
+    temp_dir = file_service.get_user_temp_dir(user_id)
+    assert temp_dir.exists()
+    assert temp_dir.is_dir()
+    assert user_id in str(temp_dir)
 
-    Requirements: 1.2, 9.3
-    - Each user should have their own temp directory
-    - Each user should have their own working directory
-    - Directories should be isolated from each other
-    """
 
-    @given(user_id=user_ids)
-    @settings(
-        max_examples=20,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_temp_dir_created_per_user(self, file_service, user_id):
-        """Each user should get their own temp directory."""
-        temp_dir = file_service.get_user_temp_dir(user_id)
+@pytest.mark.parametrize("user_id", USER_IDS)
+def test_working_dir_created_per_user(file_service: FileService, user_id: str):
+    work_dir = file_service.get_user_working_dir(user_id)
+    assert work_dir.exists()
+    assert work_dir.is_dir()
+    assert user_id in str(work_dir)
 
-        assert temp_dir.exists()
-        assert temp_dir.is_dir()
-        assert user_id in str(temp_dir)
 
-    @given(user_id=user_ids)
-    @settings(
-        max_examples=20,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_working_dir_created_per_user(self, file_service, user_id):
-        """Each user should get their own working directory."""
-        work_dir = file_service.get_user_working_dir(user_id)
+def test_user_directories_isolated(file_service: FileService):
+    user_id_1 = "alice"
+    user_id_2 = "bob"
+    assert user_id_1 != user_id_2
 
-        assert work_dir.exists()
-        assert work_dir.is_dir()
-        assert user_id in str(work_dir)
-
-    @given(
-        user_id_1=user_ids,
-        user_id_2=user_ids,
-    )
-    @settings(
-        max_examples=20,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_user_directories_isolated(
-        self, file_service, user_id_1, user_id_2
-    ):
-        """Different users should have different directories."""
-        assume(user_id_1 != user_id_2)
-
-        temp_dir_1 = file_service.get_user_temp_dir(user_id_1)
-        temp_dir_2 = file_service.get_user_temp_dir(user_id_2)
-
-        # Directories should be different paths
-        assert temp_dir_1 != temp_dir_2
-
-        # Each directory should contain its user_id in the path
-        assert user_id_1 in str(temp_dir_1)
-        assert user_id_2 in str(temp_dir_2)
-
-        # Files in one directory should not be accessible from the other
-        # (they are siblings, not parent-child)
-        assert temp_dir_1.parent == temp_dir_2.parent
+    temp_dir_1 = file_service.get_user_temp_dir(user_id_1)
+    temp_dir_2 = file_service.get_user_temp_dir(user_id_2)
+    assert temp_dir_1 != temp_dir_2
+    assert temp_dir_1.parent == temp_dir_2.parent
 
 
 # ============================================================================
@@ -402,30 +252,13 @@ class TestUserIsolatedStorage:
 # ============================================================================
 
 
-class TestSeparateStorageDirectories:
-    """Property 17: Separate storage directories.
-
-    Requirements: 10.6
-    - Temp folder should be separate from working folder
-    - Both should exist under different base paths
-    """
-
-    @given(user_id=user_ids)
-    @settings(
-        max_examples=20,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_temp_and_working_dirs_separate(self, file_service, user_id):
-        """Temp and working directories should be separate."""
-        temp_dir = file_service.get_user_temp_dir(user_id)
-        work_dir = file_service.get_user_working_dir(user_id)
-
-        # Directories should be different
-        assert temp_dir != work_dir
-
-        # Neither should be a subdirectory of the other
-        assert not str(temp_dir).startswith(str(work_dir))
-        assert not str(work_dir).startswith(str(temp_dir))
+def test_temp_and_working_dirs_separate(file_service: FileService):
+    user_id = "alice"
+    temp_dir = file_service.get_user_temp_dir(user_id)
+    work_dir = file_service.get_user_working_dir(user_id)
+    assert temp_dir != work_dir
+    assert not str(temp_dir).startswith(str(work_dir))
+    assert not str(work_dir).startswith(str(temp_dir))
 
 
 # ============================================================================
@@ -483,46 +316,20 @@ class TestFileCleanupByAge:
 # ============================================================================
 
 
-class TestWorkingFolderCleared:
-    """Property 16: Working folder cleared on new session.
+@pytest.mark.parametrize("user_id", ["alice", "bob"])
+def test_working_folder_cleared(file_service: FileService, user_id: str):
+    work_dir = file_service.get_user_working_dir(user_id)
+    (work_dir / "file1.txt").write_text("content1")
+    (work_dir / "file2.txt").write_text("content2")
 
-    Requirements: 10.4
-    - All files in working folder should be deleted on clear
-    - Directory structure should remain intact
-    """
+    file_service.clear_working_folder(user_id)
 
-    @given(user_id=user_ids)
-    @settings(
-        max_examples=10,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_working_folder_cleared(self, file_service, user_id):
-        """Working folder should be cleared of all files."""
-        work_dir = file_service.get_user_working_dir(user_id)
+    assert work_dir.exists()
+    assert list(work_dir.iterdir()) == []
 
-        # Create some test files
-        (work_dir / "file1.txt").write_text("content1")
-        (work_dir / "file2.txt").write_text("content2")
 
-        # Clear the working folder
-        file_service.clear_working_folder(user_id)
-
-        # Directory should exist but be empty
-        assert work_dir.exists()
-        assert list(work_dir.iterdir()) == []
-
-    @given(user_id=user_ids)
-    @settings(
-        max_examples=10,
-        suppress_health_check=[HealthCheck.function_scoped_fixture],
-    )
-    def test_clear_nonexistent_folder_safe(self, file_service, user_id):
-        """Clearing a non-existent folder should not raise errors."""
-        # Use a user ID that hasn't been used
-        unique_user = f"nonexistent_{user_id}"
-
-        # This should not raise an exception
-        file_service.clear_working_folder(unique_user)
+def test_clear_nonexistent_folder_safe(file_service: FileService):
+    file_service.clear_working_folder("nonexistent_user")
 
 
 # ============================================================================

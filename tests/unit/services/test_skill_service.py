@@ -20,7 +20,7 @@ from app.services.skill_service import (
 )
 
 
-TEST_USER_ID = "123456789"
+TEST_USER_ID = "testuser"
 
 
 @pytest.fixture
@@ -57,8 +57,7 @@ class TestGitHubUrlParsing:
     def test_parse_valid_github_tree_url(self, skill_service):
         """Test parsing a valid GitHub tree URL."""
         url = (
-            "https://github.com/aws-samples/"
-            "sample-strands-agents-agentskills/tree/main/skills/pptx"
+            "https://github.com/aws-samples/sample-strands-agents-agentskills/tree/main/skills/pptx"
         )
         result = skill_service._parse_github_url(url)
 
@@ -89,9 +88,7 @@ class TestGitHubUrlParsing:
 class TestPerUserSkillInstallation:
     """Tests for per-user skill installation."""
 
-    def test_user_skills_directory_created(
-        self, skill_service, temp_skills_dir
-    ):
+    def test_user_skills_directory_created(self, skill_service, temp_skills_dir):
         """Test that user-specific skills directory is created."""
         user_dir = skill_service._get_user_skills_dir(TEST_USER_ID)
 
@@ -99,9 +96,7 @@ class TestPerUserSkillInstallation:
         assert user_dir.is_dir()
         assert user_dir == Path(temp_skills_dir) / TEST_USER_ID
 
-    def test_different_users_have_separate_directories(
-        self, skill_service, temp_skills_dir
-    ):
+    def test_different_users_have_separate_directories(self, skill_service, temp_skills_dir):
         """Test that different users get separate skill directories."""
         user1_dir = skill_service._get_user_skills_dir("user1")
         user2_dir = skill_service._get_user_skills_dir("user2")
@@ -110,9 +105,7 @@ class TestPerUserSkillInstallation:
         assert user1_dir.name == "user1"
         assert user2_dir.name == "user2"
 
-    def test_install_skill_from_github_success(
-        self, skill_service, temp_skills_dir
-    ):
+    def test_install_skill_from_github_success(self, skill_service, temp_skills_dir):
         """Test successful skill installation from GitHub."""
         url = "https://github.com/owner/repo/tree/main/skills/test-skill"
 
@@ -153,9 +146,7 @@ description: A test skill
         skill_dir = Path(temp_skills_dir) / TEST_USER_ID / "test-skill"
         assert skill_dir.exists()
 
-    def test_skills_isolated_between_users(
-        self, skill_service, temp_skills_dir
-    ):
+    def test_skills_isolated_between_users(self, skill_service, temp_skills_dir):
         """Test that skills are isolated between users."""
         # Create skill for user1
         user1_dir = skill_service._get_user_skills_dir("user1")
@@ -190,9 +181,7 @@ class TestSkillUninstallation:
         with pytest.raises(SkillNotFoundError):
             skill_service.uninstall_skill("nonexistent", TEST_USER_ID)
 
-    def test_uninstall_does_not_affect_other_users(
-        self, skill_service, temp_skills_dir
-    ):
+    def test_uninstall_does_not_affect_other_users(self, skill_service, temp_skills_dir):
         """Test that uninstalling doesn't affect other users' skills."""
         # Create same skill for two users
         for user_id in ["user1", "user2"]:
@@ -246,9 +235,7 @@ class TestSkillListing:
         assert "skill-a" in skills
         assert "skill-b" in skills
 
-    def test_list_skills_only_shows_user_skills(
-        self, skill_service, temp_skills_dir
-    ):
+    def test_list_skills_only_shows_user_skills(self, skill_service, temp_skills_dir):
         """Test that list_skills only shows the user's own skills."""
         # Create skill for user1
         user1_dir = skill_service._get_user_skills_dir("user1")

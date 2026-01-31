@@ -69,11 +69,54 @@ class SkillService:
         self.shared_skills_dir = Path(config.shared_skills_dir)
         self.shared_skills_dir.mkdir(parents=True, exist_ok=True)
 
+    def migrate_user_skills_dir(self, *, legacy_user_id: str, user_id: str) -> bool:
+        """One-way migration: move the per-user skills directory.
+
+        We no longer use numeric Telegram IDs as the primary user identifier.
+        This helper migrates any existing legacy folder at:
+
+            {skills_base_dir}/{legacy_user_id}/
+
+        into the new location:
+
+            {skills_base_dir}/{user_id}/
+
+        Args:
+            legacy_user_id: Previous user identifier (often numeric telegram user ID).
+            user_id: New primary user identifier (Telegram username).
+
+        Returns:
+            True if a migration occurred, False otherwise.
+
+        Raises:
+            SkillInstallError: If both legacy and new directories exist.
+        """
+        legacy_user_id = (legacy_user_id or "").strip()
+        user_id = (user_id or "").strip()
+
+        if not legacy_user_id or not user_id or legacy_user_id == user_id:
+            return False
+
+        legacy_dir = self.skills_base_dir / legacy_user_id
+        new_dir = self.skills_base_dir / user_id
+
+        if not legacy_dir.exists():
+            return False
+
+        if new_dir.exists():
+            raise SkillInstallError(
+                f"Cannot migrate skills dir: both legacy '{legacy_user_id}' and new '{user_id}' exist"
+            )
+
+        # Use shutil.move for robustness across filesystems.
+        shutil.move(str(legacy_dir), str(new_dir))
+        return True
+
     def _get_user_skills_dir(self, user_id: str) -> Path:
         """Get the skills directory for a specific user.
 
         Args:
-            user_id: User's telegram ID.
+            user_id: Primary user identifier (Telegram username).
 
         Returns:
             Path to user's skills directory.

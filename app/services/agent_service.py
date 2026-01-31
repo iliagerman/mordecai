@@ -831,7 +831,7 @@ class AgentService:
                         max_chars=getattr(self.config, "personality_max_chars", 20_000),
                     )
                     prompt += (
-                        "\n## Short-Term Memory (Obsidian)\n\n"
+                        "\n## Short-Term Memory (Obsidian Scratchpad)\n\n"
                         "The following content comes from the user's Obsidian STM scratchpad. "
                         "It may include recent session summaries and notes that are not yet reliably "
                         "available via long-term memory retrieval.\n\n"
@@ -1406,11 +1406,42 @@ class AgentService:
 
         # If we wrote a session summary into Obsidian STM, snapshot it into an
         # in-memory cache for immediate injection into the next session prompt.
-        # Then clear the on-disk STM to start the new session fresh.
+        # Note: We intentionally do NOT clear stm.md here. Tests (and expected
+        # UX) rely on STM persisting across sessions, while injection logic can
+        # still pick up recent summaries.
         vault_root = getattr(self.config, "obsidian_vault_root", None)
         if vault_root and summary_text:
             try:
-                from app.tools.short_term_memory_vault import read_raw_text
+                from app.tools.short_term_memory_vault import (
+                    append_session_summary,
+                    read_raw_text,
+                    short_term_memory_path,
+                )
+
+                # Make sure the session summary is appended to STM even if the
+                # extraction service couldn't write it (e.g., due to config
+                # differences) or long-term memory is unavailable.
+                try:
+                    stm_path = short_term_memory_path(vault_root, user_id)
+                    already_has_block = False
+                    if stm_path.exists() and stm_path.is_file():
+                        try:
+                            existing = stm_path.read_text(encoding="utf-8")
+                            already_has_block = f"## Session summary: {session_id}" in existing
+                        except Exception:
+                            already_has_block = False
+
+                    if not already_has_block:
+                        append_session_summary(
+                            vault_root,
+                            user_id,
+                            session_id,
+                            summary_text,
+                            max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                        )
+                except Exception:
+                    # Never fail /new due to Obsidian write issues.
+                    pass
 
                 stm_text = read_raw_text(
                     vault_root,
@@ -1419,13 +1450,6 @@ class AgentService:
                 )
                 if stm_text:
                     self._obsidian_stm_cache[user_id] = stm_text
-            except Exception:
-                pass
-
-            try:
-                from app.tools.short_term_memory_vault import clear as clear_stm
-
-                clear_stm(vault_root, user_id)
             except Exception:
                 pass
 
@@ -2475,8 +2499,9 @@ class AgentService:
             user_id: User's telegram ID.
         """
         # Clear conversation history
-        if user_id in self._conversation_history:
-            del self._conversation_history[user_id]
+        # Keep the key present but reset to an empty list. Some unit tests
+        # assert the cleared state is `[]` (not missing/None).
+        self._conversation_history[user_id] = []
 
         # Clear conversation manager to reset agent's memory
         if user_id in self._user_conversation_managers:

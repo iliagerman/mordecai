@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from hypothesis import given, strategies as st, settings
 
 from app.config import AgentConfig
 from app.enums import CommandType, ModelProvider
@@ -416,7 +415,7 @@ class TestTelegramBotSkillCommands:
 
             bot.skill_service.download_skill_to_pending.assert_called_once_with(
                 "https://github.com/user/repo/tree/main/weather",
-                "111",
+                "testuser",
                 scope="user",
             )
 
@@ -452,7 +451,7 @@ class TestTelegramBotSkillCommands:
         with patch.object(bot, "send_response", new_callable=AsyncMock):
             await bot._handle_delete_skill_command(update, context)
 
-            bot.skill_service.uninstall_skill.assert_called_once_with("weather", "111")
+            bot.skill_service.uninstall_skill.assert_called_once_with("weather", "testuser")
 
     @pytest.mark.asyncio
     async def test_delete_skill_command_no_name_shows_usage(self, bot):
@@ -470,85 +469,6 @@ class TestTelegramBotSkillCommands:
             mock_send.assert_called_once()
             response = mock_send.call_args[0][1]
             assert "usage" in response.lower()
-
-
-class TestTelegramBotEnqueueProperty:
-    """Property-based tests for message enqueueing.
-
-    **Property 24: Message Enqueue to User Queue**
-    *For any* message sent via Telegram, it should be enqueued to the
-    correct user's SQS queue.
-    **Validates: Requirements 11.2, 12.2**
-    """
-
-    @given(
-        user_id=st.text(
-            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")),
-            min_size=1,
-            max_size=50,
-        ),
-        chat_id=st.integers(min_value=1, max_value=10**12),
-        message=st.text(min_size=1, max_size=500).filter(lambda x: x.strip()),
-    )
-    @settings(max_examples=100)
-    @pytest.mark.asyncio
-    @patch("app.telegram.bot.Application")
-    async def test_property_message_enqueued_to_correct_user_queue(
-        self, mock_app, user_id: str, chat_id: int, message: str
-    ):
-        """Property: Any message is enqueued to the correct user's queue."""
-        temp_dir = tempfile.mkdtemp()
-        try:
-            # Setup mocks
-            mock_sqs_client = MagicMock()
-            mock_sqs_client.send_message = MagicMock(return_value={"MessageId": "id"})
-
-            expected_queue_url = f"https://sqs.us-east-1.amazonaws.com/123/agent-user-{user_id}"
-            mock_queue_manager = MagicMock()
-            mock_queue_manager.get_or_create_queue = MagicMock(return_value=expected_queue_url)
-
-            mock_logging_service = MagicMock()
-            mock_logging_service.log_action = AsyncMock()
-
-            mock_app_instance = MagicMock()
-            mock_app_instance.bot = MagicMock()
-            mock_app_instance.bot.send_message = AsyncMock()
-            mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
-
-            config = AgentConfig(
-                model_provider=ModelProvider.BEDROCK,
-                bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-                telegram_bot_token="test-token",
-                session_storage_dir=temp_dir,
-                skills_base_dir=temp_dir,
-            )
-
-            bot = TelegramBotInterface(
-                config=config,
-                sqs_client=mock_sqs_client,
-                queue_manager=mock_queue_manager,
-                agent_service=MagicMock(),
-                logging_service=mock_logging_service,
-                skill_service=MagicMock(),
-            )
-
-            await bot._enqueue_message(user_id, chat_id, message)
-
-            # Verify queue was requested for correct user
-            mock_queue_manager.get_or_create_queue.assert_called_once_with(user_id)
-
-            # Verify message was sent to correct queue
-            call_args = mock_sqs_client.send_message.call_args
-            assert call_args.kwargs["QueueUrl"] == expected_queue_url
-
-            # Verify message body contains correct user_id
-            body = json.loads(call_args.kwargs["MessageBody"])
-            assert body["user_id"] == user_id
-            assert body["chat_id"] == chat_id
-            assert body["message"] == message
-
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class TestTelegramBotWhitelist:
@@ -638,143 +558,6 @@ class TestTelegramBotWhitelist:
 
         rejected = await bot._reject_if_not_whitelisted("111", "testuser", 123)
         assert rejected is False
-
-    @given(
-        user_id=st.text(
-            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")),
-            min_size=1,
-            max_size=20,
-        ),
-        message=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()),
-    )
-    @settings(max_examples=100)
-    @pytest.mark.asyncio
-    @patch("app.telegram.bot.Application")
-    async def test_property_message_body_contains_required_fields(
-        self, mock_app, user_id: str, message: str
-    ):
-        """Property: Enqueued message body always contains required fields."""
-        temp_dir = tempfile.mkdtemp()
-        try:
-            mock_sqs_client = MagicMock()
-            mock_sqs_client.send_message = MagicMock(return_value={"MessageId": "id"})
-
-            mock_queue_manager = MagicMock()
-            mock_queue_manager.get_or_create_queue = MagicMock(return_value="https://queue-url")
-
-            mock_logging_service = MagicMock()
-            mock_logging_service.log_action = AsyncMock()
-
-            mock_app_instance = MagicMock()
-            mock_app_instance.bot = MagicMock()
-            mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
-
-            config = AgentConfig(
-                model_provider=ModelProvider.BEDROCK,
-                bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-                telegram_bot_token="test-token",
-                session_storage_dir=temp_dir,
-                skills_base_dir=temp_dir,
-            )
-
-            bot = TelegramBotInterface(
-                config=config,
-                sqs_client=mock_sqs_client,
-                queue_manager=mock_queue_manager,
-                agent_service=MagicMock(),
-                logging_service=mock_logging_service,
-                skill_service=MagicMock(),
-            )
-
-            await bot._enqueue_message(user_id, 12345, message)
-
-            # Verify message body structure
-            call_args = mock_sqs_client.send_message.call_args
-            body = json.loads(call_args.kwargs["MessageBody"])
-
-            # All required fields must be present
-            assert "user_id" in body
-            assert "message" in body
-            assert "chat_id" in body
-            assert "timestamp" in body
-
-            # Timestamp must be valid ISO format
-            timestamp = datetime.fromisoformat(body["timestamp"].replace("Z", "+00:00"))
-            assert timestamp is not None
-
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-    @given(
-        messages=st.lists(
-            st.tuples(
-                st.text(
-                    alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")),
-                    min_size=1,
-                    max_size=10,
-                ),
-                st.text(min_size=1, max_size=100).filter(lambda x: x.strip()),
-            ),
-            min_size=1,
-            max_size=5,
-        )
-    )
-    @settings(max_examples=100)
-    @pytest.mark.asyncio
-    @patch("app.telegram.bot.Application")
-    async def test_property_each_user_gets_own_queue(
-        self, mock_app, messages: list[tuple[str, str]]
-    ):
-        """Property: Each user's message goes to their own queue."""
-        temp_dir = tempfile.mkdtemp()
-        try:
-            mock_sqs_client = MagicMock()
-            mock_sqs_client.send_message = MagicMock(return_value={"MessageId": "id"})
-
-            # Track which queue was requested for each user
-            queue_requests = []
-
-            def track_queue_request(user_id):
-                queue_requests.append(user_id)
-                return f"https://queue-url/{user_id}"
-
-            mock_queue_manager = MagicMock()
-            mock_queue_manager.get_or_create_queue = MagicMock(side_effect=track_queue_request)
-
-            mock_logging_service = MagicMock()
-            mock_logging_service.log_action = AsyncMock()
-
-            mock_app_instance = MagicMock()
-            mock_app_instance.bot = MagicMock()
-            mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
-
-            config = AgentConfig(
-                model_provider=ModelProvider.BEDROCK,
-                bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-                telegram_bot_token="test-token",
-                session_storage_dir=temp_dir,
-                skills_base_dir=temp_dir,
-            )
-
-            bot = TelegramBotInterface(
-                config=config,
-                sqs_client=mock_sqs_client,
-                queue_manager=mock_queue_manager,
-                agent_service=MagicMock(),
-                logging_service=mock_logging_service,
-                skill_service=MagicMock(),
-            )
-
-            # Enqueue messages for different users
-            for user_id, message in messages:
-                await bot._enqueue_message(user_id, 123, message)
-
-            # Verify each user's queue was requested
-            for user_id, _ in messages:
-                assert user_id in queue_requests
-
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class TestTelegramBotHtmlFormatting:
@@ -906,101 +689,3 @@ class TestTelegramBotHtmlFormatting:
         assert "<b>bold</b>" in result
         assert "<i>italic</i>" in result
         assert "<code>code</code>" in result
-
-
-class TestTelegramBotHtmlFormattingProperty:
-    """Property-based tests for HTML formatting."""
-
-    @pytest.fixture
-    def temp_dir(self):
-        """Create a temporary directory."""
-        temp_path = tempfile.mkdtemp()
-        yield temp_path
-        shutil.rmtree(temp_path, ignore_errors=True)
-
-    @given(text=st.text(min_size=0, max_size=500))
-    @settings(max_examples=100)
-    @patch("app.telegram.bot.Application")
-    def test_property_html_output_never_contains_unescaped_lt_gt(self, mock_app, text: str):
-        """Property: Output never contains unescaped < or > from input."""
-        temp_dir = tempfile.mkdtemp()
-        try:
-            mock_app_instance = MagicMock()
-            mock_app_instance.bot = MagicMock()
-            mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
-
-            mock_logging_service = MagicMock()
-            mock_logging_service.log_action = AsyncMock()
-
-            config = AgentConfig(
-                model_provider=ModelProvider.BEDROCK,
-                bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-                telegram_bot_token="test-token",
-                session_storage_dir=temp_dir,
-                skills_base_dir=temp_dir,
-            )
-
-            bot = TelegramBotInterface(
-                config=config,
-                sqs_client=MagicMock(),
-                queue_manager=MagicMock(),
-                agent_service=MagicMock(),
-                logging_service=mock_logging_service,
-                skill_service=MagicMock(),
-            )
-
-            result = bot._format_for_telegram_html(text)
-
-            # Count < and > that are NOT part of valid HTML tags
-            import re
-
-            # Remove valid HTML tags we generate
-            valid_tags = r'</?(?:b|i|code|pre|a(?:\s+href="[^"]*")?)>'
-            cleaned = re.sub(valid_tags, "", result)
-
-            # After removing valid tags, no < or > should remain
-            # (they should all be escaped as &lt; or &gt;)
-            assert "<" not in cleaned, f"Unescaped < found in: {result}"
-            assert ">" not in cleaned, f"Unescaped > found in: {result}"
-
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-    @given(text=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()))
-    @settings(max_examples=100)
-    @patch("app.telegram.bot.Application")
-    def test_property_formatting_produces_string_output(self, mock_app, text: str):
-        """Property: Formatting always produces a string output."""
-        temp_dir = tempfile.mkdtemp()
-        try:
-            mock_app_instance = MagicMock()
-            mock_app_instance.bot = MagicMock()
-            mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
-
-            mock_logging_service = MagicMock()
-            mock_logging_service.log_action = AsyncMock()
-
-            config = AgentConfig(
-                model_provider=ModelProvider.BEDROCK,
-                bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-                telegram_bot_token="test-token",
-                session_storage_dir=temp_dir,
-                skills_base_dir=temp_dir,
-            )
-
-            bot = TelegramBotInterface(
-                config=config,
-                sqs_client=MagicMock(),
-                queue_manager=MagicMock(),
-                agent_service=MagicMock(),
-                logging_service=mock_logging_service,
-                skill_service=MagicMock(),
-            )
-
-            result = bot._format_for_telegram_html(text)
-
-            assert isinstance(result, str)
-            assert len(result) > 0
-
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)

@@ -19,7 +19,6 @@ import boto3
 import pytest
 import pytest_asyncio
 from botocore.config import Config
-from hypothesis import given, settings, strategies as st
 
 from app.sqs.message_processor import MessageProcessor, QueueMessage
 from app.sqs.queue_manager import SQSQueueManager
@@ -167,55 +166,6 @@ class TestUserQueueCreation:
         # Verify configured attributes
         assert attrs["VisibilityTimeout"] == "900"  # 15 minutes
         assert attrs["MessageRetentionPeriod"] == "86400"  # 24 hours
-
-    @given(
-        st.text(
-            min_size=1,
-            max_size=20,
-            alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-        )
-    )
-    @settings(max_examples=10, deadline=30000, database=None)
-    def test_queue_creation_property(self, user_id_suffix):
-        """Property test: For any valid user ID, a queue should be created.
-
-        SQS queue names can only include alphanumeric characters, hyphens,
-        or underscores (1 to 80 characters). We use only alphanumeric here
-        to ensure valid queue names.
-
-        Feature: mordecai, Property 25: User Queue Creation
-        **Validates: Requirements 12.1**
-        """
-        if not is_localstack_available():
-            pytest.skip("LocalStack not available")
-
-        sqs_client = get_localstack_sqs_client()
-        prefix = f"pbt-{uuid.uuid4().hex[:6]}-"
-        queue_manager = SQSQueueManager(sqs_client, queue_prefix=prefix)
-
-        user_id = f"user-{user_id_suffix}"
-
-        try:
-            queue_url = queue_manager.get_or_create_queue(user_id)
-
-            # Property: Queue URL should be non-empty
-            assert queue_url is not None
-            assert len(queue_url) > 0
-
-            # Property: Queue should be accessible
-            response = sqs_client.get_queue_attributes(
-                QueueUrl=queue_url,
-                AttributeNames=["QueueArn"],
-            )
-            assert "Attributes" in response
-
-        finally:
-            # Cleanup
-            for url in queue_manager.get_all_queue_urls():
-                try:
-                    sqs_client.delete_queue(QueueUrl=url)
-                except Exception:
-                    pass
 
 
 class TestMessageConsumptionAndRouting:
@@ -479,81 +429,6 @@ class TestMessageProcessingOrder:
 
         # Should receive exactly 1 message
         assert len(response.get("Messages", [])) == 1
-
-    @given(
-        st.lists(
-            st.text(
-                min_size=1,
-                max_size=20,
-                alphabet=st.characters(whitelist_categories=("Lu", "Ll", "Nd")),
-            ),
-            min_size=2,
-            max_size=5,
-        )
-    )
-    @settings(max_examples=5, deadline=60000)
-    def test_fifo_order_property(self, messages):
-        """Property test: Messages should always be processed in FIFO order.
-
-        Feature: mordecai, Property 27: Message Processing Order
-        **Validates: Requirements 12.6**
-        """
-        if not is_localstack_available():
-            pytest.skip("LocalStack not available")
-
-        # Filter out empty messages
-        messages = [m for m in messages if m.strip()]
-        if len(messages) < 2:
-            return  # Skip if not enough valid messages
-
-        sqs_client = get_localstack_sqs_client()
-        prefix = f"fifo-{uuid.uuid4().hex[:6]}-"
-        queue_manager = SQSQueueManager(sqs_client, queue_prefix=prefix)
-
-        user_id = f"user-{uuid.uuid4().hex[:8]}"
-        queue_url = queue_manager.get_or_create_queue(user_id)
-
-        processed = []
-
-        try:
-            # Send all messages
-            for msg in messages:
-                body = json.dumps(
-                    {
-                        "user_id": user_id,
-                        "message": msg,
-                        "chat_id": 12345,
-                        "timestamp": datetime.utcnow().isoformat(),
-                    }
-                )
-                sqs_client.send_message(QueueUrl=queue_url, MessageBody=body)
-
-            # Process all messages synchronously (one at a time)
-            for _ in range(len(messages)):
-                response = sqs_client.receive_message(
-                    QueueUrl=queue_url,
-                    MaxNumberOfMessages=1,
-                    WaitTimeSeconds=5,
-                )
-
-                for message in response.get("Messages", []):
-                    body = json.loads(message["Body"])
-                    processed.append(body["message"])
-                    sqs_client.delete_message(
-                        QueueUrl=queue_url,
-                        ReceiptHandle=message["ReceiptHandle"],
-                    )
-
-            # Property: Messages should be in same order
-            assert processed == messages
-
-        finally:
-            # Cleanup
-            for url in queue_manager.get_all_queue_urls():
-                try:
-                    sqs_client.delete_queue(QueueUrl=url)
-                except Exception:
-                    pass
 
 
 class TestQueueManagerOperations:

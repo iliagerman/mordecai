@@ -298,8 +298,8 @@ just test-integration
 # Run with coverage
 just test-coverage
 
-# Run property-based tests
-uv run pytest tests/ -k "property" --hypothesis-seed=0
+# Run deterministic property-style tests
+uv run pytest tests/ -k "pbt"
 ```
 
 ### Local Development with LocalStack
