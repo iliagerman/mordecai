@@ -13,10 +13,12 @@ Obsidian Bases are YAML-based files that define dynamic views of notes in an Obs
 
 ## Vaults in this deployment
 
-This deployment uses **one** Obsidian vault directory mounted into the Mordecai container:
+This deployment uses **one** Obsidian vault directory.
 
-- **Container path (authoritative):** `/app/obsidian-vaults/`
-- **Host path:** `/home/ilia/obsidian-vaults/`
+The authoritative vault root at runtime is configured by the backend setting:
+- `obsidian_vault_root` (env override: `AGENT_OBSIDIAN_VAULT_ROOT`)
+
+In many container deployments, this resolves to `/app/obsidian-vaults/`, but do not assume it.
 
 Within that single vault, top-level folders are used as categories/areas:
 
@@ -39,8 +41,10 @@ Selection rules:
 
 Path conventions:
 
-- When you propose creating/editing a Base file, include a concrete filesystem path like: `/app/obsidian-vaults/me/[USER_ID]/<relative-path>.base`.
-- All `file.*` properties in Bases refer to paths *within the vault root* (i.e., relative to `/app/obsidian-vaults`).
+- When you propose creating/editing a Base file, include a concrete filesystem path like:
+  `<VAULT_ROOT>/me/[USER_ID]/<relative-path>.base`
+  where `<VAULT_ROOT>` is the configured `obsidian_vault_root`.
+- All `file.*` properties in Bases refer to paths *within the vault root* (i.e., relative to `<VAULT_ROOT>`).
 
 ## File Format
 

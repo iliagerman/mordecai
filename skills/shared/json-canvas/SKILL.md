@@ -13,10 +13,12 @@ JSON Canvas is an open file format for infinite canvas data. Canvas files use th
 
 ## Vaults in this deployment
 
-This deployment uses **one** Obsidian vault directory mounted into the Mordecai container:
+This deployment uses **one** Obsidian vault directory.
 
-- **Container path (authoritative):** `/app/obsidian-vaults/`
-- **Host path:** `/home/ilia/obsidian-vaults/`
+The authoritative vault root at runtime is configured by the backend setting:
+- `obsidian_vault_root` (env override: `AGENT_OBSIDIAN_VAULT_ROOT`)
+
+In many container deployments, this resolves to `/app/obsidian-vaults/`, but do not assume it.
 
 Within that single vault, top-level folders are used as categories/areas:
 
@@ -40,7 +42,10 @@ Selection rules:
 Path conventions:
 
 - When you propose creating/editing a canvas file, include a concrete filesystem path like: `/app/obsidian-vaults/me/[USER_ID]/<relative-path>.canvas`.
-- In a canvas `file` node, the `file` field should be a path *within the vault root* (relative to `/app/obsidian-vaults`), e.g. `me/[USER_ID]/Notes/Project Overview.md` or `me/[USER_ID]/Attachments/diagram.png`.
+- When you propose creating/editing a canvas file, include a concrete filesystem path like:
+  `<VAULT_ROOT>/me/[USER_ID]/<relative-path>.canvas`
+  where `<VAULT_ROOT>` is the configured `obsidian_vault_root`.
+- In a canvas `file` node, the `file` field should be a path *within the vault root* (relative to `<VAULT_ROOT>`), e.g. `me/[USER_ID]/Notes/Project Overview.md` or `me/[USER_ID]/Attachments/diagram.png`.
 
 ## File Structure
 
