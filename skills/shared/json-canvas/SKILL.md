@@ -20,7 +20,8 @@ This deployment uses **one** Obsidian vault directory mounted into the Mordecai 
 
 Within that single vault, top-level folders are used as categories/areas:
 
-- `mordecai/` (agent-owned area; default write target)
+- `me/` (agent-owned root)
+  - `me/[USER_ID]/` (per-user area; default write target)
 - `family/`
 - `work/`
 - `personal/`
@@ -30,13 +31,16 @@ Within that single vault, top-level folders are used as categories/areas:
 Selection rules:
 
 - If the user explicitly names a folder/category, use that folder.
-- If the user does not specify, default to `mordecai/`.
-- Do not modify non-`mordecai/` content unless the user explicitly asks (or clearly implies) changes there.
+- If the user does not specify, default to `me/[USER_ID]/`.
+- The agent must always scope reads/writes to the current user’s folder `me/[USER_ID]/` so information between users will not be mixed.
+  - Never read/write another user’s folder (e.g. `me/<someone-else>/`) unless the user explicitly requests it *and* you can confirm it’s the same tenant/user.
+  - If `[USER_ID]` is not known from the current context, ask for it before creating/modifying any files under `me/`.
+- Do not modify content outside `me/[USER_ID]/` unless the user explicitly asks (or clearly implies) changes there.
 
 Path conventions:
 
-- When you propose creating/editing a canvas file, include a concrete filesystem path like: `/app/obsidian-vaults/mordecai/<relative-path>.canvas`.
-- In a canvas `file` node, the `file` field should be a path *within the vault root* (relative to `/app/obsidian-vaults`), e.g. `mordecai/Notes/Project Overview.md` or `mordecai/Attachments/diagram.png`.
+- When you propose creating/editing a canvas file, include a concrete filesystem path like: `/app/obsidian-vaults/me/[USER_ID]/<relative-path>.canvas`.
+- In a canvas `file` node, the `file` field should be a path *within the vault root* (relative to `/app/obsidian-vaults`), e.g. `me/[USER_ID]/Notes/Project Overview.md` or `me/[USER_ID]/Attachments/diagram.png`.
 
 ## File Structure
 

@@ -28,11 +28,17 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Register routers
     if _application.task_service:
-        task_router = create_task_router(_application.task_service)
+        task_router = create_task_router(
+            _application.task_service,
+            allowed_users=config.allowed_users,
+        )
         fastapi_app.include_router(task_router)
 
     if _application.webhook_service:
-        webhook_router = create_webhook_router(_application.webhook_service)
+        webhook_router = create_webhook_router(
+            _application.webhook_service,
+            allowed_users=config.allowed_users,
+        )
         fastapi_app.include_router(webhook_router)
 
     # Start background services

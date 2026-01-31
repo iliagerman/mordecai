@@ -33,7 +33,7 @@ python /app/skills/splintermaster/gemini-deep-research/scripts/deep_research.py 
 
 ### Local Development Paths
 
-When running locally from the `mordecai` directory:
+When running locally from the repository root directory:
 
 ```bash
 python skills/splintermaster/gemini-deep-research/scripts/deep_research.py --query "Research the history of Google TPUs"
