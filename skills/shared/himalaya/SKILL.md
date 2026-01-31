@@ -50,9 +50,24 @@ Activate this skill when the user:
 	- `[PASSWORD]` (a Gmail App Password is recommended)
 
 When the placeholders are provided and persisted, Mordecai will:
-- Render a per-user `himalaya.toml` next to the template (in the user's skills folder)
-- Export `HIMALAYA_CONFIG` pointing to that file on every skill invocation
+- Render a per-user `himalaya.toml` into the **per-user skills directory root** (the same folder as `skills_secrets.yml`)
+- Export `HIMALAYA_CONFIG` pointing to that file
 - Write a per-user `.env` convenience file under `skills/<user>/.env` (git-ignored)
+
+### CRITICAL: how to run Himalaya commands
+
+Even if `HIMALAYA_CONFIG` is set in the process environment, the shell tool runner may not always propagate env vars to child processes.
+
+Therefore, **EVERY** himalaya CLI command MUST be executed with an explicit `HIMALAYA_CONFIG=...` prefix:
+
+- ✅ `HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya account list`
+- ✅ `HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json not flag seen`
+
+If you need to inline the path explicitly:
+
+- ✅ `HIMALAYA_CONFIG="/absolute/path/to/himalaya.toml" himalaya ...`
+
+Do NOT run plain `himalaya ...` without the explicit prefix.
 
 ## Installation Check
 
@@ -62,10 +77,18 @@ When the placeholders are provided and persisted, Mordecai will:
 command -v himalaya && himalaya --version
 ```
 
-**IMPORTANT**: To verify configuration exists, use `himalaya account list` instead of checking the file directly. This avoids path expansion issues with `~` in containerized environments:
+**IMPORTANT**: Before calling any himalaya command, do a preflight to ensure the config exists and is addressable.
+
+Preflight (must pass):
 
 ```bash
-himalaya account list
+test -n "${HIMALAYA_CONFIG:-}" && test -f "$HIMALAYA_CONFIG"
+```
+
+Then verify the config is valid by listing accounts:
+
+```bash
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya account list
 ```
 
 If this command succeeds and shows accounts, the configuration is valid. Do NOT use file read tools to check `~/.config/himalaya/config.toml` as the `~` may not expand correctly.
@@ -96,6 +119,8 @@ Mordecai uses a template-based approach (recommended for multi-user isolation).
 
 After that, Mordecai will render the per-user config file and set `HIMALAYA_CONFIG` automatically.
 
+**CRITICAL:** Even when `HIMALAYA_CONFIG` is set automatically, you MUST still prefix each CLI call with `HIMALAYA_CONFIG="$HIMALAYA_CONFIG"`.
+
 ### Manual (outside Mordecai)
 
 If the user wants to manage their own config outside Mordecai, they can use:
@@ -109,24 +134,24 @@ himalaya account configure
 ### List Folders
 
 ```bash
-himalaya folder list
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya folder list
 ```
 
 ### List Emails
 
 List emails in INBOX (default):
 ```bash
-himalaya envelope list
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list
 ```
 
 List emails in a specific folder:
 ```bash
-himalaya envelope list --folder "Sent"
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --folder "Sent"
 ```
 
 List with pagination:
 ```bash
-himalaya envelope list --page 1 --page-size 20
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --page 1 --page-size 20
 ```
 
 ### Search Emails
@@ -158,67 +183,67 @@ Himalaya uses a query language with operators and conditions:
 
 ```bash
 # Emails from today
-himalaya envelope list date 2026-01-29
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list date 2026-01-29
 
 # Emails from a specific sender
-himalaya envelope list from john@example.com
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list from john@example.com
 
 # Emails with subject containing "meeting"
-himalaya envelope list subject meeting
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list subject meeting
 
 # Combined: from john with "meeting" in subject
-himalaya envelope list from john@example.com and subject meeting
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list from john@example.com and subject meeting
 
 # Emails from last week, sorted newest first
-himalaya envelope list after 2026-01-22 and before 2026-01-30 order by date desc
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list after 2026-01-22 and before 2026-01-30 order by date desc
 
 # Unread emails only
-himalaya envelope list not flag seen
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list not flag seen
 
 # Flagged/starred emails
-himalaya envelope list flag flagged
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list flag flagged
 ```
 
 ### Read an Email
 
 Read email by ID (shows plain text):
 ```bash
-himalaya message read 42
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message read 42
 ```
 
 Export raw MIME:
 ```bash
-himalaya message export 42 --full
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message export 42 --full
 ```
 
 ### Reply to an Email
 
 Interactive reply (opens $EDITOR):
 ```bash
-himalaya message reply 42
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message reply 42
 ```
 
 Reply-all:
 ```bash
-himalaya message reply 42 --all
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message reply 42 --all
 ```
 
 ### Forward an Email
 
 ```bash
-himalaya message forward 42
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message forward 42
 ```
 
 ### Write a New Email
 
 Interactive compose (opens $EDITOR):
 ```bash
-himalaya message write
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message write
 ```
 
 Send directly using template:
 ```bash
-cat << 'EOF' | himalaya template send
+cat << 'EOF' | HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya template send
 From: you@example.com
 To: recipient@example.com
 Subject: Test Message
@@ -229,81 +254,81 @@ EOF
 
 Or with headers flag:
 ```bash
-himalaya message write -H "To:recipient@example.com" -H "Subject:Test" "Message body here"
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message write -H "To:recipient@example.com" -H "Subject:Test" "Message body here"
 ```
 
 ### Move/Copy Emails
 
 Move to folder:
 ```bash
-himalaya message move 42 "Archive"
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message move 42 "Archive"
 ```
 
 Copy to folder:
 ```bash
-himalaya message copy 42 "Important"
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message copy 42 "Important"
 ```
 
 ### Delete an Email
 
 ```bash
-himalaya message delete 42
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message delete 42
 ```
 
 ### Manage Flags
 
 Add flag:
 ```bash
-himalaya flag add 42 --flag seen
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya flag add 42 --flag seen
 ```
 
 Remove flag:
 ```bash
-himalaya flag remove 42 --flag seen
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya flag remove 42 --flag seen
 ```
 
 ## Multiple Accounts
 
 List accounts:
 ```bash
-himalaya account list
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya account list
 ```
 
 Use a specific account:
 ```bash
-himalaya --account work envelope list
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya --account work envelope list
 ```
 
 ## Attachments
 
 Save attachments from a message:
 ```bash
-himalaya attachment download 42
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya attachment download 42
 ```
 
 Save to specific directory:
 ```bash
-himalaya attachment download 42 --dir ~/Downloads
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya attachment download 42 --dir ~/Downloads
 ```
 
 ## Output Formats
 
 Most commands support `--output` for structured output:
 ```bash
-himalaya envelope list --output json
-himalaya envelope list --output plain
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output plain
 ```
 
 ## Debugging
 
 Enable debug logging:
 ```bash
-RUST_LOG=debug himalaya envelope list
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" RUST_LOG=debug himalaya envelope list
 ```
 
 Full trace with backtrace:
 ```bash
-RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
 ```
 
 ## Common Use Cases
@@ -314,39 +339,39 @@ RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
 ```bash
 # Get current date and filter
 TODAY=$(date +%Y-%m-%d)
-himalaya envelope list --output json date $TODAY
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json date $TODAY
 ```
 
 ### "Get emails from the last 7 days"
 ```bash
 # GNU date (Linux/Docker containers)
 WEEK_AGO=$(date -d '7 days ago' +%Y-%m-%d)
-himalaya envelope list --output json after $WEEK_AGO order by date desc
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json after $WEEK_AGO order by date desc
 
 # macOS date alternative
 WEEK_AGO=$(date -v-7d +%Y-%m-%d)
-himalaya envelope list --output json after $WEEK_AGO order by date desc
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json after $WEEK_AGO order by date desc
 ```
 
 ### "Find unread emails"
 ```bash
-himalaya envelope list --output json not flag seen
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json not flag seen
 ```
 
 ### "Search for emails about a topic"
 ```bash
-himalaya envelope list --output json subject "project update" or body "project update"
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json subject "project update" or body "project update"
 ```
 
 ### "Get recent emails sorted by date"
 ```bash
-himalaya envelope list --output json --page-size 20 order by date desc
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json --page-size 20 order by date desc
 ```
 
 ### "Get emails from a date range"
 ```bash
 # Emails between Jan 20-29, 2026
-himalaya envelope list --output json after 2026-01-19 and before 2026-01-30 order by date desc
+HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json after 2026-01-19 and before 2026-01-30 order by date desc
 ```
 
 ## Tips
@@ -366,7 +391,7 @@ himalaya envelope list --output json after 2026-01-19 and before 2026-01-30 orde
 - Verify with `himalaya --version`
 
 **2. No configuration found**
-- Run `himalaya account list` to verify configuration (do NOT use file read tools to check `~/.config/himalaya/config.toml` as `~` may not expand correctly in containers)
+- Run `HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya account list` to verify configuration
 - If no accounts found, guide user through `himalaya account configure` wizard
 - Offer to help create config manually if wizard fails
 

@@ -808,7 +808,26 @@ def refresh_runtime_env_from_secrets(
                     dest_name = tpl.name[: -len(".example")]
                 else:
                     continue
-                dest = tpl.with_name(dest_name)
+
+                # Write rendered outputs next to the per-user skills secrets file
+                # (i.e., in the per-user skills directory root).
+                #
+                # This keeps generated configs isolated per user and makes it
+                # easy to point CLIs to a stable per-user config path.
+                #
+                # Naming convention:
+                # - If the rendered filename already starts with the skill name
+                #   (e.g., himalaya.toml), keep it.
+                # - Otherwise, prefix to avoid collisions across skills.
+                #
+                # Examples:
+                # - skill=himalaya, tpl=himalaya.toml_example -> himalaya.toml
+                # - skill=foo, tpl=config.toml_example -> foo__config.toml
+                if dest_name.startswith(f"{skill}.") or dest_name == str(skill):
+                    out_name = dest_name
+                else:
+                    out_name = f"{skill}__{dest_name}"
+                dest = user_dir / out_name
 
                 def _replace(match: re.Match) -> str:
                     key = (match.group(1) or "").strip().upper()
@@ -838,7 +857,9 @@ def refresh_runtime_env_from_secrets(
 
                 rendered_count += 1
 
-                # Auto-export <SKILL>_CONFIG for the canonical pattern: {skill}.toml_example
+                # Auto-export <SKILL>_CONFIG for the canonical pattern:
+                #   {skill}.toml_example -> {skill}.toml
+                # This stays generic and applies to any skill following the convention.
                 if dest.name == f"{skill}.toml":
                     env_key = f"{str(skill).upper()}_CONFIG"
                     extra_env[env_key] = str(dest)
