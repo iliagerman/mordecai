@@ -802,6 +802,50 @@ class AgentService:
         # External personality/identity injection (Obsidian vault)
         prompt += self._build_personality_section(user_id)
 
+        # ------------------------------------------------------------------
+        # Obsidian vault access capabilities
+        # ------------------------------------------------------------------
+        # Important distinction:
+        # - Long-term memory is stored in AgentCore (network service)
+        # - Obsidian access is optional and depends on a configured/mounted vault root
+        try:
+            from pathlib import Path
+
+            vault_root_raw = getattr(self.config, "obsidian_vault_root", None)
+            vault_root_path = (
+                Path(str(vault_root_raw)).expanduser().resolve() if vault_root_raw else None
+            )
+            vault_accessible = bool(
+                vault_root_path
+                and vault_root_path.exists()
+                and vault_root_path.is_dir()
+            )
+            vault_root_display = f"`{vault_root_path}`" if vault_root_path else "(not configured)"
+        except Exception:
+            vault_root_raw = getattr(self.config, "obsidian_vault_root", None)
+            vault_accessible = False
+            vault_root_display = f"`{vault_root_raw}`" if vault_root_raw else "(not configured)"
+
+        prompt += "\n## Obsidian Vault Access\n\n"
+        if not vault_root_raw:
+            prompt += (
+                "Obsidian vault root is **not configured**. You do NOT have filesystem access to the user's Obsidian notes. "
+                "Do not claim you can read or write Obsidian. Ask the user to paste content or send files as attachments.\n\n"
+            )
+        elif not vault_accessible:
+            prompt += (
+                f"Obsidian vault root is configured as {vault_root_display}, but it is **not accessible in this runtime** (missing path / not mounted / no permissions). "
+                "Do not claim you can read the user's vault. Ask the user to paste the list contents, or fix the deployment so the vault is mounted and readable.\n\n"
+            )
+        else:
+            prompt += (
+                f"Obsidian vault root is accessible at {vault_root_display}.\n\n"
+                "Constraints and best practices:\n"
+                "- You may safely read/write ONLY the per-user personality/identity files under `me/<USER_ID>/{soul.md,id.md}` via the personality tools.\n"
+                "- You may use the injected STM scratchpad (`me/<USER_ID>/stm.md`) as context when it appears in this prompt.\n"
+                "- You cannot automatically search/browse the user's vault for a note name. If the user wants you to read a specific note, they must provide its exact path under the vault root (or paste the content).\n\n"
+            )
+
         # Short-term memory injection (Obsidian STM scratchpad).
         # This is intentionally independent from AgentCore LTM. We inject STM so the
         # model has immediate access to the most recent session summary even if
