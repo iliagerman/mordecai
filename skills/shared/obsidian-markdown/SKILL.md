@@ -25,6 +25,13 @@ The vault root is configured by the backend setting:
 
 In container deployments, this is commonly set to `/app/obsidian-vaults/`.
 
+Important:
+- Treat `/app/obsidian-vaults/` as a *common default*, not a guarantee.
+- The authoritative vault root at runtime is whatever the backend config resolves
+  for `obsidian_vault_root` / `AGENT_OBSIDIAN_VAULT_ROOT`.
+- If you are unsure which path is active, ask the operator/user to confirm the
+  resolved path *inside the running container*.
+
 Within that single vault, top-level folders are used as categories/areas:
 
 - `me/` (agent-owned root)
@@ -47,7 +54,32 @@ Selection rules:
 
 Path conventions:
 
-- When you propose creating/editing a note, include a concrete filesystem path like: `/app/obsidian-vaults/me/[USER_ID]/<relative-path>.md`.
+- When you propose creating/editing a note, include a concrete filesystem path like:
+  `<VAULT_ROOT>/me/[USER_ID]/<relative-path>.md`
+  where `<VAULT_ROOT>` is the configured `obsidian_vault_root`.
+
+## Safe file discovery (when the exact note path is unknown)
+
+If the user asks for a note but does not provide an exact filename/path (e.g. “what’s on my shopping list?”), and the vault is accessible at runtime, you should:
+
+1. **Search within the expected folder(s)** (usually `family/` and/or `me/[USER_ID]/`).
+2. **Keep searches bounded** (limit depth, limit results) and ask a clarifying question if multiple candidates match.
+3. **Read the most likely candidates** (using file_read) until you find the requested content.
+
+Recommended bounded search patterns (use shell tool):
+
+- Find likely shopping list notes (names only):
+  - `find <VAULT_ROOT>/family -maxdepth 3 -type f \( -iname '*shop*' -o -iname '*grocery*' -o -iname '*list*' \) -print | head -n 20`
+  - `find <VAULT_ROOT>/me/[USER_ID] -maxdepth 4 -type f \( -iname '*shop*' -o -iname '*grocery*' -o -iname '*list*' \) -print | head -n 20`
+
+- Content search (bounded; prefer ripgrep if available):
+  - `rg -n --max-count 20 -S "shopping|grocery" <VAULT_ROOT>/family 2>/dev/null || true`
+
+Then, for the top candidates:
+- `file_read(path="/full/path/to/note.md", mode="view")`
+
+If you cannot find a unique match:
+- Ask the user to confirm the note name or folder, or to share one line from the note header.
 
 ## Personality files
 

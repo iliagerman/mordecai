@@ -65,6 +65,7 @@ services:
       # Pass through optional environment variables
       - SKIP_MIGRATIONS=${SKIP_MIGRATIONS:-false}
       - AGENT_API_PORT=${AGENT_API_PORT:-8000}
+      - AGENT_OBSIDIAN_VAULT_ROOT=/app/obsidian-vaults
 
     # Health check configuration
     healthcheck:

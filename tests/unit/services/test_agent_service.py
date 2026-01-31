@@ -1103,6 +1103,7 @@ class TestAgentServicePersonalityInjection:
 
         assert "## Personality (Obsidian Vault)" in prompt
         assert "## Obsidian Vault Access" in prompt
+        assert "bounded search" in prompt.lower()
         assert "DEFAULT_SOUL" in prompt
         assert "DEFAULT_ID" in prompt
         assert "source: default" in prompt

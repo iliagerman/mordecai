@@ -833,7 +833,7 @@ class AgentService:
         elif not vault_accessible:
             prompt += (
                 f"Obsidian vault root is configured as {vault_root_display}, but it is **not accessible in this runtime** (missing path / not mounted / no permissions). "
-                "Do not claim you can read the user's vault. Ask the user to paste the list contents, or fix the deployment so the vault is mounted and readable.\n\n"
+                "Do not claim you can read the user's vault. Ask the user to paste the relevant note contents (or attach the file), or fix the deployment so the vault is mounted and readable.\n\n"
             )
         else:
             prompt += (
@@ -841,7 +841,14 @@ class AgentService:
                 "Constraints and best practices:\n"
                 "- You may safely read/write ONLY the per-user personality/identity files under `me/<USER_ID>/{soul.md,id.md}` via the personality tools.\n"
                 "- You may use the injected STM scratchpad (`me/<USER_ID>/stm.md`) as context when it appears in this prompt.\n"
-                "- You cannot automatically search/browse the user's vault for a note name. If the user wants you to read a specific note, they must provide its exact path under the vault root (or paste the content).\n\n"
+                "- If the user asks for content that likely exists in the vault but does not provide an exact path, you SHOULD perform a bounded search in the most relevant folder(s) (e.g. `family/` and/or `me/<USER_ID>/`).\n"
+                "  - Keep searches bounded: limit depth, limit results (e.g. first 20), avoid scanning the entire vault.\n"
+                "  - Prefer filename-based search first; if ambiguous, ask a clarifying question.\n"
+                "  - After finding candidate files, read them (file_read) until you find the requested content, or ask the user to confirm which file is correct.\n"
+                "  - Example bounded search commands (via shell):\n"
+                "    - `find <VAULT_ROOT>/family -maxdepth 4 -type f -iname '*.md' -print | head -n 50`\n"
+                "    - `find <VAULT_ROOT>/family -maxdepth 4 -type f \\\( -iname '*<keyword>*' -o -iname '*<keyword2>*' \\\) -print | head -n 20`\n"
+                '    - `rg -n --max-count 20 -S "<keyword>|<keyword2>" <VAULT_ROOT>/family 2>/dev/null || true`\n\n'
             )
 
         # Short-term memory injection (Obsidian STM scratchpad).
