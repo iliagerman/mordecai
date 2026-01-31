@@ -14,9 +14,9 @@ services:
       - SERVICES=sqs
       - DEBUG=0
       - DOCKER_HOST=unix:///var/run/docker.sock
-    # Use port 4567 internally to avoid conflicts with host LocalStack on 4566
-    ports:
-      - "${LOCALSTACK_PORT:-4567}:4566"
+    # # Use port 4567 internally to avoid conflicts with host LocalStack on 4566
+    # ports:
+    #   - "${LOCALSTACK_PORT:-4567}:4566"
     volumes:
       - localstack-data:/var/lib/localstack
     healthcheck:
@@ -38,8 +38,8 @@ services:
         condition: service_healthy
 
     # Port mapping (configurable via AGENT_API_PORT environment variable)
-    ports:
-      - "${AGENT_API_PORT:-8000}:8000"
+    # ports:
+    #   - "${AGENT_API_PORT:-8000}:8000"
 
     # Volume mounts
     volumes:
