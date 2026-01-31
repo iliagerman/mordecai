@@ -41,6 +41,7 @@ from app.services.skill_service import (
     SkillNotFoundError,
     SkillService,
 )
+from app.security.whitelist import is_whitelisted
 
 if TYPE_CHECKING:
     from mypy_boto3_sqs import SQSClient
@@ -143,6 +144,14 @@ class TelegramBotInterface:
 
         logger.debug("Telegram handlers registered")
 
+    async def _reject_if_not_whitelisted(self, user_id: str, chat_id: int) -> bool:
+        """Return True if request should be rejected due to whitelist."""
+        if is_whitelisted(user_id, self.config.allowed_users):
+            return False
+
+        await self.send_response(chat_id, "403 Forbidden, contact iliag@sela.co.il")
+        return True
+
     async def _handle_start_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -155,6 +164,8 @@ class TelegramBotInterface:
             context: Callback context.
         """
         user_id = update.effective_user.username or str(update.effective_user.id)
+        if await self._reject_if_not_whitelisted(user_id, update.effective_chat.id):
+            return
         logger.info("User %s started the bot", user_id)
 
         welcome_message = (
@@ -192,6 +203,10 @@ class TelegramBotInterface:
         Requirements:
             - 11.5: Support basic commands (help)
         """
+        user_id = update.effective_user.username or str(update.effective_user.id)
+        if await self._reject_if_not_whitelisted(user_id, update.effective_chat.id):
+            return
+
         help_text = self.command_parser.get_help_text()
         await self.send_response(update.effective_chat.id, help_text)
 
@@ -209,6 +224,8 @@ class TelegramBotInterface:
             - 11.6: Parse and execute appropriate actions
         """
         user_id = update.effective_user.username or str(update.effective_user.id)
+        if await self._reject_if_not_whitelisted(user_id, update.effective_chat.id):
+            return
         await self._execute_new_command(user_id, update.effective_chat.id)
 
     async def _handle_logs_command(
@@ -227,6 +244,8 @@ class TelegramBotInterface:
             - 11.6: Parse and execute appropriate actions
         """
         user_id = update.effective_user.username or str(update.effective_user.id)
+        if await self._reject_if_not_whitelisted(user_id, update.effective_chat.id):
+            return
         await self._execute_logs_command(user_id, update.effective_chat.id)
 
     async def _handle_skills_command(
@@ -235,6 +254,9 @@ class TelegramBotInterface:
         """Handle /skills command - list all installed skills."""
         user_id = update.effective_user.username or str(update.effective_user.id)
         chat_id = update.effective_chat.id
+
+        if await self._reject_if_not_whitelisted(user_id, chat_id):
+            return
 
         skills = self.skill_service.list_skills(user_id)
 
@@ -251,6 +273,9 @@ class TelegramBotInterface:
         """Handle /add_skill <url> command - install a skill from URL."""
         user_id = update.effective_user.username or str(update.effective_user.id)
         chat_id = update.effective_chat.id
+
+        if await self._reject_if_not_whitelisted(user_id, chat_id):
+            return
 
         if not context.args:
             await self.send_response(
@@ -269,6 +294,9 @@ class TelegramBotInterface:
         """Handle /delete_skill <name> command - remove an installed skill."""
         user_id = update.effective_user.username or str(update.effective_user.id)
         chat_id = update.effective_chat.id
+
+        if await self._reject_if_not_whitelisted(user_id, chat_id):
+            return
 
         if not context.args:
             await self.send_response(
@@ -302,6 +330,9 @@ class TelegramBotInterface:
         display_name = update.effective_user.first_name or user_id
         chat_id = update.effective_chat.id
         message_text = update.message.text
+
+        if await self._reject_if_not_whitelisted(user_id, chat_id):
+            return
 
         if len(message_text) > 50:
             preview = message_text[:50] + "..."
@@ -347,6 +378,9 @@ class TelegramBotInterface:
         chat_id = update.effective_chat.id
         document = update.message.document
         caption = update.message.caption or ""
+
+        if await self._reject_if_not_whitelisted(user_id, chat_id):
+            return
 
         logger.info(
             "Received document from user %s: %s (%d bytes)",
@@ -457,6 +491,9 @@ class TelegramBotInterface:
         user_id = update.effective_user.username or str(update.effective_user.id)
         chat_id = update.effective_chat.id
         caption = update.message.caption or ""
+
+        if await self._reject_if_not_whitelisted(user_id, chat_id):
+            return
 
         # Select highest resolution photo (Requirement 2.5)
         # Photos are sorted by size, last one is largest

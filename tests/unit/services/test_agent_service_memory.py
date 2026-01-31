@@ -87,9 +87,7 @@ class TestAgentServiceConversationHistory:
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
     @pytest.mark.asyncio
-    async def test_process_message_tracks_history(
-        self, mock_model, mock_agent, config
-    ):
+    async def test_process_message_tracks_history(self, mock_model, mock_agent, config):
         """Test process_message adds messages to history."""
         mock_result = MagicMock()
         mock_result.message = {"content": [{"text": "Response"}]}
@@ -143,9 +141,7 @@ class TestAgentServiceConversationManager:
 
         service._create_agent("test-user")
 
-        mock_conv_manager.assert_called_once_with(
-            window_size=config.conversation_window_size
-        )
+        mock_conv_manager.assert_called_once_with(window_size=config.conversation_window_size)
         mock_agent.assert_called_once()
         call_kwargs = mock_agent.call_args[1]
         assert "conversation_manager" in call_kwargs
@@ -187,15 +183,12 @@ class TestAgentServiceMemoryTools:
 
         # Verify search_memory context was set
         mock_search_module.set_memory_context.assert_called_once_with(
-            mock_memory_service,
-            "test-user"
+            mock_memory_service, "test-user"
         )
 
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
-    def test_create_agent_without_memory_service(
-        self, mock_model, mock_agent, config
-    ):
+    def test_create_agent_without_memory_service(self, mock_model, mock_agent, config):
         """Test _create_agent works without memory service."""
         service = AgentService(config, memory_service=None)
 
@@ -243,13 +236,10 @@ class TestAgentServiceSystemPrompt:
 
         memory_context = {
             "facts": ["User likes Python"],
-            "preferences": ["Prefers concise responses"]
+            "preferences": ["Prefers concise responses"],
         }
 
-        prompt = service._build_system_prompt(
-            "test-user",
-            memory_context=memory_context
-        )
+        prompt = service._build_system_prompt("test-user", memory_context=memory_context)
 
         assert "Retrieved Memory" in prompt
         assert "User likes Python" in prompt
@@ -278,3 +268,86 @@ class TestAgentServiceSystemPrompt:
         prompt = service._build_system_prompt("test-user")
 
         assert "Memory Capabilities" not in prompt
+
+
+class TestAgentServiceExplicitRemember:
+    """Tests for explicit 'remember ...' handling.
+
+    The agent should persist explicitly requested memories immediately,
+    instead of relying on end-of-session extraction.
+    """
+
+    @pytest.fixture
+    def temp_dir(self):
+        temp_path = tempfile.mkdtemp()
+        yield temp_path
+        shutil.rmtree(temp_path, ignore_errors=True)
+
+    @pytest.fixture
+    def config(self, temp_dir):
+        return AgentConfig(
+            model_provider=ModelProvider.BEDROCK,
+            bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+            telegram_bot_token="test-token",
+            session_storage_dir=temp_dir,
+            skills_base_dir=temp_dir,
+            memory_enabled=True,
+        )
+
+    @patch("app.services.agent_service.Agent")
+    @patch("app.services.agent_service.BedrockModel")
+    @pytest.mark.asyncio
+    async def test_process_message_stores_explicit_fact(self, _mock_model, mock_agent, config):
+        mock_result = MagicMock()
+        mock_result.message = {"content": [{"text": "OK"}]}
+        mock_agent_instance = MagicMock()
+        mock_agent_instance.return_value = mock_result
+        mock_agent.return_value = mock_agent_instance
+
+        memory_service = MagicMock()
+        memory_service.retrieve_memory_context.return_value = {
+            "facts": [],
+            "preferences": [],
+            "agent_name": None,
+        }
+        memory_service.store_fact.return_value = True
+
+        service = AgentService(config, memory_service=memory_service)
+
+        await service.process_message(
+            "test-user",
+            "Remember we keep the shopping lists in the family vault.",
+        )
+
+        memory_service.store_fact.assert_called()
+        _kwargs = memory_service.store_fact.call_args.kwargs
+        assert _kwargs["user_id"] == "test-user"
+        assert "shopping lists" in _kwargs["fact"].lower()
+
+    @patch("app.services.agent_service.Agent")
+    @patch("app.services.agent_service.BedrockModel")
+    @pytest.mark.asyncio
+    async def test_process_message_does_not_store_sensitive_text(
+        self, _mock_model, mock_agent, config
+    ):
+        mock_result = MagicMock()
+        mock_result.message = {"content": [{"text": "OK"}]}
+        mock_agent_instance = MagicMock()
+        mock_agent_instance.return_value = mock_result
+        mock_agent.return_value = mock_agent_instance
+
+        memory_service = MagicMock()
+        memory_service.retrieve_memory_context.return_value = {
+            "facts": [],
+            "preferences": [],
+            "agent_name": None,
+        }
+
+        service = AgentService(config, memory_service=memory_service)
+
+        await service.process_message(
+            "test-user",
+            "Remember my api_key=sk-THISISNOTREALBUTLOOKSLIKEONE",
+        )
+
+        memory_service.store_fact.assert_not_called()

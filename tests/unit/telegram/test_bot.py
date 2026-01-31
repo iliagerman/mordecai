@@ -69,9 +69,7 @@ class TestTelegramBotEnqueueMessage:
         """Create mock agent service."""
         service = MagicMock()
         # new_session is async and returns (agent, notification)
-        service.new_session = AsyncMock(
-            return_value=(MagicMock(), "✨ New session started!")
-        )
+        service.new_session = AsyncMock(return_value=(MagicMock(), "✨ New session started!"))
         return service
 
     @pytest.fixture
@@ -105,9 +103,7 @@ class TestTelegramBotEnqueueMessage:
         mock_app_instance = MagicMock()
         mock_app_instance.bot = MagicMock()
         mock_app_instance.bot.send_message = AsyncMock()
-        mock_app.builder.return_value.token.return_value.build.return_value = (
-            mock_app_instance
-        )
+        mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
 
         return TelegramBotInterface(
             config=config,
@@ -119,9 +115,7 @@ class TestTelegramBotEnqueueMessage:
         )
 
     @pytest.mark.asyncio
-    async def test_enqueue_message_sends_to_sqs(
-        self, bot, mock_sqs_client, mock_queue_manager
-    ):
+    async def test_enqueue_message_sends_to_sqs(self, bot, mock_sqs_client, mock_queue_manager):
         """Test _enqueue_message sends message to SQS queue."""
         user_id = "12345"
         chat_id = 67890
@@ -160,9 +154,7 @@ class TestTelegramBotEnqueueMessage:
         assert call_args.kwargs["QueueUrl"] == expected_queue_url
 
     @pytest.mark.asyncio
-    async def test_enqueue_message_includes_timestamp(
-        self, bot, mock_sqs_client
-    ):
+    async def test_enqueue_message_includes_timestamp(self, bot, mock_sqs_client):
         """Test enqueued message includes ISO timestamp."""
         await bot._enqueue_message("user-1", 123, "test")
 
@@ -174,9 +166,7 @@ class TestTelegramBotEnqueueMessage:
         assert timestamp is not None
 
     @pytest.mark.asyncio
-    async def test_enqueue_message_logs_action(
-        self, bot, mock_logging_service
-    ):
+    async def test_enqueue_message_logs_action(self, bot, mock_logging_service):
         """Test enqueueing message logs the action."""
         await bot._enqueue_message("user-1", 123, "test message")
 
@@ -228,9 +218,7 @@ class TestTelegramBotCommandExecution:
         """Create mock agent service."""
         service = MagicMock()
         # new_session is async and returns (agent, notification)
-        service.new_session = AsyncMock(
-            return_value=(MagicMock(), "✨ New session started!")
-        )
+        service.new_session = AsyncMock(return_value=(MagicMock(), "✨ New session started!"))
         return service
 
     @pytest.fixture
@@ -262,9 +250,7 @@ class TestTelegramBotCommandExecution:
         mock_app_instance = MagicMock()
         mock_app_instance.bot = MagicMock()
         mock_app_instance.bot.send_message = AsyncMock()
-        mock_app.builder.return_value.token.return_value.build.return_value = (
-            mock_app_instance
-        )
+        mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
 
         return TelegramBotInterface(
             config=config,
@@ -276,9 +262,7 @@ class TestTelegramBotCommandExecution:
         )
 
     @pytest.mark.asyncio
-    async def test_execute_command_routes_message_to_enqueue(
-        self, bot, mock_sqs_client
-    ):
+    async def test_execute_command_routes_message_to_enqueue(self, bot, mock_sqs_client):
         """Test MESSAGE command type routes to _enqueue_message."""
         parsed = ParsedCommand(CommandType.MESSAGE, ["Hello agent"])
 
@@ -287,9 +271,7 @@ class TestTelegramBotCommandExecution:
             mock_enqueue.assert_called_once_with("user-1", 123, "Hello agent")
 
     @pytest.mark.asyncio
-    async def test_execute_command_routes_new_to_handler(
-        self, bot, mock_agent_service
-    ):
+    async def test_execute_command_routes_new_to_handler(self, bot, mock_agent_service):
         """Test NEW command type routes to new session handler."""
         parsed = ParsedCommand(CommandType.NEW)
 
@@ -298,9 +280,7 @@ class TestTelegramBotCommandExecution:
             mock_agent_service.new_session.assert_called_once_with("user-1")
 
     @pytest.mark.asyncio
-    async def test_execute_command_routes_logs_to_handler(
-        self, bot, mock_logging_service
-    ):
+    async def test_execute_command_routes_logs_to_handler(self, bot, mock_logging_service):
         """Test LOGS command type routes to logs handler."""
         parsed = ParsedCommand(CommandType.LOGS)
 
@@ -353,9 +333,7 @@ class TestTelegramBotSkillCommands:
         mock_app_instance = MagicMock()
         mock_app_instance.bot = MagicMock()
         mock_app_instance.bot.send_message = AsyncMock()
-        mock_app.builder.return_value.token.return_value.build.return_value = (
-            mock_app_instance
-        )
+        mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
 
         mock_skill_service = MagicMock()
         mock_logging_service = MagicMock()
@@ -411,11 +389,18 @@ class TestTelegramBotSkillCommands:
         """Test /add_skill command installs skill from URL."""
         from app.models.domain import SkillMetadata
 
-        bot.skill_service.install_skill.return_value = SkillMetadata(
+        md = SkillMetadata(
             name="weather",
             source_url="https://github.com/user/repo/tree/main/weather",
             installed_at=datetime.now(timezone.utc),
         )
+
+        bot.skill_service.download_skill_to_pending.return_value = {
+            "ok": True,
+            "scope": "user",
+            "pending_dir": "/tmp/pending/weather",
+            "metadata": md,
+        }
 
         update = MagicMock()
         update.effective_user.username = "testuser"
@@ -426,8 +411,10 @@ class TestTelegramBotSkillCommands:
         with patch.object(bot, "send_response", new_callable=AsyncMock):
             await bot._handle_add_skill_command(update, context)
 
-            bot.skill_service.install_skill.assert_called_once_with(
-                "https://github.com/user/repo/tree/main/weather", "testuser"
+            bot.skill_service.download_skill_to_pending.assert_called_once_with(
+                "https://github.com/user/repo/tree/main/weather",
+                "testuser",
+                scope="user",
             )
 
     @pytest.mark.asyncio
@@ -460,9 +447,7 @@ class TestTelegramBotSkillCommands:
         with patch.object(bot, "send_response", new_callable=AsyncMock):
             await bot._handle_delete_skill_command(update, context)
 
-            bot.skill_service.uninstall_skill.assert_called_once_with(
-                "weather", "testuser"
-            )
+            bot.skill_service.uninstall_skill.assert_called_once_with("weather", "testuser")
 
     @pytest.mark.asyncio
     async def test_delete_skill_command_no_name_shows_usage(self, bot):
@@ -514,9 +499,7 @@ class TestTelegramBotEnqueueProperty:
 
             expected_queue_url = f"https://sqs.us-east-1.amazonaws.com/123/agent-user-{user_id}"
             mock_queue_manager = MagicMock()
-            mock_queue_manager.get_or_create_queue = MagicMock(
-                return_value=expected_queue_url
-            )
+            mock_queue_manager.get_or_create_queue = MagicMock(return_value=expected_queue_url)
 
             mock_logging_service = MagicMock()
             mock_logging_service.log_action = AsyncMock()
@@ -524,9 +507,7 @@ class TestTelegramBotEnqueueProperty:
             mock_app_instance = MagicMock()
             mock_app_instance.bot = MagicMock()
             mock_app_instance.bot.send_message = AsyncMock()
-            mock_app.builder.return_value.token.return_value.build.return_value = (
-                mock_app_instance
-            )
+            mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
 
             config = AgentConfig(
                 model_provider=ModelProvider.BEDROCK,
@@ -584,18 +565,14 @@ class TestTelegramBotEnqueueProperty:
             mock_sqs_client.send_message = MagicMock(return_value={"MessageId": "id"})
 
             mock_queue_manager = MagicMock()
-            mock_queue_manager.get_or_create_queue = MagicMock(
-                return_value="https://queue-url"
-            )
+            mock_queue_manager.get_or_create_queue = MagicMock(return_value="https://queue-url")
 
             mock_logging_service = MagicMock()
             mock_logging_service.log_action = AsyncMock()
 
             mock_app_instance = MagicMock()
             mock_app_instance.bot = MagicMock()
-            mock_app.builder.return_value.token.return_value.build.return_value = (
-                mock_app_instance
-            )
+            mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
 
             config = AgentConfig(
                 model_provider=ModelProvider.BEDROCK,
@@ -627,9 +604,7 @@ class TestTelegramBotEnqueueProperty:
             assert "timestamp" in body
 
             # Timestamp must be valid ISO format
-            timestamp = datetime.fromisoformat(
-                body["timestamp"].replace("Z", "+00:00")
-            )
+            timestamp = datetime.fromisoformat(body["timestamp"].replace("Z", "+00:00"))
             assert timestamp is not None
 
         finally:
@@ -669,18 +644,14 @@ class TestTelegramBotEnqueueProperty:
                 return f"https://queue-url/{user_id}"
 
             mock_queue_manager = MagicMock()
-            mock_queue_manager.get_or_create_queue = MagicMock(
-                side_effect=track_queue_request
-            )
+            mock_queue_manager.get_or_create_queue = MagicMock(side_effect=track_queue_request)
 
             mock_logging_service = MagicMock()
             mock_logging_service.log_action = AsyncMock()
 
             mock_app_instance = MagicMock()
             mock_app_instance.bot = MagicMock()
-            mock_app.builder.return_value.token.return_value.build.return_value = (
-                mock_app_instance
-            )
+            mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
 
             config = AgentConfig(
                 model_provider=ModelProvider.BEDROCK,
@@ -742,9 +713,7 @@ class TestTelegramBotHtmlFormatting:
         """Create TelegramBotInterface instance."""
         mock_app_instance = MagicMock()
         mock_app_instance.bot = MagicMock()
-        mock_app.builder.return_value.token.return_value.build.return_value = (
-            mock_app_instance
-        )
+        mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
 
         mock_logging_service = MagicMock()
         mock_logging_service.log_action = AsyncMock()
@@ -854,22 +823,16 @@ class TestTelegramBotHtmlFormattingProperty:
         yield temp_path
         shutil.rmtree(temp_path, ignore_errors=True)
 
-    @given(
-        text=st.text(min_size=0, max_size=500)
-    )
+    @given(text=st.text(min_size=0, max_size=500))
     @settings(max_examples=100)
     @patch("app.telegram.bot.Application")
-    def test_property_html_output_never_contains_unescaped_lt_gt(
-        self, mock_app, text: str
-    ):
+    def test_property_html_output_never_contains_unescaped_lt_gt(self, mock_app, text: str):
         """Property: Output never contains unescaped < or > from input."""
         temp_dir = tempfile.mkdtemp()
         try:
             mock_app_instance = MagicMock()
             mock_app_instance.bot = MagicMock()
-            mock_app.builder.return_value.token.return_value.build.return_value = (
-                mock_app_instance
-            )
+            mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
 
             mock_logging_service = MagicMock()
             mock_logging_service.log_action = AsyncMock()
@@ -895,34 +858,29 @@ class TestTelegramBotHtmlFormattingProperty:
 
             # Count < and > that are NOT part of valid HTML tags
             import re
+
             # Remove valid HTML tags we generate
             valid_tags = r'</?(?:b|i|code|pre|a(?:\s+href="[^"]*")?)>'
-            cleaned = re.sub(valid_tags, '', result)
+            cleaned = re.sub(valid_tags, "", result)
 
             # After removing valid tags, no < or > should remain
             # (they should all be escaped as &lt; or &gt;)
-            assert '<' not in cleaned, f"Unescaped < found in: {result}"
-            assert '>' not in cleaned, f"Unescaped > found in: {result}"
+            assert "<" not in cleaned, f"Unescaped < found in: {result}"
+            assert ">" not in cleaned, f"Unescaped > found in: {result}"
 
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    @given(
-        text=st.text(min_size=1, max_size=200).filter(lambda x: x.strip())
-    )
+    @given(text=st.text(min_size=1, max_size=200).filter(lambda x: x.strip()))
     @settings(max_examples=100)
     @patch("app.telegram.bot.Application")
-    def test_property_formatting_produces_string_output(
-        self, mock_app, text: str
-    ):
+    def test_property_formatting_produces_string_output(self, mock_app, text: str):
         """Property: Formatting always produces a string output."""
         temp_dir = tempfile.mkdtemp()
         try:
             mock_app_instance = MagicMock()
             mock_app_instance.bot = MagicMock()
-            mock_app.builder.return_value.token.return_value.build.return_value = (
-                mock_app_instance
-            )
+            mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
 
             mock_logging_service = MagicMock()
             mock_logging_service.log_action = AsyncMock()

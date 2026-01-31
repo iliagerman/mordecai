@@ -330,12 +330,18 @@ class Application:
 
         # Add routers
         if self.task_service:
-            task_router = create_task_router(self.task_service)
+            task_router = create_task_router(
+                self.task_service,
+                allowed_users=self.config.allowed_users,
+            )
             self.fastapi_app.include_router(task_router)
             logger.info("Task router registered")
 
         if self.webhook_service:
-            webhook_router = create_webhook_router(self.webhook_service)
+            webhook_router = create_webhook_router(
+                self.webhook_service,
+                allowed_users=self.config.allowed_users,
+            )
             self.fastapi_app.include_router(webhook_router)
             logger.info("Webhook router registered")
 

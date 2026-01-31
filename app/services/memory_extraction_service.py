@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -47,6 +48,7 @@ class ExtractionResult:
     preferences: list[str] = field(default_factory=list)
     facts: list[str] = field(default_factory=list)
     commitments: list[str] = field(default_factory=list)
+    summary: str | None = None
     success: bool = True
     error: str | None = None
     extraction_time_ms: int = 0
@@ -54,16 +56,16 @@ class ExtractionResult:
 
 # Sensitive data patterns to filter out
 SENSITIVE_PATTERNS = [
-    r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
-    r'\b(?:password|passwd|pwd)\s*[:=]\s*\S+',
-    r'\b(?:api[_-]?key|apikey)\s*[:=]\s*\S+',
-    r'\b(?:token|bearer)\s*[:=]\s*\S+',
-    r'\b(?:secret|private[_-]?key)\s*[:=]\s*\S+',
-    r'\b(?:sk-|pk-)[A-Za-z0-9]{20,}',
-    r'\bAKIA[A-Z0-9]{16}\b',
-    r'\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b',
-    r'\b[0-9]{16}\b',
-    r'\b(?:credit[_-]?card|card[_-]?number)\s*[:=]\s*\S+',
+    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
+    r"\b(?:password|passwd|pwd)\s*[:=]\s*\S+",
+    r"\b(?:api[_-]?key|apikey)\s*[:=]\s*\S+",
+    r"\b(?:token|bearer)\s*[:=]\s*\S+",
+    r"\b(?:secret|private[_-]?key)\s*[:=]\s*\S+",
+    r"\b(?:sk-|pk-)[A-Za-z0-9]{20,}",
+    r"\bAKIA[A-Z0-9]{16}\b",
+    r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b",
+    r"\b[0-9]{16}\b",
+    r"\b(?:credit[_-]?card|card[_-]?number)\s*[:=]\s*\S+",
 ]
 
 EXTRACTION_PROMPT = """Analyze the conversation and extract important info.
@@ -86,6 +88,19 @@ CONVERSATION:
 
 Respond ONLY with valid JSON (no markdown, no explanation):
 {{"preferences": ["item1"], "facts": ["item1"], "commitments": ["item1"]}}"""
+
+
+SUMMARY_PROMPT = """Summarize the conversation for later reference.
+
+RULES:
+- Be concise (3-8 bullet points)
+- Focus on the user's goals, decisions, and important context
+- Do NOT include secrets (passwords, API keys, tokens) or personal identifiers
+
+CONVERSATION:
+{conversation}
+
+Respond ONLY with the summary text (no markdown fences, no extra commentary)."""
 
 
 class MemoryExtractionService:
@@ -155,11 +170,11 @@ class MemoryExtractionService:
         """
         start_time = time.time()
 
-        # Handle empty or minimal conversations
-        if not conversation_history or len(conversation_history) < 2:
+        # Handle empty conversations
+        if not conversation_history:
             logger.info(
-                "Skipping extraction for user %s: conversation too short",
-                user_id
+                "Skipping extraction for user %s: empty conversation",
+                user_id,
             )
             return ExtractionResult(
                 success=True,
@@ -168,7 +183,16 @@ class MemoryExtractionService:
 
         try:
             # Analyze conversation
-            result = self._analyze_conversation(conversation_history)
+            # For very short conversations, skip LLM-based extraction.
+            if len(conversation_history) < 2:
+                result = ExtractionResult(
+                    preferences=[],
+                    facts=[],
+                    commitments=[],
+                    success=True,
+                )
+            else:
+                result = self._analyze_conversation(conversation_history)
 
             # Filter sensitive data
             result = self._filter_sensitive_data(result)
@@ -218,6 +242,155 @@ class MemoryExtractionService:
                 error=str(e),
                 extraction_time_ms=int((time.time() - start_time) * 1000),
             )
+
+    async def summarize_and_store(
+        self,
+        user_id: str,
+        session_id: str,
+        conversation_history: list[dict],
+    ) -> str | None:
+        """Summarize a conversation and store the summary in long-term memory.
+
+        This is intended to be invoked when a conversation is explicitly ended
+        (e.g., /new), so users get a summary and key context is preserved.
+
+        Returns:
+            The summary text if generated (and stored when possible), else None.
+        """
+        if not conversation_history or len(conversation_history) < 2:
+            return None
+
+        summary = self._summarize_conversation(conversation_history)
+        summary = (summary or "").strip()
+        if not summary:
+            return None
+
+        # Avoid storing sensitive content.
+        if self._text_contains_sensitive(summary):
+            logger.info(
+                "Skipping summary storage for user %s: looks sensitive",
+                user_id,
+            )
+            return None
+
+        if not self.memory_service:
+            logger.warning(
+                "Memory service unavailable for user %s, summary generated but not stored",
+                user_id,
+            )
+            return summary
+
+        try:
+            # Store as a non-replacing fact so each session retains its own summary.
+            self.memory_service.store_fact(
+                user_id=user_id,
+                fact=f"Session summary ({session_id}):\n{summary}",
+                session_id=session_id,
+                replace_similar=False,
+            )
+        except Exception as e:
+            logger.warning("Failed to store session summary for user %s: %s", user_id, e)
+
+        return summary
+
+    def _summarize_conversation(self, conversation_history: list[dict]) -> str:
+        """Generate a concise bullet summary of a conversation using the LLM."""
+        from strands import Agent
+
+        formatted_conv = self._format_conversation(conversation_history)
+        prompt = SUMMARY_PROMPT.format(conversation=formatted_conv)
+
+        try:
+            model = self._get_model()
+            agent = Agent(
+                model=model,
+                system_prompt=(
+                    "You are a conversation summarizer. Return only a concise bullet list."
+                ),
+            )
+            result = agent(prompt)
+            return self._extract_response_text(result)
+        except Exception as e:
+            logger.warning("Summary generation failed: %s", e)
+            return ""
+
+    def _text_contains_sensitive(self, text: str) -> bool:
+        """Return True if text matches known sensitive patterns."""
+        text_lower = text.lower()
+
+        sensitive_keywords = [
+            "password",
+            "passwd",
+            "pwd",
+            "api_key",
+            "apikey",
+            "api-key",
+            "secret",
+            "token",
+            "bearer",
+            "private_key",
+            "private-key",
+            "access_key",
+            "access-key",
+            "credential",
+            "auth_token",
+        ]
+        for keyword in sensitive_keywords:
+            if keyword in text_lower:
+                return True
+
+        for pattern in SENSITIVE_PATTERNS:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+
+        return False
+
+    def _summarize_conversation(self, conversation_history: list[dict]) -> str:
+        """Generate a concise summary for a conversation."""
+        from strands import Agent
+
+        formatted_conv = self._format_conversation(conversation_history)
+        prompt = SUMMARY_PROMPT.format(conversation=formatted_conv)
+
+        model = self._get_model()
+        agent = Agent(
+            model=model,
+            system_prompt=("You are a conversation summarizer. Return only the summary text."),
+        )
+        result = agent(prompt)
+        text = self._extract_response_text(result).strip()
+
+        # Normalize whitespace a bit
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        return text
+
+    def _summary_contains_sensitive(self, summary: str) -> bool:
+        """Best-effort check to avoid storing secrets/PII in summaries."""
+        if not summary:
+            return False
+        text_lower = summary.lower()
+        keywords = [
+            "password",
+            "passwd",
+            "pwd",
+            "api_key",
+            "apikey",
+            "api-key",
+            "secret",
+            "token",
+            "bearer",
+            "private_key",
+            "private-key",
+            "access_key",
+            "access-key",
+            "credential",
+        ]
+        if any(k in text_lower for k in keywords):
+            return True
+        for pattern in SENSITIVE_PATTERNS:
+            if re.search(pattern, summary, re.IGNORECASE):
+                return True
+        return False
 
     def _format_conversation(
         self,
@@ -401,12 +574,21 @@ class MemoryExtractionService:
 
             # Check for sensitive keywords
             sensitive_keywords = [
-                "password", "passwd", "pwd",
-                "api_key", "apikey", "api-key",
-                "secret", "token", "bearer",
-                "private_key", "private-key",
-                "access_key", "access-key",
-                "credential", "auth_token",
+                "password",
+                "passwd",
+                "pwd",
+                "api_key",
+                "apikey",
+                "api-key",
+                "secret",
+                "token",
+                "bearer",
+                "private_key",
+                "private-key",
+                "access_key",
+                "access-key",
+                "credential",
+                "auth_token",
             ]
             for keyword in sensitive_keywords:
                 if keyword in text_lower:
@@ -475,8 +657,7 @@ class MemoryExtractionService:
             client = self.memory_service._get_client()
             if client is None:
                 logger.warning(
-                    "Memory service client unavailable for user %s, "
-                    "skipping storage",
+                    "Memory service client unavailable for user %s, skipping storage",
                     user_id,
                 )
                 return
@@ -492,11 +673,24 @@ class MemoryExtractionService:
         facts_stored = 0
         commits_stored = 0
 
+        # Store summary - continue even if this fails
+        if result.summary and self.memory_service is not None:
+            try:
+                self.memory_service.store_session_summary(
+                    user_id=user_id,
+                    session_id=session_id,
+                    summary=result.summary,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to store summary for user %s: %s",
+                    user_id,
+                    str(e),
+                )
+
         # Store preferences - continue even if this fails
         try:
-            prefs_stored = await self._store_preferences(
-                user_id, session_id, result.preferences
-            )
+            prefs_stored = await self._store_preferences(user_id, session_id, result.preferences)
         except Exception as e:
             logger.error(
                 "Failed to store preferences for user %s: %s",
@@ -506,9 +700,7 @@ class MemoryExtractionService:
 
         # Store facts - continue even if this fails
         try:
-            facts_stored = await self._store_facts(
-                user_id, session_id, result.facts
-            )
+            facts_stored = await self._store_facts(user_id, session_id, result.facts)
         except Exception as e:
             logger.error(
                 "Failed to store facts for user %s: %s",
@@ -518,9 +710,7 @@ class MemoryExtractionService:
 
         # Store commitments - continue even if this fails
         try:
-            commits_stored = await self._store_commitments(
-                user_id, session_id, result.commitments
-            )
+            commits_stored = await self._store_commitments(user_id, session_id, result.commitments)
         except Exception as e:
             logger.error(
                 "Failed to store commitments for user %s: %s",
@@ -529,8 +719,7 @@ class MemoryExtractionService:
             )
 
         logger.info(
-            "Stored extraction for user %s: "
-            "prefs=%d/%d, facts=%d/%d, commits=%d/%d",
+            "Stored extraction for user %s: prefs=%d/%d, facts=%d/%d, commits=%d/%d",
             user_id,
             prefs_stored,
             len(result.preferences),
@@ -575,13 +764,11 @@ class MemoryExtractionService:
                     memory_id=memory_id,
                     actor_id=user_id,
                     session_id=session_id,
+                    event_timestamp=datetime.now(timezone.utc),
                     messages=[
                         (f"I prefer {pref}", "USER"),
-                        (
-                            f"I'll remember that you prefer {pref}.",
-                            "ASSISTANT"
-                        ),
-                    ]
+                        (f"I'll remember that you prefer {pref}.", "ASSISTANT"),
+                    ],
                 )
                 stored_count += 1
                 logger.debug(
@@ -633,13 +820,11 @@ class MemoryExtractionService:
                     memory_id=memory_id,
                     actor_id=user_id,
                     session_id=session_id,
+                    event_timestamp=datetime.now(timezone.utc),
                     messages=[
                         (f"Here's an important fact: {fact}", "USER"),
-                        (
-                            f"I've noted that {fact}.",
-                            "ASSISTANT"
-                        ),
-                    ]
+                        (f"I've noted that {fact}.", "ASSISTANT"),
+                    ],
                 )
                 stored_count += 1
                 logger.debug(
@@ -690,16 +875,11 @@ class MemoryExtractionService:
                     memory_id=memory_id,
                     actor_id=user_id,
                     session_id=session_id,
+                    event_timestamp=datetime.now(timezone.utc),
                     messages=[
-                        (
-                            f"I have an action item: {commitment}",
-                            "USER"
-                        ),
-                        (
-                            f"I'll remember: {commitment}.",
-                            "ASSISTANT"
-                        ),
-                    ]
+                        (f"I have an action item: {commitment}", "USER"),
+                        (f"I'll remember: {commitment}.", "ASSISTANT"),
+                    ],
                 )
                 stored_count += 1
                 logger.debug(

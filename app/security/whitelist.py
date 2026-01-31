@@ -1,0 +1,43 @@
+"""User whitelist enforcement utilities.
+
+This module centralizes whitelist checks for both HTTP handlers (FastAPI)
+and Telegram bot handlers.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+
+from fastapi import HTTPException, status
+
+CONTACT_EMAIL = "iliag@sela.co.il"
+DEFAULT_FORBIDDEN_DETAIL = f"contact {CONTACT_EMAIL}"
+
+
+def _normalize_user_id(user_id: str) -> str:
+    return (user_id or "").strip().lower()
+
+
+def normalize_allowed_users(allowed_users: Iterable[str] | None) -> set[str]:
+    if not allowed_users:
+        return set()
+    return {_normalize_user_id(u) for u in allowed_users if _normalize_user_id(u)}
+
+
+def is_whitelisted(user_id: str, allowed_users: Iterable[str] | None) -> bool:
+    allowed = normalize_allowed_users(allowed_users)
+    if not allowed:
+        # Empty whitelist => allow all (safe default for dev/tests)
+        return True
+    return _normalize_user_id(user_id) in allowed
+
+
+def enforce_whitelist_or_403(
+    user_id: str,
+    allowed_users: Iterable[str] | None,
+    *,
+    detail: str = DEFAULT_FORBIDDEN_DETAIL,
+) -> None:
+    if is_whitelisted(user_id, allowed_users):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)

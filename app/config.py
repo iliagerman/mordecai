@@ -141,8 +141,8 @@ def _write_toml_config(file_path: Path, config_data: dict) -> None:
             f.write("\n".join(lines))
 
 
-def _load_secrets(secrets_path: Path) -> dict:
-    """Load and flatten secrets from YAML file.
+def _flatten_secrets_mapping(secrets: dict) -> dict:
+    """Flatten secrets mapping into AgentConfig-compatible keys.
 
     Converts nested YAML structure to flat config keys:
         telegram.bot_token -> telegram_bot_token
@@ -153,12 +153,6 @@ def _load_secrets(secrets_path: Path) -> dict:
         - Simple key-value pairs are exported as environment variables
         - Nested configs with 'path' create files and export remaining as env vars
     """
-    if not secrets_path.exists():
-        return {}
-
-    with open(secrets_path) as f:
-        secrets = yaml.safe_load(f) or {}
-
     flat = {}
     for section, values in secrets.items():
         if isinstance(values, dict):
@@ -194,12 +188,26 @@ def _load_secrets(secrets_path: Path) -> dict:
     return flat
 
 
+def _load_secrets(secrets_path: Path) -> dict:
+    """Load and flatten secrets from YAML file."""
+    if not secrets_path.exists():
+        return {}
+
+    with open(secrets_path) as f:
+        secrets = yaml.safe_load(f) or {}
+
+    if not isinstance(secrets, dict):
+        return {}
+
+    return _flatten_secrets_mapping(secrets)
+
+
 class AgentConfig(BaseSettings):
     """Configuration with JSON file + secrets.yml + env var support.
 
     Load order (later overrides earlier):
     1. config.json - base configuration
-    2. secrets.yml - sensitive values (API keys, tokens)
+    2. secrets.yml - sensitive values (API keys, tokens, access control)
     3. Environment variables - runtime overrides
 
     Prefix: AGENT_ (e.g., AGENT_TELEGRAM_BOT_TOKEN)
@@ -223,6 +231,15 @@ class AgentConfig(BaseSettings):
 
     # Telegram settings
     telegram_bot_token: str = Field(...)
+
+    # Access control
+    allowed_users: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional whitelist of allowed user identifiers (e.g., Telegram username). "
+            "If non-empty, non-whitelisted users are rejected."
+        ),
+    )
 
     # AWS settings
     aws_region: str = Field(default="us-east-1")

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.security.whitelist import enforce_whitelist_or_403
+
 from app.enums import TaskStatus
 from app.models.base import JsonModel
 from app.models.domain import Task
@@ -45,7 +47,11 @@ class TaskListResponse(JsonModel):
     done: list[Task]
 
 
-def create_task_router(task_service: "TaskService") -> APIRouter:
+def create_task_router(
+    task_service: "TaskService",
+    *,
+    allowed_users: list[str] | None = None,
+) -> APIRouter:
     """Create task router with injected service.
 
     Args:
@@ -66,6 +72,7 @@ def create_task_router(task_service: "TaskService") -> APIRouter:
         Returns:
             Tasks grouped by status (pending, in_progress, done)
         """
+        enforce_whitelist_or_403(user_id, allowed_users)
         grouped = await task_service.get_tasks_grouped_by_status(user_id)
         return TaskListResponse(**grouped)
 
@@ -83,6 +90,7 @@ def create_task_router(task_service: "TaskService") -> APIRouter:
             HTTPException: 400 if validation fails
         """
         try:
+            enforce_whitelist_or_403(request.user_id, allowed_users)
             task = await task_service.create_task(
                 user_id=request.user_id,
                 title=request.title,
@@ -112,6 +120,7 @@ def create_task_router(task_service: "TaskService") -> APIRouter:
             HTTPException: 404 if task not found, 403 if permission denied
         """
         try:
+            enforce_whitelist_or_403(user_id, allowed_users)
             success = await task_service.update_task_status(
                 task_id=task_id,
                 status=request.status,

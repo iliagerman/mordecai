@@ -16,6 +16,7 @@ Requirements:
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from bedrock_agentcore.memory import MemoryClient
@@ -56,9 +57,7 @@ class MemoryService:
         if self.config.aws_access_key_id:
             os.environ["AWS_ACCESS_KEY_ID"] = self.config.aws_access_key_id
         if self.config.aws_secret_access_key:
-            os.environ["AWS_SECRET_ACCESS_KEY"] = (
-                self.config.aws_secret_access_key
-            )
+            os.environ["AWS_SECRET_ACCESS_KEY"] = self.config.aws_secret_access_key
         if self.config.aws_region:
             os.environ["AWS_DEFAULT_REGION"] = self.config.aws_region
 
@@ -69,10 +68,7 @@ class MemoryService:
             MemoryClient instance for AgentCore operations.
         """
         if self._client is None:
-            logger.debug(
-                "Creating MemoryClient for region=%s",
-                self.config.aws_region
-            )
+            logger.debug("Creating MemoryClient for region=%s", self.config.aws_region)
             self._client = MemoryClient(region_name=self.config.aws_region)
         return self._client
 
@@ -96,10 +92,7 @@ class MemoryService:
             logger.debug("Using existing memory_id=%s", self._memory_id)
             return self._memory_id
 
-        logger.info(
-            "Looking for existing memory: name=%s",
-            self.config.memory_name
-        )
+        logger.info("Looking for existing memory: name=%s", self.config.memory_name)
 
         client = self._get_client()
 
@@ -109,8 +102,7 @@ class MemoryService:
             memories = client.list_memories()
             logger.info("list_memories returned %d memories", len(memories))
             # list_memories returns a list directly
-            memory_list = memories if isinstance(memories, list) else \
-                memories.get("memories", [])
+            memory_list = memories if isinstance(memories, list) else memories.get("memories", [])
             for memory in memory_list:
                 # Memory ID contains the name prefix
                 mem_id = memory.get("id") or memory.get("memoryId", "")
@@ -120,7 +112,7 @@ class MemoryService:
                     logger.info(
                         "Found existing memory: name=%s, id=%s",
                         self.config.memory_name,
-                        self._memory_id
+                        self._memory_id,
                     )
                     return self._memory_id
         except Exception as e:
@@ -136,22 +128,22 @@ class MemoryService:
                     {
                         "summaryMemoryStrategy": {
                             "name": "SessionSummarizer",
-                            "namespaces": ["/summaries/{actorId}/{sessionId}"]
+                            "namespaces": ["/summaries/{actorId}/{sessionId}"],
                         }
                     },
                     {
                         "userPreferenceMemoryStrategy": {
                             "name": "PreferenceLearner",
-                            "namespaces": ["/preferences/{actorId}"]
+                            "namespaces": ["/preferences/{actorId}"],
                         }
                     },
                     {
                         "semanticMemoryStrategy": {
                             "name": "FactExtractor",
-                            "namespaces": ["/facts/{actorId}"]
+                            "namespaces": ["/facts/{actorId}"],
                         }
-                    }
-                ]
+                    },
+                ],
             )
             self._memory_id = memory.get("id")
             logger.info("Created AgentCore memory with id=%s", self._memory_id)
@@ -160,8 +152,9 @@ class MemoryService:
             if "already exists" in str(e):
                 logger.info("Memory already exists, looking it up...")
                 memories = client.list_memories()
-                memory_list = memories if isinstance(memories, list) else \
-                    memories.get("memories", [])
+                memory_list = (
+                    memories if isinstance(memories, list) else memories.get("memories", [])
+                )
                 for memory in memory_list:
                     mem_id = memory.get("id") or memory.get("memoryId", "")
                     if mem_id.startswith(self.config.memory_name):
@@ -173,9 +166,7 @@ class MemoryService:
         return self._memory_id
 
     def create_session_manager(
-        self,
-        user_id: str,
-        session_id: str
+        self, user_id: str, session_id: str
     ) -> AgentCoreMemorySessionManager:
         """Create a session manager for a user.
 
@@ -194,38 +185,30 @@ class MemoryService:
         """
         memory_id = self.get_or_create_memory_id()
 
-        logger.debug(
-            "Creating session manager: user_id=%s, session_id=%s",
-            user_id,
-            session_id
-        )
+        logger.debug("Creating session manager: user_id=%s, session_id=%s", user_id, session_id)
 
         # Configure retrieval from all namespaces
         retrieval_config = {
             "/preferences/{actorId}": RetrievalConfig(
                 top_k=self.config.memory_retrieval_top_k,
-                relevance_score=self.config.memory_retrieval_relevance_score
+                relevance_score=self.config.memory_retrieval_relevance_score,
             ),
             "/facts/{actorId}": RetrievalConfig(
                 top_k=self.config.memory_retrieval_top_k,
-                relevance_score=self.config.memory_retrieval_relevance_score
+                relevance_score=self.config.memory_retrieval_relevance_score,
             ),
-            "/summaries/{actorId}/{sessionId}": RetrievalConfig(
-                top_k=5,
-                relevance_score=0.5
-            )
+            "/summaries/{actorId}/{sessionId}": RetrievalConfig(top_k=5, relevance_score=0.5),
         }
 
         config = AgentCoreMemoryConfig(
             memory_id=memory_id,
             session_id=session_id,
             actor_id=user_id,  # User isolation via actor_id
-            retrieval_config=retrieval_config
+            retrieval_config=retrieval_config,
         )
 
         return AgentCoreMemorySessionManager(
-            agentcore_memory_config=config,
-            region_name=self.config.aws_region
+            agentcore_memory_config=config, region_name=self.config.aws_region
         )
 
     @property
@@ -259,28 +242,22 @@ class MemoryService:
                 memory_id=memory_id,
                 namespace=f"/facts/{user_id}",
                 query="assistant name identity called",
-                top_k=5
+                top_k=5,
             )
             logger.info(
                 "Retrieved %d facts for user %s identity lookup",
                 len(facts) if facts else 0,
-                user_id
+                user_id,
             )
             if facts:
                 for fact in facts:
                     content = fact.get("content", {})
-                    text = content.get("text", "") if isinstance(
-                        content, dict
-                    ) else str(content)
+                    text = content.get("text", "") if isinstance(content, dict) else str(content)
                     logger.debug("Fact content: %s", text[:100])
                     # Look for name patterns
                     name = self._extract_name_from_text(text)
                     if name:
-                        logger.info(
-                            "Found agent name '%s' in facts for user %s",
-                            name,
-                            user_id
-                        )
+                        logger.info("Found agent name '%s' in facts for user %s", name, user_id)
                         return name
         except Exception as e:
             logger.warning("Failed to retrieve facts for identity: %s", e)
@@ -291,27 +268,21 @@ class MemoryService:
                 memory_id=memory_id,
                 namespace=f"/preferences/{user_id}",
                 query="assistant name identity called",
-                top_k=5
+                top_k=5,
             )
             logger.info(
                 "Retrieved %d preferences for user %s identity lookup",
                 len(prefs) if prefs else 0,
-                user_id
+                user_id,
             )
             if prefs:
                 for pref in prefs:
                     content = pref.get("content", {})
-                    text = content.get("text", "") if isinstance(
-                        content, dict
-                    ) else str(content)
+                    text = content.get("text", "") if isinstance(content, dict) else str(content)
                     logger.debug("Preference content: %s", text[:100])
                     name = self._extract_name_from_text(text)
                     if name:
-                        logger.info(
-                            "Found agent name '%s' in prefs for user %s",
-                            name,
-                            user_id
-                        )
+                        logger.info("Found agent name '%s' in prefs for user %s", name, user_id)
                         return name
         except Exception as e:
             logger.warning("Failed to retrieve prefs for identity: %s", e)
@@ -374,28 +345,52 @@ class MemoryService:
                 name = match.group(1)
                 # Skip common words that aren't names
                 skip_words = {
-                    "the", "a", "an", "is", "are", "was", "were", "be",
-                    "that", "this", "it", "you", "me", "my", "your",
-                    "will", "would", "can", "could", "should", "may",
-                    "might", "must", "shall", "have", "has", "had",
-                    "do", "does", "did", "being", "been", "not", "no",
+                    "the",
+                    "a",
+                    "an",
+                    "is",
+                    "are",
+                    "was",
+                    "were",
+                    "be",
+                    "that",
+                    "this",
+                    "it",
+                    "you",
+                    "me",
+                    "my",
+                    "your",
+                    "will",
+                    "would",
+                    "can",
+                    "could",
+                    "should",
+                    "may",
+                    "might",
+                    "must",
+                    "shall",
+                    "have",
+                    "has",
+                    "had",
+                    "do",
+                    "does",
+                    "did",
+                    "being",
+                    "been",
+                    "not",
+                    "no",
                 }
                 if name.lower() in skip_words:
                     continue
                 # Capitalize the name properly
-                logger.debug(
-                    "Extracted name '%s' using pattern: %s", name, pattern
-                )
+                logger.debug("Extracted name '%s' using pattern: %s", name, pattern)
                 return name.capitalize()
 
         logger.debug("No name pattern matched in text")
         return None
 
     def search_memory(
-        self,
-        user_id: str,
-        query: str,
-        memory_type: str = "all"
+        self, user_id: str, query: str, memory_type: str = "all"
     ) -> dict[str, list[str]]:
         """Search memory for specific information.
 
@@ -421,6 +416,75 @@ class MemoryService:
 
         client = self._get_client()
 
+        def parse_ts(value) -> datetime | None:
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, (int, float)):
+                try:
+                    return datetime.fromtimestamp(float(value), tz=timezone.utc)
+                except Exception:
+                    return None
+            if isinstance(value, str):
+                s = value.strip()
+                if not s:
+                    return None
+                # Common AWS format: 2026-01-31T12:34:56Z
+                if s.endswith("Z"):
+                    s = s[:-1] + "+00:00"
+                try:
+                    dt = datetime.fromisoformat(s)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt
+                except Exception:
+                    return None
+            return None
+
+        def record_ts(record: dict) -> datetime | None:
+            # The API returns memoryRecordSummaries; timestamp field names can vary.
+            for key in (
+                "eventTimestamp",
+                "event_timestamp",
+                "createdAt",
+                "created_at",
+                "updatedAt",
+                "updated_at",
+                "timestamp",
+            ):
+                if key in record:
+                    return parse_ts(record.get(key))
+            return None
+
+        def record_text(record: dict) -> str:
+            content = record.get("content", {})
+            if isinstance(content, dict):
+                return str(content.get("text", "") or "")
+            return str(content or "")
+
+        def newest_first_unique(records: list[dict]) -> list[str]:
+            # Deduplicate by text, keeping the newest timestamp.
+            best_by_text: dict[str, datetime] = {}
+            for r in records or []:
+                text = record_text(r).strip()
+                if not text:
+                    continue
+                ts = record_ts(r) or datetime.min.replace(tzinfo=timezone.utc)
+                prev = best_by_text.get(text)
+                if prev is None or ts > prev:
+                    best_by_text[text] = ts
+
+            # Sort by timestamp desc (newest on top)
+            return [
+                text
+                for text, _ts in sorted(
+                    best_by_text.items(),
+                    key=lambda kv: kv[1],
+                    reverse=True,
+                )
+            ]
+
         # Search facts
         if memory_type in ("all", "facts"):
             try:
@@ -428,20 +492,12 @@ class MemoryService:
                     memory_id=memory_id,
                     namespace=f"/facts/{user_id}",
                     query=query,
-                    top_k=self.config.memory_retrieval_top_k
+                    top_k=self.config.memory_retrieval_top_k,
                 )
                 if facts:
-                    for fact in facts:
-                        content = fact.get("content", {})
-                        text = content.get("text", "") if isinstance(
-                            content, dict
-                        ) else str(content)
-                        if text and text not in result["facts"]:
-                            result["facts"].append(text)
+                    result["facts"] = newest_first_unique(facts)
                 logger.info(
-                    "Memory search found %d facts for user %s",
-                    len(result["facts"]),
-                    user_id
+                    "Memory search found %d facts for user %s", len(result["facts"]), user_id
                 )
             except Exception as e:
                 logger.warning("Failed to search facts: %s", e)
@@ -453,31 +509,21 @@ class MemoryService:
                     memory_id=memory_id,
                     namespace=f"/preferences/{user_id}",
                     query=query,
-                    top_k=self.config.memory_retrieval_top_k
+                    top_k=self.config.memory_retrieval_top_k,
                 )
                 if prefs:
-                    for pref in prefs:
-                        content = pref.get("content", {})
-                        text = content.get("text", "") if isinstance(
-                            content, dict
-                        ) else str(content)
-                        if text and text not in result["preferences"]:
-                            result["preferences"].append(text)
+                    result["preferences"] = newest_first_unique(prefs)
                 logger.info(
                     "Memory search found %d preferences for user %s",
                     len(result["preferences"]),
-                    user_id
+                    user_id,
                 )
             except Exception as e:
                 logger.warning("Failed to search preferences: %s", e)
 
         return result
 
-    def retrieve_memory_context(
-        self,
-        user_id: str,
-        query: str
-    ) -> dict[str, list[str]]:
+    def retrieve_memory_context(self, user_id: str, query: str) -> dict[str, list[str]]:
         """Retrieve relevant memory context for a user based on their query.
 
         Queries all namespaces (facts, preferences) using the user's message
@@ -506,34 +552,85 @@ class MemoryService:
 
         client = self._get_client()
 
+        def parse_ts(value) -> datetime | None:
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, (int, float)):
+                try:
+                    return datetime.fromtimestamp(float(value), tz=timezone.utc)
+                except Exception:
+                    return None
+            if isinstance(value, str):
+                s = value.strip()
+                if not s:
+                    return None
+                if s.endswith("Z"):
+                    s = s[:-1] + "+00:00"
+                try:
+                    dt = datetime.fromisoformat(s)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt
+                except Exception:
+                    return None
+            return None
+
+        def record_ts(record: dict) -> datetime | None:
+            for key in (
+                "eventTimestamp",
+                "event_timestamp",
+                "createdAt",
+                "created_at",
+                "updatedAt",
+                "updated_at",
+                "timestamp",
+            ):
+                if key in record:
+                    return parse_ts(record.get(key))
+            return None
+
+        def record_text(record: dict) -> str:
+            content = record.get("content", {})
+            if isinstance(content, dict):
+                return str(content.get("text", "") or "")
+            return str(content or "")
+
+        def newest_first_records(records: list[dict]) -> list[tuple[str, datetime]]:
+            best_by_text: dict[str, datetime] = {}
+            for r in records or []:
+                text = record_text(r).strip()
+                if not text:
+                    continue
+                ts = record_ts(r) or datetime.min.replace(tzinfo=timezone.utc)
+                prev = best_by_text.get(text)
+                if prev is None or ts > prev:
+                    best_by_text[text] = ts
+
+            return sorted(best_by_text.items(), key=lambda kv: kv[1], reverse=True)
+
         # Retrieve facts relevant to the user's query
         try:
             facts = client.retrieve_memories(
                 memory_id=memory_id,
                 namespace=f"/facts/{user_id}",
                 query=query,
-                top_k=self.config.memory_retrieval_top_k
+                top_k=self.config.memory_retrieval_top_k,
             )
             if facts:
-                for fact in facts:
-                    content = fact.get("content", {})
-                    text = content.get("text", "") if isinstance(
-                        content, dict
-                    ) else str(content)
-                    logger.debug("Fact raw content: %s", fact)
+                for text, _ts in newest_first_records(facts):
                     logger.info("Fact text: %s", text[:200] if text else "")
-                    if text:
-                        result["facts"].append(text)
-                        # Check for agent name
-                        if not result["agent_name"]:
-                            name = self._extract_name_from_text(text)
-                            if name:
-                                result["agent_name"] = name
+                    result["facts"].append(text)
+                    if not result["agent_name"]:
+                        name = self._extract_name_from_text(text)
+                        if name:
+                            result["agent_name"] = name
                 logger.info(
                     "Retrieved %d facts for user %s (query: %s)",
                     len(result["facts"]),
                     user_id,
-                    query[:50]
+                    query[:50],
                 )
         except Exception as e:
             logger.warning("Failed to retrieve facts: %s", e)
@@ -544,27 +641,18 @@ class MemoryService:
                 memory_id=memory_id,
                 namespace=f"/preferences/{user_id}",
                 query=query,
-                top_k=self.config.memory_retrieval_top_k
+                top_k=self.config.memory_retrieval_top_k,
             )
             if prefs:
-                for pref in prefs:
-                    content = pref.get("content", {})
-                    text = content.get("text", "") if isinstance(
-                        content, dict
-                    ) else str(content)
-                    logger.debug("Pref raw content: %s", pref)
+                for text, _ts in newest_first_records(prefs):
                     logger.info("Pref text: %s", text[:200] if text else "")
-                    if text:
-                        result["preferences"].append(text)
-                        # Check for agent name
-                        if not result["agent_name"]:
-                            name = self._extract_name_from_text(text)
-                            if name:
-                                result["agent_name"] = name
+                    result["preferences"].append(text)
+                    if not result["agent_name"]:
+                        name = self._extract_name_from_text(text)
+                        if name:
+                            result["agent_name"] = name
                 logger.info(
-                    "Retrieved %d preferences for user %s",
-                    len(result["preferences"]),
-                    user_id
+                    "Retrieved %d preferences for user %s", len(result["preferences"]), user_id
                 )
         except Exception as e:
             logger.warning("Failed to retrieve preferences: %s", e)
@@ -580,18 +668,14 @@ class MemoryService:
                     memory_id=memory_id,
                     namespace=f"/facts/{user_id}",
                     query="assistant name identity called my name is",
-                    top_k=5
+                    top_k=5,
                 )
                 logger.info(
                     "Identity facts query returned %d results",
-                    len(identity_facts) if identity_facts else 0
+                    len(identity_facts) if identity_facts else 0,
                 )
                 if identity_facts:
-                    for fact in identity_facts:
-                        content = fact.get("content", {})
-                        text = content.get("text", "") if isinstance(
-                            content, dict
-                        ) else str(content)
+                    for text, _ts in newest_first_records(identity_facts):
                         logger.info("Identity fact text: %s", text[:200])
                         name = self._extract_name_from_text(text)
                         if name:
@@ -609,18 +693,14 @@ class MemoryService:
                         memory_id=memory_id,
                         namespace=f"/preferences/{user_id}",
                         query="assistant name identity called my name is",
-                        top_k=5
+                        top_k=5,
                     )
                     logger.info(
                         "Identity prefs query returned %d results",
-                        len(identity_prefs) if identity_prefs else 0
+                        len(identity_prefs) if identity_prefs else 0,
                     )
                     if identity_prefs:
-                        for pref in identity_prefs:
-                            content = pref.get("content", {})
-                            text = content.get("text", "") if isinstance(
-                                content, dict
-                            ) else str(content)
+                        for text, _ts in newest_first_records(identity_prefs):
                             logger.info("Identity pref text: %s", text[:200])
                             name = self._extract_name_from_text(text)
                             if name:
@@ -635,15 +715,12 @@ class MemoryService:
             "Final memory context: agent_name=%s, facts=%d, prefs=%d",
             result["agent_name"],
             len(result["facts"]),
-            len(result["preferences"])
+            len(result["preferences"]),
         )
         return result
 
     def _find_similar_records(
-        self,
-        user_id: str,
-        query: str,
-        similarity_threshold: float = 0.7
+        self, user_id: str, query: str, similarity_threshold: float = 0.7
     ) -> list[dict]:
         """Find memory records similar to a query.
 
@@ -675,10 +752,7 @@ class MemoryService:
                 response = client.gmdp_client.retrieve_memory_records(
                     memoryId=memory_id,
                     namespace=namespace,
-                    searchCriteria={
-                        "searchQuery": query,
-                        "topK": 10
-                    }
+                    searchCriteria={"searchQuery": query, "topK": 10},
                 )
 
                 for summary in response.get("memoryRecordSummaries", []):
@@ -688,23 +762,20 @@ class MemoryService:
                         content = summary.get("content", {})
                         text = content.get("text", "")
                         if record_id:
-                            similar_records.append({
-                                "memoryRecordId": record_id,
-                                "text": text,
-                                "score": score,
-                                "namespace": namespace
-                            })
+                            similar_records.append(
+                                {
+                                    "memoryRecordId": record_id,
+                                    "text": text,
+                                    "score": score,
+                                    "namespace": namespace,
+                                }
+                            )
             except Exception as e:
-                logger.warning(
-                    "Failed to search namespace %s: %s", namespace, e
-                )
+                logger.warning("Failed to search namespace %s: %s", namespace, e)
 
         return similar_records
 
-    def _delete_records(
-        self,
-        record_ids: list[str]
-    ) -> int:
+    def _delete_records(self, record_ids: list[str]) -> int:
         """Delete memory records by their IDs.
 
         Args:
@@ -728,15 +799,12 @@ class MemoryService:
         for record_id in record_ids:
             try:
                 client.gmdp_client.delete_memory_record(
-                    memoryId=memory_id,
-                    memoryRecordId=record_id
+                    memoryId=memory_id, memoryRecordId=record_id
                 )
                 deleted += 1
                 logger.debug("Deleted memory record %s", record_id)
             except Exception as e:
-                logger.warning(
-                    "Failed to delete record %s: %s", record_id, e
-                )
+                logger.warning("Failed to delete record %s: %s", record_id, e)
 
         if deleted > 0:
             logger.info("Deleted %d memory records", deleted)
@@ -749,7 +817,7 @@ class MemoryService:
         fact: str,
         session_id: str,
         replace_similar: bool = True,
-        similarity_query: str | None = None
+        similarity_query: str | None = None,
     ) -> bool:
         """Store a fact in memory, optionally replacing similar facts.
 
@@ -783,15 +851,11 @@ class MemoryService:
             if similar:
                 record_ids = [r["memoryRecordId"] for r in similar]
                 logger.info(
-                    "Found %d similar records to replace for user %s",
-                    len(similar), user_id
+                    "Found %d similar records to replace for user %s", len(similar), user_id
                 )
                 for r in similar:
                     logger.debug(
-                        "  - %s (score=%.2f): %s",
-                        r["memoryRecordId"],
-                        r["score"],
-                        r["text"][:100]
+                        "  - %s (score=%.2f): %s", r["memoryRecordId"], r["score"], r["text"][:100]
                     )
                 self._delete_records(record_ids)
 
@@ -801,10 +865,11 @@ class MemoryService:
                 memory_id=memory_id,
                 actor_id=user_id,
                 session_id=session_id,
+                event_timestamp=datetime.now(timezone.utc),
                 messages=[
                     (f"Important fact: {fact}", "USER"),
                     (f"I'll remember that: {fact}", "ASSISTANT"),
-                ]
+                ],
             )
             logger.info("Stored fact for user %s: %s", user_id, fact[:100])
             return True
@@ -812,9 +877,98 @@ class MemoryService:
             logger.error("Failed to store fact: %s", e)
             return False
 
-    def store_agent_name(
-        self, user_id: str, name: str, session_id: str
+    def store_preference(
+        self,
+        user_id: str,
+        preference: str,
+        session_id: str,
     ) -> bool:
+        """Store a user preference in memory.
+
+        Uses the userPreferenceMemoryStrategy by formatting the event as a
+        user/assistant exchange that clearly expresses a preference.
+
+        Args:
+            user_id: User's ID (actor_id in memory).
+            preference: The preference to store.
+            session_id: Current session ID.
+
+        Returns:
+            True if stored successfully, False otherwise.
+        """
+        preference = preference.strip() if preference else ""
+        if not preference:
+            return False
+
+        try:
+            memory_id = self.get_or_create_memory_id()
+        except Exception as e:
+            logger.warning("Cannot store preference: %s", e)
+            return False
+
+        client = self._get_client()
+
+        try:
+            client.create_event(
+                memory_id=memory_id,
+                actor_id=user_id,
+                session_id=session_id,
+                event_timestamp=datetime.now(timezone.utc),
+                messages=[
+                    (f"I prefer {preference}", "USER"),
+                    (
+                        f"I'll remember that you prefer {preference}.",
+                        "ASSISTANT",
+                    ),
+                ],
+            )
+            logger.info(
+                "Stored preference for user %s: %s",
+                user_id,
+                preference[:100],
+            )
+            return True
+        except Exception as e:
+            logger.error("Failed to store preference: %s", e)
+            return False
+
+    def store_session_summary(
+        self,
+        user_id: str,
+        session_id: str,
+        summary: str,
+    ) -> bool:
+        """Store a session summary in long-term memory.
+
+        We store the summary as a fact so it is retrievable via the existing
+        /facts/{actorId} retrieval logic. The similarity query scopes replacement
+        to the given session_id to avoid overwriting other sessions.
+
+        Args:
+            user_id: User's ID (actor_id in memory).
+            session_id: Session identifier being summarized.
+            summary: Summary text.
+
+        Returns:
+            True if stored successfully, False otherwise.
+        """
+        summary = summary.strip() if summary else ""
+        if not summary:
+            return False
+
+        fact = f"Session summary for {session_id}: {summary}"
+        similarity_query = f"session summary {session_id}"
+
+        # Replace only summaries for this same session.
+        return self.store_fact(
+            user_id=user_id,
+            fact=fact,
+            session_id=session_id,
+            replace_similar=True,
+            similarity_query=similarity_query,
+        )
+
+    def store_agent_name(self, user_id: str, name: str, session_id: str) -> bool:
         """Store the agent's name in memory for a user.
 
         Uses store_fact with a specific similarity query to find and
@@ -837,5 +991,5 @@ class MemoryService:
             fact=fact,
             session_id=session_id,
             replace_similar=True,
-            similarity_query=similarity_query
+            similarity_query=similarity_query,
         )

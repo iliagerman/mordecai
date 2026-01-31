@@ -62,9 +62,7 @@ class TestAgentServiceModelProvider:
         )
 
     @patch("app.services.agent_service.BedrockModel")
-    def test_bedrock_model_created_with_config(
-        self, mock_bedrock_model, bedrock_config
-    ):
+    def test_bedrock_model_created_with_config(self, mock_bedrock_model, bedrock_config):
         """Test Bedrock model is created with correct configuration."""
         service = AgentService(bedrock_config)
         service._create_model()
@@ -94,9 +92,7 @@ class TestAgentServiceModelProvider:
         mock_bedrock_model.assert_called_once()
 
     @patch("app.services.agent_service.OpenAIModel")
-    def test_openai_model_created_with_config(
-        self, mock_openai_model, openai_config
-    ):
+    def test_openai_model_created_with_config(self, mock_openai_model, openai_config):
         """Test OpenAI model is created with correct configuration."""
         service = AgentService(openai_config)
         service._create_model()
@@ -121,9 +117,7 @@ class TestAgentServiceModelProvider:
         with pytest.raises(ValueError, match="OpenAI API key required"):
             service._create_model()
 
-    def test_get_model_provider_returns_configured_provider(
-        self, bedrock_config
-    ):
+    def test_get_model_provider_returns_configured_provider(self, bedrock_config):
         """Test get_model_provider returns the configured provider."""
         service = AgentService(bedrock_config)
         assert service.get_model_provider() == ModelProvider.BEDROCK
@@ -146,13 +140,9 @@ class TestAgentServiceModelProviderProperty:
         yield temp_path
         shutil.rmtree(temp_path, ignore_errors=True)
 
-    @given(
-        provider=st.sampled_from([ModelProvider.BEDROCK, ModelProvider.OPENAI])
-    )
+    @given(provider=st.sampled_from([ModelProvider.BEDROCK, ModelProvider.OPENAI]))
     @settings(max_examples=100)
-    def test_property_model_provider_matches_config(
-        self, provider: ModelProvider
-    ):
+    def test_property_model_provider_matches_config(self, provider: ModelProvider):
         """Property: Model provider always matches configuration."""
         temp_dir = tempfile.mkdtemp()
         try:
@@ -172,9 +162,7 @@ class TestAgentServiceModelProviderProperty:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     @given(
-        bedrock_model_id=st.text(
-            min_size=1, max_size=50
-        ).filter(lambda x: x.strip()),
+        bedrock_model_id=st.text(min_size=1, max_size=50).filter(lambda x: x.strip()),
         aws_region=st.sampled_from(["us-east-1", "us-west-2", "eu-west-1"]),
     )
     @settings(max_examples=100)
@@ -233,9 +221,7 @@ class TestAgentServiceSession:
 
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
-    def test_get_or_create_agent_creates_new_agent(
-        self, mock_model, mock_agent, config
-    ):
+    def test_get_or_create_agent_creates_new_agent(self, mock_model, mock_agent, config):
         """Test get_or_create_agent creates agent for new user."""
         service = AgentService(config)
         user_id = "test-user-1"
@@ -246,9 +232,7 @@ class TestAgentServiceSession:
 
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
-    def test_get_or_create_agent_returns_existing_agent(
-        self, mock_model, mock_agent, config
-    ):
+    def test_get_or_create_agent_returns_existing_agent(self, mock_model, mock_agent, config):
         """Test get_or_create_agent creates a new agent each time (stateless)."""
         service = AgentService(config)
         user_id = "test-user-1"
@@ -262,9 +246,7 @@ class TestAgentServiceSession:
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
     @pytest.mark.asyncio
-    async def test_new_session_clears_existing_agent(
-        self, mock_model, mock_agent, config
-    ):
+    async def test_new_session_clears_existing_agent(self, mock_model, mock_agent, config):
         """Test new_session creates new agent and clears session manager."""
         service = AgentService(config)
         user_id = "test-user-1"
@@ -282,9 +264,7 @@ class TestAgentServiceSession:
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
     @pytest.mark.asyncio
-    async def test_new_session_clears_session_manager(
-        self, mock_model, mock_agent, config
-    ):
+    async def test_new_session_clears_session_manager(self, mock_model, mock_agent, config):
         """Test new_session clears conversation history for user."""
         service = AgentService(config)
         user_id = "test-user-1"
@@ -298,6 +278,48 @@ class TestAgentServiceSession:
 
         # Conversation history should be cleared
         assert user_id not in service._conversation_history
+
+    @patch("app.services.agent_service.Agent")
+    @patch("app.services.agent_service.BedrockModel")
+    @pytest.mark.asyncio
+    async def test_new_session_runs_extraction_and_summary_when_available(
+        self, mock_model, mock_agent, config
+    ):
+        """new_session should extract+summarize before clearing state."""
+        from unittest.mock import AsyncMock
+
+        mock_memory = MagicMock()
+
+        mock_extraction = MagicMock()
+        mock_extraction.extract_and_store = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                preferences=["Prefers concise"],
+                facts=["Keeps shopping lists in the family"],
+                commitments=[],
+            )
+        )
+        mock_extraction.summarize_and_store = AsyncMock(
+            return_value="- We keep shopping lists in the family vault."
+        )
+
+        service = AgentService(
+            config,
+            memory_service=mock_memory,
+            extraction_service=mock_extraction,
+        )
+        user_id = "test-user-1"
+
+        # Simulate some conversation so /new has something to summarize.
+        service._add_to_conversation_history(user_id, "user", "Hello")
+        service._add_to_conversation_history(user_id, "assistant", "Hi")
+        service.increment_message_count(user_id, 2)
+
+        _agent, notification = await service.new_session(user_id)
+
+        assert mock_extraction.extract_and_store.await_count == 1
+        assert mock_extraction.summarize_and_store.await_count == 1
+        assert "Summary" in notification
 
     def test_cleanup_user_removes_session_manager(self, config):
         """Test cleanup_user removes conversation history from memory."""
@@ -326,9 +348,7 @@ class TestAgentServiceNewSessionProperty:
     # Use ASCII-only strategy for filesystem-safe user IDs
     @given(
         user_id=st.text(
-            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")),
-            min_size=1,
-            max_size=50
+            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")), min_size=1, max_size=50
         )
     )
     @settings(max_examples=100)
@@ -365,9 +385,7 @@ class TestAgentServiceNewSessionProperty:
     # Use ASCII-only strategy for filesystem-safe user IDs
     @given(
         user_id=st.text(
-            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")),
-            min_size=1,
-            max_size=50
+            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")), min_size=1, max_size=50
         )
     )
     @settings(max_examples=100)
@@ -431,15 +449,11 @@ class TestAgentServiceMessageProcessing:
     @pytest.mark.asyncio
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
-    async def test_process_message_returns_response(
-        self, mock_model, mock_agent, config
-    ):
+    async def test_process_message_returns_response(self, mock_model, mock_agent, config):
         """Test process_message returns agent response."""
         # Setup mock agent response
         mock_result = MagicMock()
-        mock_result.message = {
-            "content": [{"text": "Hello! How can I help you?"}]
-        }
+        mock_result.message = {"content": [{"text": "Hello! How can I help you?"}]}
         mock_agent_instance = MagicMock()
         mock_agent_instance.return_value = mock_result
         mock_agent.return_value = mock_agent_instance
@@ -452,9 +466,7 @@ class TestAgentServiceMessageProcessing:
     @pytest.mark.asyncio
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
-    async def test_process_message_calls_agent(
-        self, mock_model, mock_agent, config
-    ):
+    async def test_process_message_calls_agent(self, mock_model, mock_agent, config):
         """Test process_message invokes agent with message."""
         mock_result = MagicMock()
         mock_result.message = {"content": [{"text": "Response"}]}
@@ -472,9 +484,7 @@ class TestAgentServiceMessageProcessing:
         service = AgentService(config)
 
         mock_result = MagicMock()
-        mock_result.message = {
-            "content": [{"text": "Extracted text"}]
-        }
+        mock_result.message = {"content": [{"text": "Extracted text"}]}
 
         text = service._extract_response_text(mock_result)
         assert text == "Extracted text"
@@ -597,12 +607,12 @@ class TestAgentServiceMessageProcessingProperty:
     """
 
     @given(
-        message=st.text(
-            min_size=1, max_size=200
-        ).filter(lambda x: x.strip()).map(lambda x: x.strip()),
-        response_text=st.text(
-            min_size=1, max_size=500
-        ).filter(lambda x: x.strip()).map(lambda x: x.strip()),
+        message=st.text(min_size=1, max_size=200)
+        .filter(lambda x: x.strip())
+        .map(lambda x: x.strip()),
+        response_text=st.text(min_size=1, max_size=500)
+        .filter(lambda x: x.strip())
+        .map(lambda x: x.strip()),
     )
     @settings(max_examples=100)
     @pytest.mark.asyncio
@@ -646,18 +656,14 @@ class TestAgentServiceMessageProcessingProperty:
     # Use ASCII-only strategy for filesystem-safe user IDs
     @given(
         user_id=st.text(
-            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")),
-            min_size=1,
-            max_size=50
+            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")), min_size=1, max_size=50
         )
     )
     @settings(max_examples=100)
     @pytest.mark.asyncio
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
-    async def test_property_message_creates_agent(
-        self, mock_model, mock_agent, user_id: str
-    ):
+    async def test_property_message_creates_agent(self, mock_model, mock_agent, user_id: str):
         """Property: Message processing creates an agent for the user."""
         temp_dir = tempfile.mkdtemp()
         try:
@@ -961,9 +967,7 @@ class TestVisionModelSelection:
         )
 
     @patch("app.services.agent_service.BedrockModel")
-    def test_default_model_used_when_use_vision_false(
-        self, mock_bedrock_model, config_with_vision
-    ):
+    def test_default_model_used_when_use_vision_false(self, mock_bedrock_model, config_with_vision):
         """Test default model is used when use_vision=False."""
         service = AgentService(config_with_vision)
         service._create_model(use_vision=False)
@@ -987,8 +991,7 @@ class TestVisionModelSelectionProperty:
 
     @given(
         vision_model_id=st.one_of(
-            st.none(),
-            st.text(min_size=1, max_size=50).filter(lambda x: x.strip())
+            st.none(), st.text(min_size=1, max_size=50).filter(lambda x: x.strip())
         ),
         use_vision=st.booleans(),
     )
@@ -1066,6 +1069,7 @@ class TestImageCaptionInclusion:
         image_path = Path(temp_dir) / "test_image.png"
         # Create a minimal PNG file (1x1 pixel)
         import base64
+
         # Minimal valid PNG (1x1 transparent pixel)
         png_data = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
@@ -1100,6 +1104,7 @@ class TestImageCaptionInclusion:
     def test_prepare_image_content_base64_encoding(self, config, temp_image):
         """Test _prepare_image_content properly base64 encodes image."""
         import base64
+
         service = AgentService(config)
 
         content = service._prepare_image_content(temp_image)
@@ -1134,10 +1139,7 @@ class TestImageCaptionInclusionProperty:
     """
 
     @given(
-        caption=st.one_of(
-            st.none(),
-            st.text(min_size=0, max_size=200)
-        ),
+        caption=st.one_of(st.none(), st.text(min_size=0, max_size=200)),
         extension=st.sampled_from([".png", ".jpg", ".jpeg", ".gif", ".webp"]),
     )
     @settings(max_examples=100)
@@ -1168,10 +1170,7 @@ class TestImageCaptionInclusionProperty:
             )
             image_path.write_bytes(png_data)
 
-            content = service._prepare_image_content(
-                str(image_path),
-                caption=caption
-            )
+            content = service._prepare_image_content(str(image_path), caption=caption)
 
             # Image block should always be present
             assert content[0]["type"] == "image"
@@ -1212,9 +1211,7 @@ class TestImageCaptionInclusionProperty:
                 ".webp": "image/webp",
             }
 
-            media_type = service._get_media_type_from_extension(
-                f"test{extension}"
-            )
+            media_type = service._get_media_type_from_extension(f"test{extension}")
             assert media_type == expected_types[extension]
 
         finally:
@@ -1254,6 +1251,7 @@ class TestVisionProcessingFallback:
     def temp_image(self, temp_dir):
         """Create a temporary test image file."""
         import base64
+
         image_path = Path(temp_dir) / "test_image.png"
         png_data = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
@@ -1265,9 +1263,7 @@ class TestVisionProcessingFallback:
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
     @pytest.mark.asyncio
-    async def test_fallback_on_agent_error(
-        self, mock_model, mock_agent, config, temp_image
-    ):
+    async def test_fallback_on_agent_error(self, mock_model, mock_agent, config, temp_image):
         """Test fallback message when agent raises an error."""
         # Make agent raise an exception
         mock_agent.side_effect = Exception("Model does not support images")
@@ -1293,9 +1289,7 @@ class TestVisionProcessingFallback:
     ):
         """Test successful vision processing returns agent response."""
         mock_result = MagicMock()
-        mock_result.message = {
-            "content": [{"text": "I see a test image."}]
-        }
+        mock_result.message = {"content": [{"text": "I see a test image."}]}
         mock_agent_instance = MagicMock()
         mock_agent_instance.return_value = mock_result
         mock_agent.return_value = mock_agent_instance
@@ -1411,15 +1405,11 @@ class TestAgentServiceWorkingFolderProperty:
 
     @given(
         user_id=st.text(
-            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")),
-            min_size=1,
-            max_size=50
+            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")), min_size=1, max_size=50
         )
     )
     @settings(max_examples=100)
-    def test_property_system_prompt_contains_working_folder(
-        self, user_id: str
-    ):
+    def test_property_system_prompt_contains_working_folder(self, user_id: str):
         """Property: System prompt always contains working folder path."""
         temp_dir = tempfile.mkdtemp()
         try:
@@ -1445,15 +1435,11 @@ class TestAgentServiceWorkingFolderProperty:
 
     @given(
         user_id=st.text(
-            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")),
-            min_size=1,
-            max_size=50
+            alphabet=st.characters(whitelist_categories=("Ll", "Lu", "Nd")), min_size=1, max_size=50
         )
     )
     @settings(max_examples=100)
-    def test_property_working_folder_path_is_user_isolated(
-        self, user_id: str
-    ):
+    def test_property_working_folder_path_is_user_isolated(self, user_id: str):
         """Property: Working folder path is user-specific."""
         temp_dir = tempfile.mkdtemp()
         try:
@@ -1508,9 +1494,7 @@ class TestAgentServiceNewSessionClearsWorkingFolder:
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
     @pytest.mark.asyncio
-    async def test_new_session_clears_working_folder(
-        self, mock_model, mock_agent, config
-    ):
+    async def test_new_session_clears_working_folder(self, mock_model, mock_agent, config):
         """Test that new_session clears the working folder."""
         from app.services.file_service import FileService
 
@@ -1533,9 +1517,7 @@ class TestAgentServiceNewSessionClearsWorkingFolder:
     @patch("app.services.agent_service.Agent")
     @patch("app.services.agent_service.BedrockModel")
     @pytest.mark.asyncio
-    async def test_new_session_without_file_service_succeeds(
-        self, mock_model, mock_agent, config
-    ):
+    async def test_new_session_without_file_service_succeeds(self, mock_model, mock_agent, config):
         """Test that new_session works without file service."""
         service = AgentService(config)  # No file_service
         user_id = "test-user"
@@ -1605,9 +1587,7 @@ class TestGeminiModelProvider:
         assert config.google_api_key == "custom-api-key"
 
     @patch("app.services.agent_service.GeminiModel")
-    def test_gemini_model_created_with_config(
-        self, mock_gemini_model, google_config
-    ):
+    def test_gemini_model_created_with_config(self, mock_gemini_model, google_config):
         """Test GeminiModel is created with correct configuration."""
         service = AgentService(google_config)
         service._create_model()
@@ -1619,9 +1599,7 @@ class TestGeminiModelProvider:
         )
 
     @patch("app.services.agent_service.GeminiModel")
-    def test_gemini_model_receives_api_key_in_client_args(
-        self, mock_gemini_model, temp_dir
-    ):
+    def test_gemini_model_receives_api_key_in_client_args(self, mock_gemini_model, temp_dir):
         """Test GeminiModel receives api_key in client_args."""
         config = AgentConfig(
             model_provider=ModelProvider.GOOGLE,
@@ -1638,9 +1616,7 @@ class TestGeminiModelProvider:
         assert call_kwargs["client_args"]["api_key"] == "my-secret-key"
 
     @patch("app.services.agent_service.GeminiModel")
-    def test_gemini_model_receives_model_id(
-        self, mock_gemini_model, temp_dir
-    ):
+    def test_gemini_model_receives_model_id(self, mock_gemini_model, temp_dir):
         """Test GeminiModel receives correct model_id."""
         config = AgentConfig(
             model_provider=ModelProvider.GOOGLE,
@@ -1717,16 +1693,12 @@ class TestGeminiModelProviderProperty:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     @given(
-        provider=st.sampled_from([
-            ModelProvider.BEDROCK,
-            ModelProvider.OPENAI,
-            ModelProvider.GOOGLE
-        ])
+        provider=st.sampled_from(
+            [ModelProvider.BEDROCK, ModelProvider.OPENAI, ModelProvider.GOOGLE]
+        )
     )
     @settings(max_examples=100)
-    def test_property_model_provider_matches_config_all_providers(
-        self, provider: ModelProvider
-    ):
+    def test_property_model_provider_matches_config_all_providers(self, provider: ModelProvider):
         """Property: Model provider always matches configuration for all providers."""
         temp_dir = tempfile.mkdtemp()
         try:

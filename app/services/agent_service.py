@@ -41,6 +41,7 @@ from app.enums import ModelProvider
 from app.tools import cron_tools as cron_tools_module
 from app.tools import onboard_pending_skills as onboard_pending_skills_module
 from app.tools import download_skill as download_skill_module
+from app.tools import remember_memory as remember_memory_module
 from app.tools import search_memory as search_memory_module
 from app.tools import send_file as send_file_module
 from app.tools import set_agent_name as set_agent_name_tool
@@ -157,11 +158,23 @@ class AgentService:
         self._sync_shared_skills(user_dir)
         return user_dir
 
+    def _sync_shared_skills_for_user(self, user_id: str) -> Path:
+        """Sync shared skills into the user's skills directory.
+
+        This is an explicit helper so we can guarantee sync happens at the
+        start of every message-processing path (even if agent caching/reuse
+        changes in the future).
+
+        Returns:
+            The user's skills directory path.
+        """
+        return self._get_user_skills_dir(user_id)
+
     def _sync_shared_skills(self, user_dir: Path) -> None:
         """Mirror shared skills into a user's directory.
 
-        This runs on each message (via agent creation) to ensure the user's
-        skills directory reflects the latest shared skills.
+        This is intended to run on each message to ensure the user's skills
+        directory reflects the latest shared skills.
 
         Semantics:
         - For each shared skill (file or directory), copy into user_dir.
@@ -642,9 +655,14 @@ class AgentService:
                 "**Tools:**\n"
                 "- `set_agent_name`: Store your name when the user gives "
                 "you one.\n"
+                "- `remember_fact`: Store an explicit fact the user asked you to remember.\n"
+                "- `remember_preference`: Store an explicit preference the user asked you to remember.\n"
+                "- `remember`: Convenience wrapper (fact vs preference).\n"
                 "- `search_memory`: Search your long-term memory when the "
                 "user asks about past conversations, their preferences, "
                 "or facts you've learned about them.\n\n"
+                "**Important:** When the user explicitly says 'remember ...' or 'please remember ...', "
+                "store it immediately using `remember_fact` or `remember_preference`.\n\n"
                 "Use `search_memory` when the user asks things like:\n"
                 "- 'What do you know about me?'\n"
                 "- 'What are my preferences?'\n"
@@ -780,45 +798,20 @@ class AgentService:
         return prompt
 
     def _discover_skills(self, user_id: str) -> list[dict]:
-        """Discover installed skills for a user (shared + user-specific).
+        """Discover installed instruction-based skills for a user.
 
         Skills are instruction-based: they contain a SKILL.md file with
-        step-by-step instructions that the agent must read and follow
-        using shell commands and other available tools.
+        step-by-step instructions that the agent must read and follow.
 
-        Loads shared skills first, then user skills. User skills with the
-        same name override shared skills.
+        Shared skills are mirrored into the per-user skills directory on each
+        message. Therefore, the single source of truth for what the agent can
+        load is the user's directory.
         """
-        skills_by_name = {}
+        skills_by_name: dict[str, dict] = {}
 
-        # Load shared skills first
-        shared_dir = self._skills_base_dir / "shared"
-        if shared_dir.exists():
-            for item in shared_dir.iterdir():
-                if not item.is_dir() or item.name.startswith("__"):
-                    continue
-
-                if item.name in _RESERVED_SKILL_DIR_NAMES:
-                    continue
-
-                skill_md = item / "SKILL.md"
-                if not skill_md.exists():
-                    continue
-
-                try:
-                    content = skill_md.read_text(encoding="utf-8")
-                    frontmatter = _parse_skill_frontmatter(content)
-                    skill_name = frontmatter.get("name", item.name)
-                    skills_by_name[skill_name] = {
-                        "name": skill_name,
-                        "description": frontmatter.get("description", ""),
-                        "path": str(item.resolve()),
-                    }
-                except Exception as e:
-                    logger.warning("Failed to read shared skill %s: %s", item, e)
-
-        # Load user-specific skills (override shared if same name)
+        # Ensure shared skills are synced before discovery.
         user_skills_dir = self._get_user_skills_dir(user_id)
+
         if user_skills_dir.exists():
             for item in user_skills_dir.iterdir():
                 if not item.is_dir() or item.name.startswith("__"):
@@ -841,7 +834,7 @@ class AgentService:
                         "path": str(item.resolve()),
                     }
                 except Exception as e:
-                    logger.warning("Failed to read user skill %s: %s", item, e)
+                    logger.warning("Failed to read skill %s: %s", item, e)
 
         return list(skills_by_name.values())
 
@@ -922,6 +915,12 @@ class AgentService:
             )
             # Set up search_memory tool context
             search_memory_module.set_memory_context(self.memory_service, user_id)
+            # Set up explicit remember tools context
+            remember_memory_module.set_memory_context(
+                self.memory_service,
+                user_id,
+                session_id,
+            )
 
         # Set up cron tools with cron service context
         if self.cron_service is not None:
@@ -956,6 +955,13 @@ class AgentService:
         # Add search_memory tool if memory service is available
         if self.memory_service is not None:
             tools.append(search_memory_module.search_memory)
+            tools.extend(
+                [
+                    remember_memory_module.remember_fact,
+                    remember_memory_module.remember_preference,
+                    remember_memory_module.remember,
+                ]
+            )
 
         # Add cron tools if cron service is available
         if self.cron_service is not None:
@@ -1042,33 +1048,61 @@ class AgentService:
         logger.info("Creating new session for user_id=%s", user_id)
 
         extraction_success = False
+        summary_text: str | None = None
         msg_count = self.get_message_count(user_id)
 
         # Trigger extraction if we have messages and services available
         # (Requirement 6.2: Skip if memory service unavailable)
         if self.extraction_service and self.memory_service and msg_count > 0:
             try:
-                session_id = self._user_sessions.get(user_id)
-                if session_id:
-                    # Get conversation history
-                    history = self._get_conversation_history(user_id)
+                # Ensure we have a session_id even if the user triggers /new
+                # very early.
+                session_id = self._get_session_id(user_id)
 
-                    # Wait for extraction with timeout (Requirement 6.4)
-                    result = await asyncio.wait_for(
-                        self.extraction_service.extract_and_store(
-                            user_id=user_id,
-                            session_id=session_id,
-                            conversation_history=history,
-                        ),
-                        timeout=self.config.extraction_timeout_seconds,
+                # Get conversation history
+                history = self._get_conversation_history(user_id)
+
+                # Wait for extraction with timeout (Requirement 6.4)
+                result = await asyncio.wait_for(
+                    self.extraction_service.extract_and_store(
+                        user_id=user_id,
+                        session_id=session_id,
+                        conversation_history=history,
+                    ),
+                    timeout=self.config.extraction_timeout_seconds,
+                )
+                extraction_success = result.success
+                # Log result but continue regardless (Requirement 6.1)
+                if not result.success:
+                    logger.warning(
+                        "Extraction failed for user %s: %s, proceeding with session clearing",
+                        user_id,
+                        result.error,
                     )
-                    extraction_success = result.success
-                    # Log result but continue regardless (Requirement 6.1)
-                    if not result.success:
+
+                # Generate + store summary (best-effort). This is explicitly
+                # requested when /new is hit.
+                if hasattr(self.extraction_service, "summarize_and_store"):
+                    try:
+                        summary_text = await asyncio.wait_for(
+                            self.extraction_service.summarize_and_store(
+                                user_id=user_id,
+                                session_id=session_id,
+                                conversation_history=history,
+                            ),
+                            timeout=self.config.extraction_timeout_seconds,
+                        )
+                    except asyncio.TimeoutError:
                         logger.warning(
-                            "Extraction failed for user %s: %s, proceeding with session clearing",
+                            "Summary generation timed out for user %s after %ds",
                             user_id,
-                            result.error,
+                            self.config.extraction_timeout_seconds,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Summary generation failed for user %s: %s",
+                            user_id,
+                            e,
                         )
             except asyncio.TimeoutError:
                 # Log warning and proceed (Requirement 6.4)
@@ -1115,6 +1149,9 @@ class AgentService:
         else:
             notification = "✨ New session started!"
 
+        if summary_text:
+            notification = f"{notification}\n\n📝 Summary:\n{summary_text.strip()}"
+
         return self._create_agent(user_id), notification
 
     async def process_image_message(
@@ -1147,6 +1184,10 @@ class AgentService:
             - 3.6: Include caption text with image
             - 8.4: Handle vision processing failures gracefully
         """
+        # Keep shared skills mirrored into the user's directory even for
+        # image messages (these may still lead to tool usage).
+        self._sync_shared_skills_for_user(user_id)
+
         # Increment count for user message
         self.increment_message_count(user_id, 1)
 
@@ -1234,11 +1275,18 @@ class AgentService:
         Returns:
             Agent's response text.
         """
+        # Sync shared skills into user skills on every message.
+        self._sync_shared_skills_for_user(user_id)
+
         # Increment count for user message (6.1)
         self.increment_message_count(user_id, 1)
 
         # Track user message for extraction
         self._add_to_conversation_history(user_id, "user", message)
+
+        # If the user explicitly asks to remember something, store it
+        # immediately (do not rely on end-of-session extraction).
+        self._maybe_store_explicit_memory_request(user_id=user_id, message=message)
 
         # Retrieve memory context based on user's message
         memory_context = None
@@ -1331,8 +1379,20 @@ class AgentService:
             - 4.2: Provide full path to downloaded files
             - 4.3: Include file metadata in context
         """
+        # Sync shared skills into user skills on every message.
+        self._sync_shared_skills_for_user(user_id)
+
         # Increment count for user message
         self.increment_message_count(user_id, 1)
+
+        # Store explicit memory requests immediately even when attachments
+        # are present.
+        if message:
+            self._add_to_conversation_history(user_id, "user", message)
+            self._maybe_store_explicit_memory_request(
+                user_id=user_id,
+                message=message,
+            )
 
         # Retrieve memory context
         memory_context = None
@@ -1364,8 +1424,15 @@ class AgentService:
             file_names = [att.get("file_name", "file") for att in attachments]
             prompt = f"I've sent you these files: {', '.join(file_names)}"
 
+        # Ensure the prompt used is tracked for extraction.
+        if not message:
+            self._add_to_conversation_history(user_id, "user", prompt)
+
         result = agent(prompt)
         response = self._extract_response_text(result)
+
+        # Track agent response for extraction
+        self._add_to_conversation_history(user_id, "assistant", response)
 
         # Increment count for agent response
         self.increment_message_count(user_id, 1)
@@ -1382,6 +1449,151 @@ class AgentService:
                 )
 
         return response
+
+    def _maybe_store_explicit_memory_request(self, user_id: str, message: str) -> None:
+        """Best-effort immediate memory write for explicit 'remember' requests.
+
+        This is a deterministic fallback so explicit user requests persist even
+        if the model fails to call the remember_* tools.
+        """
+
+        if not message:
+            return
+        if not self.config.memory_enabled or self.memory_service is None:
+            return
+
+        extracted = self._extract_explicit_memory_text(message)
+        if not extracted:
+            return
+
+        kind, text = extracted
+        if not text:
+            return
+        if self._contains_sensitive_memory_text(text):
+            logger.info(
+                "Skipping explicit memory store for user %s: looks sensitive",
+                user_id,
+            )
+            return
+
+        session_id = self._get_session_id(user_id)
+        try:
+            if kind == "preference" and hasattr(self.memory_service, "store_preference"):
+                self.memory_service.store_preference(
+                    user_id=user_id,
+                    preference=text,
+                    session_id=session_id,
+                )
+            else:
+                self.memory_service.store_fact(
+                    user_id=user_id,
+                    fact=text,
+                    session_id=session_id,
+                    replace_similar=True,
+                    similarity_query=text,
+                )
+        except Exception as e:
+            logger.warning(
+                "Failed to store explicit memory for user %s: %s",
+                user_id,
+                e,
+            )
+
+    def _extract_explicit_memory_text(
+        self,
+        message: str,
+    ) -> tuple[str, str] | None:
+        """Extract (kind, text) from messages like 'remember ...'.
+
+        Returns:
+            ("fact"|"preference", extracted_text) or None.
+        """
+
+        raw = message.strip()
+        if not raw:
+            return None
+
+        lower = raw.lower().strip()
+
+        prefixes = [
+            "remember that ",
+            "remember ",
+            "please remember that ",
+            "please remember ",
+            "note that ",
+            "note ",
+            "save that ",
+            "save this ",
+        ]
+
+        extracted = None
+        for p in prefixes:
+            if lower.startswith(p):
+                extracted = raw[len(p) :].strip()
+                break
+
+        # Also support common punctuation patterns like "remember: ..."
+        if extracted is None and lower.startswith("remember"):
+            # Strip leading "remember" and any following punctuation.
+            extracted = raw[len("remember") :].lstrip(" ,:-\t").strip()
+
+        if not extracted:
+            return None
+
+        # Heuristic: if it reads like a preference, store as preference.
+        pref_leads = (
+            "i prefer ",
+            "i like ",
+            "i dislike ",
+            "my preference ",
+            "my preferences ",
+            "prefer ",
+        )
+        kind = "preference" if extracted.lower().startswith(pref_leads) else "fact"
+        return kind, extracted
+
+    def _contains_sensitive_memory_text(self, text: str) -> bool:
+        """Reject likely secrets/PII from being stored via explicit remember."""
+
+        import re
+
+        text_lower = text.lower()
+        sensitive_keywords = [
+            "password",
+            "passwd",
+            "pwd",
+            "api_key",
+            "apikey",
+            "api-key",
+            "secret",
+            "token",
+            "bearer",
+            "private_key",
+            "private-key",
+            "access_key",
+            "access-key",
+            "credential",
+            "auth_token",
+        ]
+        if any(k in text_lower for k in sensitive_keywords):
+            return True
+
+        patterns = [
+            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
+            r"\b(?:password|passwd|pwd)\s*[:=]\s*\S+",
+            r"\b(?:api[_-]?key|apikey)\s*[:=]\s*\S+",
+            r"\b(?:token|bearer)\s*[:=]\s*\S+",
+            r"\b(?:secret|private[_-]?key)\s*[:=]\s*\S+",
+            r"\b(?:sk-|pk-)[A-Za-z0-9]{20,}",
+            r"\bAKIA[A-Z0-9]{16}\b",
+            r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b",
+            r"\b[0-9]{16}\b",
+        ]
+        for pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+
+        return False
 
     async def _trigger_extraction_and_clear(self, user_id: str) -> None:
         """Trigger extraction and clear session (non-blocking).
