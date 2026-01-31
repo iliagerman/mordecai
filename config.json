@@ -9,17 +9,36 @@
   "localstack_endpoint": "http://localhost:4566",
   "database_url": "sqlite+aiosqlite:///./agent.db",
   "session_storage_dir": "./sessions",
+  "obsidian_vault_root": "~/obsidian-vaults",
   "skills_base_dir": "./skills",
   "max_conversation_messages": 30,
   "extraction_timeout_seconds": 30,
   "api_host": "0.0.0.0",
   "api_port": 8742,
   "agent_commands": [
-    {"name": "new", "description": "Start a new conversation session"},
-    {"name": "logs", "description": "View recent activity logs"},
-    {"name": "install skill <url>", "description": "Install a skill from URL"},
-    {"name": "uninstall skill <name>", "description": "Remove an installed skill"},
-    {"name": "help", "description": "Show available commands"},
-    {"name": "name <name>", "description": "Set the agent's name"}
+    {
+      "name": "new",
+      "description": "Start a new conversation session"
+    },
+    {
+      "name": "logs",
+      "description": "View recent activity logs"
+    },
+    {
+      "name": "install skill <url>",
+      "description": "Install a skill from URL"
+    },
+    {
+      "name": "uninstall skill <name>",
+      "description": "Remove an installed skill"
+    },
+    {
+      "name": "help",
+      "description": "Show available commands"
+    },
+    {
+      "name": "name <name>",
+      "description": "Set the agent's name"
+    }
   ]
 }

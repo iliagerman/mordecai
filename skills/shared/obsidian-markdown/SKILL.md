@@ -17,15 +17,19 @@ Obsidian uses a combination of Markdown flavors:
 
 ## Vaults in this deployment
 
-This deployment uses **one** Obsidian vault directory mounted into the Mordecai container:
+This deployment uses **one** Obsidian vault directory.
 
-- **Container path (authoritative):** `/app/obsidian-vaults/`
-- **Host path:** `/home/ilia/obsidian-vaults/`
+The vault root is configured by the backend setting:
+
+- `obsidian_vault_root` (env override: `AGENT_OBSIDIAN_VAULT_ROOT`)
+
+In container deployments, this is commonly set to `/app/obsidian-vaults/`.
 
 Within that single vault, top-level folders are used as categories/areas:
 
 - `me/` (agent-owned root)
   - `me/[USER_ID]/` (per-user area; default write target)
+  - `me/default/` (default/fallback files when a user file does not exist)
 - `family/`
 - `work/`
 - `personal/`
@@ -44,6 +48,19 @@ Selection rules:
 Path conventions:
 
 - When you propose creating/editing a note, include a concrete filesystem path like: `/app/obsidian-vaults/me/[USER_ID]/<relative-path>.md`.
+
+## Personality files
+
+Personality/identity instructions are stored as markdown files in the vault:
+
+- Per-user:
+  - `me/[USER_ID]/soul.md`
+  - `me/[USER_ID]/id.md`
+- Default fallback:
+  - `me/default/soul.md`
+  - `me/default/id.md`
+
+When the per-user file is missing, the backend will fall back to `me/default/`.
 - For `obsidian://open` links:
   - `vault` should be the **vault name on that device** (it’s the folder name you opened in Obsidian).
   - `file` should be a path *within the vault*, e.g. `me/[USER_ID]/Notes/Welcome.md`.
