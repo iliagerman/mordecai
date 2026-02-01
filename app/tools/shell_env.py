@@ -10,6 +10,7 @@ We keep the public tool name as `shell` so skills continue to work.
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,22 @@ def _call_base_shell(**kwargs: Any):
 _current_user_id: str | None = None
 _secrets_path: Path = Path("secrets.yml")
 _config = None
+
+
+def _stdin_is_tty() -> bool:
+    """Best-effort check for an interactive TTY.
+
+    The upstream `strands_tools.shell` supports an interactive PTY mode that can
+    misbehave (or block indefinitely) when stdin is not a real TTY.
+
+    In the agent runtime, tool invocations are typically headless; forcing
+    non-interactive mode avoids hangs from stdin/select/waitpid edge cases.
+    """
+
+    try:
+        return bool(getattr(sys.stdin, "isatty", lambda: False)())
+    except Exception:
+        return False
 
 
 def set_shell_env_context(*, user_id: str, secrets_path: str | Path, config=None) -> None:
@@ -100,11 +117,13 @@ def shell(
     effective_timeout: int | None = None
     if timeout_seconds is not None:
         effective_timeout = int(timeout_seconds)
-    elif kwargs.get("timeout") is not None:
-        try:
-            effective_timeout = int(kwargs.get("timeout"))
-        except Exception:
-            effective_timeout = None
+    else:
+        raw_timeout = kwargs.get("timeout")
+        if raw_timeout is not None:
+            try:
+                effective_timeout = int(raw_timeout)
+            except Exception:
+                effective_timeout = None
 
     # Guardrail: certain CLIs (notably himalaya over IMAP/SMTP) can block for a long time
     # on network/auth issues. If a skill forgets to pass a timeout, apply a conservative
@@ -116,6 +135,12 @@ def shell(
         #   HIMALAYA_CONFIG=... himalaya ...
         if cmd.startswith("himalaya ") or " himalaya " in f" {cmd} ":
             effective_timeout = 45
+
+    # Force non-interactive mode when stdin is not a TTY.
+    # This prevents the upstream tool's interactive PTY implementation from
+    # attempting to read from stdin in headless environments (where it may
+    # raise or block in a way that bypasses the timeout).
+    effective_non_interactive = bool(non_interactive) or (not _stdin_is_tty())
     tool_t0 = time.perf_counter()
 
     if get_trace_id() is not None:
@@ -124,9 +149,11 @@ def shell(
             command=command,
             work_dir=work_dir,
             timeout_seconds=timeout_seconds,
+            effective_timeout=effective_timeout,
             ignore_errors=ignore_errors,
             parallel=parallel,
             non_interactive=non_interactive,
+            effective_non_interactive=effective_non_interactive,
         )
 
     try:
@@ -143,7 +170,7 @@ def shell(
         "command": command,
         "ignore_errors": ignore_errors,
         "parallel": parallel,
-        "non_interactive": non_interactive,
+        "non_interactive": effective_non_interactive,
         **kwargs,
     }
 
