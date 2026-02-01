@@ -9,6 +9,7 @@ This document defines the coding standards and best practices for the Mordecai A
 3. **No `Any` Types**: Use proper interfaces, protocols, or concrete types
 4. **Explicit Over Implicit**: Prefer explicit types over `dict` and `TypedDict`
 5. **Keep Files Small**: Split large files into focused modules under 500 lines
+6. **No Direct `os.environ` in Services**: Centralize runtime env mutation behind a dedicated service/helper
 
 ---
 
@@ -256,6 +257,44 @@ class AgentService:
 - `message_processing.py` - `process_message()`, `_maybe_run_simple_skill_echo_for_tests()`
 - `attachment_handler.py` - `process_image_message()`, `process_message_with_attachments()`
 - `agent_creation.py` - `_create_agent()`, `get_or_create_agent()`
+
+---
+
+## Rule 8: Do Not Read/Write `os.environ` in Services
+
+Services should not access `os.environ` directly. This avoids hidden global side-effects and makes
+configuration behavior easier to reason about and test.
+
+**Approved approach**: use the runtime env wrapper service (see `app/services/runtime_env_service.py`).
+
+### ✅ Correct
+
+```python
+from app.services.runtime_env_service import RuntimeEnvService
+
+
+class SomeService:
+    def __init__(self, env: RuntimeEnvService) -> None:
+        self._env = env
+
+    def configure(self) -> None:
+        self._env.set("AWS_REGION", "us-east-1")
+        self._env.unset("AWS_SESSION_TOKEN")
+```
+
+### ❌ Incorrect
+
+```python
+import os
+
+
+class SomeService:
+    def configure(self) -> None:
+        os.environ["AWS_REGION"] = "us-east-1"  # NO
+```
+
+**Exception**: low-level configuration/bootstrap modules whose job is explicitly to materialize
+env for subprocesses (e.g., config hot-reload helpers) may touch `os.environ`.
 
 ---
 

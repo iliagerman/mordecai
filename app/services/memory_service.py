@@ -15,9 +15,8 @@ Requirements:
 """
 
 import logging
-import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from bedrock_agentcore.memory import MemoryClient
@@ -28,6 +27,8 @@ from bedrock_agentcore.memory.integrations.strands.config import (
 from bedrock_agentcore.memory.integrations.strands.session_manager import (
     AgentCoreMemorySessionManager,
 )
+
+from app.services.runtime_env_service import RuntimeEnvService
 
 if TYPE_CHECKING:
     from app.config import AgentConfig
@@ -51,7 +52,12 @@ class MemoryService:
     with support for multiple memory strategies and user isolation.
     """
 
-    def __init__(self, config: "AgentConfig") -> None:
+    def __init__(
+        self,
+        config: "AgentConfig",
+        *,
+        env_service: "RuntimeEnvService | None" = None,
+    ) -> None:
         """Initialize the memory service.
 
         Args:
@@ -60,10 +66,16 @@ class MemoryService:
         self.config = config
         self._client: MemoryClient | None = None
         self._memory_id: str | None = config.memory_id
+        self._env = env_service or RuntimeEnvService()
         self._setup_aws_credentials()
 
     def _setup_aws_credentials(self) -> None:
-        """Set AWS credentials as environment variables if provided."""
+        """Set AWS credentials for downstream AWS SDKs.
+
+        IMPORTANT: Do not touch os.environ directly in services; we route all
+        env mutation through RuntimeEnvService so it can be centralized and
+        more easily tested/audited.
+        """
         # IMPORTANT:
         # If the developer provides long-lived IAM credentials (access key + secret)
         # but the process environment has a stale AWS_SESSION_TOKEN set (common after
@@ -76,27 +88,27 @@ class MemoryService:
         has_static_creds = bool(self.config.aws_access_key_id or self.config.aws_secret_access_key)
 
         if self.config.aws_access_key_id:
-            os.environ["AWS_ACCESS_KEY_ID"] = self.config.aws_access_key_id
+            self._env.set("AWS_ACCESS_KEY_ID", self.config.aws_access_key_id)
         if self.config.aws_secret_access_key:
-            os.environ["AWS_SECRET_ACCESS_KEY"] = self.config.aws_secret_access_key
+            self._env.set("AWS_SECRET_ACCESS_KEY", self.config.aws_secret_access_key)
 
         session_token = getattr(self.config, "aws_session_token", None)
         if session_token:
-            os.environ["AWS_SESSION_TOKEN"] = str(session_token)
+            self._env.set("AWS_SESSION_TOKEN", str(session_token))
             # Some SDKs still look for AWS_SECURITY_TOKEN (legacy name)
-            os.environ["AWS_SECURITY_TOKEN"] = str(session_token)
+            self._env.set("AWS_SECURITY_TOKEN", str(session_token))
         elif has_static_creds:
             # Clear stale session tokens to prevent mixed-credential failures.
             # IMPORTANT: Only do this when we are explicitly setting access/secret
             # keys from config. If the process relies on AWS_PROFILE/SSO/env-based
             # temporary credentials, we must not clear their session token.
-            os.environ.pop("AWS_SESSION_TOKEN", None)
-            os.environ.pop("AWS_SECURITY_TOKEN", None)
+            self._env.unset("AWS_SESSION_TOKEN")
+            self._env.unset("AWS_SECURITY_TOKEN")
 
         if self.config.aws_region:
             # Set both for compatibility across AWS SDKs.
-            os.environ["AWS_DEFAULT_REGION"] = self.config.aws_region
-            os.environ["AWS_REGION"] = self.config.aws_region
+            self._env.set("AWS_DEFAULT_REGION", self.config.aws_region)
+            self._env.set("AWS_REGION", self.config.aws_region)
 
     def _get_client(self) -> MemoryClient:
         """Get or create the memory client.
@@ -151,7 +163,7 @@ class MemoryService:
                         self.config.memory_name,
                         self._memory_id,
                     )
-                    return self._memory_id
+                    return mem_id
         except Exception as e:
             logger.warning("Failed to list memories: %s", e)
 
@@ -182,7 +194,10 @@ class MemoryService:
                     },
                 ],
             )
-            self._memory_id = memory.get("id")
+            mem_id = memory.get("id") or memory.get("memoryId")
+            if not mem_id:
+                raise RuntimeError("AgentCore create_memory_and_wait returned no memory id")
+            self._memory_id = str(mem_id)
             logger.info("Created AgentCore memory with id=%s", self._memory_id)
         except Exception as e:
             # If creation fails due to existing memory, try to find it again
@@ -197,9 +212,11 @@ class MemoryService:
                     if mem_id.startswith(self.config.memory_name):
                         self._memory_id = mem_id
                         logger.info("Found memory id=%s", self._memory_id)
-                        return self._memory_id
+                        return mem_id
             raise
 
+        if not self._memory_id:
+            raise RuntimeError("MemoryService failed to determine memory_id")
         return self._memory_id
 
     def create_session_manager(
@@ -460,7 +477,7 @@ class MemoryService:
                 return value
             if isinstance(value, (int, float)):
                 try:
-                    return datetime.fromtimestamp(float(value), tz=timezone.utc)
+                    return datetime.fromtimestamp(float(value), tz=UTC)
                 except Exception:
                     return None
             if isinstance(value, str):
@@ -473,7 +490,7 @@ class MemoryService:
                 try:
                     dt = datetime.fromisoformat(s)
                     if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
+                        dt = dt.replace(tzinfo=UTC)
                     return dt
                 except Exception:
                     return None
@@ -507,7 +524,7 @@ class MemoryService:
                 text = record_text(r).strip()
                 if not text:
                     continue
-                ts = record_ts(r) or datetime.min.replace(tzinfo=timezone.utc)
+                ts = record_ts(r) or datetime.min.replace(tzinfo=UTC)
                 prev = best_by_text.get(text)
                 if prev is None or ts > prev:
                     best_by_text[text] = ts
@@ -596,7 +613,7 @@ class MemoryService:
                 return value
             if isinstance(value, (int, float)):
                 try:
-                    return datetime.fromtimestamp(float(value), tz=timezone.utc)
+                    return datetime.fromtimestamp(float(value), tz=UTC)
                 except Exception:
                     return None
             if isinstance(value, str):
@@ -608,7 +625,7 @@ class MemoryService:
                 try:
                     dt = datetime.fromisoformat(s)
                     if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
+                        dt = dt.replace(tzinfo=UTC)
                     return dt
                 except Exception:
                     return None
@@ -640,7 +657,7 @@ class MemoryService:
                 text = record_text(r).strip()
                 if not text:
                     continue
-                ts = record_ts(r) or datetime.min.replace(tzinfo=timezone.utc)
+                ts = record_ts(r) or datetime.min.replace(tzinfo=UTC)
                 prev = best_by_text.get(text)
                 if prev is None or ts > prev:
                     best_by_text[text] = ts
@@ -1037,7 +1054,7 @@ class MemoryService:
                 memory_id=memory_id,
                 actor_id=user_id,
                 session_id=session_id,
-                event_timestamp=datetime.now(timezone.utc),
+                event_timestamp=datetime.now(UTC),
                 messages=[
                     (f"Important fact: {fact}", "USER"),
                     (f"I'll remember that: {fact}", "ASSISTANT"),
@@ -1117,7 +1134,7 @@ class MemoryService:
                 memory_id=memory_id,
                 actor_id=user_id,
                 session_id=session_id,
-                event_timestamp=datetime.now(timezone.utc),
+                event_timestamp=datetime.now(UTC),
                 messages=[
                     (f"I prefer {preference}", "USER"),
                     (

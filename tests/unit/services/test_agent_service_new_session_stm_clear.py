@@ -33,6 +33,11 @@ async def test_new_session_clears_obsidian_stm_even_if_read_fails(tmp_path: Path
     cfg.agent_commands = []
     cfg.working_folder_base_dir = str(tmp_path / "workspaces")
     cfg.extraction_timeout_seconds = 1
+    cfg.model_provider = "bedrock"  # Required by ModelFactory
+    cfg.bedrock_model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
+    cfg.aws_region = "us-east-1"
+    cfg.conversation_window_size = 20
+    cfg.user_skills_dir_template = None
 
     extraction_service = SimpleNamespace(
         summarize_and_store=AsyncMock(return_value="Did X"),
@@ -42,15 +47,16 @@ async def test_new_session_clears_obsidian_stm_even_if_read_fails(tmp_path: Path
 
     # Seed minimal conversation state so new_session runs the summarization path.
     user_id = "u1"
-    svc._user_sessions[user_id] = "s1"
-    svc._user_message_counts[user_id] = 2
-    svc._conversation_history[user_id] = [
+    svc._session_manager._sessions[user_id] = "s1"
+    svc._message_counter._counts[user_id] = 2
+    svc._conversation_history_state._history[user_id] = [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "hello"},
     ]
 
-    # Avoid creating real model/agent.
-    svc._create_agent = MagicMock(return_value=MagicMock())
+    # Avoid creating real model/agent by patching at the agent creator level.
+    svc._agent_creator.create_agent = MagicMock(return_value=MagicMock())
+    svc._agent_creator.create_model = MagicMock(return_value=MagicMock())
 
     # Force read_raw_text to raise so we verify deletion is attempted regardless.
     import app.tools.short_term_memory_vault as stm_module

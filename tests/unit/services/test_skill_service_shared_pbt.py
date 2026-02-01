@@ -78,7 +78,8 @@ def test_shared_skill_path_accessible():
 
         actual_path = service.get_skill_path(skill_name, "u1")
         assert actual_path is not None
-        assert actual_path == expected_path
+        # Use samefile() for cross-platform path comparison (handles macOS /var -> /private/var symlinks)
+        assert actual_path.samefile(expected_path)
 
 
 def test_user_skill_overrides_shared():
@@ -108,7 +109,8 @@ def test_override_only_affects_owning_user():
         user_skill_path = create_skill(user_dir, skill_name)
 
         assert service.get_skill_path(skill_name, user_id) == user_skill_path
-        assert service.get_skill_path(skill_name, other_user_id) == shared_skill_path
+        # Use samefile() for cross-platform path comparison (handles macOS /var -> /private/var symlinks)
+        assert service.get_skill_path(skill_name, other_user_id).samefile(shared_skill_path)
 
 
 def test_partial_override_preserves_other_shared():
@@ -141,7 +143,8 @@ class TestSharedSkillsDirectory:
             service = create_skill_service(temp_dir, shared_dir)
 
             assert shared_dir.exists(), "Shared skills dir should be created"
-            assert service.get_shared_skills_directory() == str(shared_dir)
+            # Use samefile() for cross-platform path comparison (handles macOS /var -> /private/var symlinks)
+            assert Path(service.get_shared_skills_directory()).samefile(shared_dir)
 
     def test_list_shared_skills_returns_only_shared(self):
         """Test that list_shared_skills only returns shared skills."""

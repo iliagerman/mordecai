@@ -25,9 +25,8 @@ import urllib.request
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-
 from typing import Literal
+from urllib.error import HTTPError, URLError
 
 from app.config import (
     AgentConfig,
@@ -239,7 +238,7 @@ class SkillService:
         try:
             urllib.request.urlretrieve(url, download_path)
         except Exception as e:
-            raise SkillInstallError(f"Failed to download skill: {str(e)}")
+            raise SkillInstallError(f"Failed to download skill: {str(e)}") from e
 
         if is_zip:
             try:
@@ -247,14 +246,14 @@ class SkillService:
                     extracted_files = self._safe_extract_zip(zip_ref, dest_skill_dir)
                     if extracted_files == 0:
                         raise SkillInstallError("No files found in skill archive")
-            except zipfile.BadZipFile:
+            except zipfile.BadZipFile as e:
                 download_path.unlink(missing_ok=True)
-                raise SkillInstallError("Invalid zip file")
+                raise SkillInstallError("Invalid zip file") from e
             except Exception as e:
                 download_path.unlink(missing_ok=True)
                 if isinstance(e, SkillInstallError):
                     raise
-                raise SkillInstallError(f"Failed to extract skill: {str(e)}")
+                raise SkillInstallError(f"Failed to extract skill: {str(e)}") from e
             finally:
                 download_path.unlink(missing_ok=True)
         else:
@@ -284,7 +283,14 @@ class SkillService:
         """
         match = self.GITHUB_TREE_PATTERN.match(url)
         if match:
-            return match.groups()
+            # Pylance struggles to narrow re.Match.groups() to a fixed-size tuple.
+            # Return an explicit 4-tuple for type safety.
+            return (
+                match.group(1),
+                match.group(2),
+                match.group(3),
+                match.group(4),
+            )
         return None
 
     def _fetch_github_contents(self, owner: str, repo: str, branch: str, path: str) -> list[dict]:
@@ -316,12 +322,12 @@ class SkillService:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as e:
             if e.code == 404:
-                raise SkillInstallError(f"GitHub path not found: {path}")
-            raise SkillInstallError(f"GitHub API error: {e.code} {e.reason}")
+                raise SkillInstallError(f"GitHub path not found: {path}") from e
+            raise SkillInstallError(f"GitHub API error: {e.code} {e.reason}") from e
         except URLError as e:
-            raise SkillInstallError(f"Network error: {str(e.reason)}")
-        except json.JSONDecodeError:
-            raise SkillInstallError("Invalid response from GitHub API")
+            raise SkillInstallError(f"Network error: {str(e.reason)}") from e
+        except json.JSONDecodeError as e:
+            raise SkillInstallError("Invalid response from GitHub API") from e
 
     def _download_file(self, url: str, dest: Path) -> None:
         """Download a file from URL to destination.
@@ -337,7 +343,7 @@ class SkillService:
         try:
             urllib.request.urlretrieve(url, dest)
         except Exception as e:
-            raise SkillInstallError(f"Failed to download {url}: {str(e)}")
+            raise SkillInstallError(f"Failed to download {url}: {str(e)}") from e
 
     def _download_github_directory(
         self,
@@ -458,7 +464,7 @@ class SkillService:
         try:
             urllib.request.urlretrieve(url, download_path)
         except Exception as e:
-            raise SkillInstallError(f"Failed to download skill: {str(e)}")
+            raise SkillInstallError(f"Failed to download skill: {str(e)}") from e
 
         if is_zip:
             try:
@@ -471,14 +477,14 @@ class SkillService:
 
                     if not extracted_files:
                         raise SkillInstallError("No Python files found in skill archive")
-            except zipfile.BadZipFile:
+            except zipfile.BadZipFile as e:
                 download_path.unlink(missing_ok=True)
-                raise SkillInstallError("Invalid zip file")
+                raise SkillInstallError("Invalid zip file") from e
             except Exception as e:
                 download_path.unlink(missing_ok=True)
                 if isinstance(e, SkillInstallError):
                     raise
-                raise SkillInstallError(f"Failed to extract skill: {str(e)}")
+                raise SkillInstallError(f"Failed to extract skill: {str(e)}") from e
             finally:
                 download_path.unlink(missing_ok=True)
 
@@ -615,7 +621,7 @@ class SkillService:
                     if has_skill_md or has_skill_py or has_init_py:
                         skills.add(item.name)
 
-        return sorted(list(skills))
+        return sorted(skills)
 
     def get_skill_path(self, skill_name: str, user_id: str) -> Path | None:
         """Get the path to a skill file or directory (user skills override shared).
