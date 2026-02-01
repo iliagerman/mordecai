@@ -29,7 +29,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 from strands import Agent
@@ -121,7 +121,7 @@ def _parse_skill_frontmatter(content: str) -> dict:
         return {}
 
 
-def _extract_required_env(frontmatter: dict) -> list[dict]:
+def _extract_required_env(frontmatter: dict) -> list[dict[str, Any]]:
     """Extract requires.env entries (string or dict) from frontmatter."""
     requires = frontmatter.get("requires")
     if not isinstance(requires, dict):
@@ -131,7 +131,7 @@ def _extract_required_env(frontmatter: dict) -> list[dict]:
     if not isinstance(env_list, list):
         return []
 
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for item in env_list:
         if isinstance(item, str):
             name = item.strip()
@@ -141,7 +141,7 @@ def _extract_required_env(frontmatter: dict) -> list[dict]:
             name = str(item.get("name") or "").strip()
             if not name:
                 continue
-            rec = {"name": name}
+            rec: dict[str, Any] = {"name": name}
             prompt = item.get("prompt")
             if isinstance(prompt, str) and prompt.strip():
                 rec["prompt"] = prompt.strip()
@@ -166,7 +166,7 @@ def _extract_required_env(frontmatter: dict) -> list[dict]:
     return deduped
 
 
-def _extract_required_config(frontmatter: dict) -> list[dict]:
+def _extract_required_config(frontmatter: dict) -> list[dict[str, Any]]:
     """Extract requires.config entries (string or dict) from frontmatter.
 
     This is for skills that need structured secrets/config values (e.g. to render
@@ -181,7 +181,7 @@ def _extract_required_config(frontmatter: dict) -> list[dict]:
     if not isinstance(cfg_list, list):
         return []
 
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for item in cfg_list:
         if isinstance(item, str):
             name = item.strip()
@@ -191,7 +191,7 @@ def _extract_required_config(frontmatter: dict) -> list[dict]:
             name = str(item.get("name") or "").strip()
             if not name:
                 continue
-            rec = {"name": name}
+            rec: dict[str, Any] = {"name": name}
             prompt = item.get("prompt")
             if isinstance(prompt, str) and prompt.strip():
                 rec["prompt"] = prompt.strip()
@@ -322,7 +322,7 @@ class AgentService:
         lines.append("")
         return "\n".join(lines)
 
-    def _load_merged_skill_secrets(self, user_id: str) -> dict:
+    def _load_merged_skill_secrets(self, user_id: str) -> dict[str, Any]:
         """Load merged skill secrets for a user.
 
         Sources (later wins):
@@ -331,7 +331,7 @@ class AgentService:
           - skills/<user>/skills_secrets.yml (per-user) [skills: only]
         """
 
-        merged: dict = {}
+        merged: dict[str, Any] = {}
         try:
             repo_root = Path(__file__).resolve().parents[2]
             cfg_yml = repo_root / "config.yml"
@@ -352,21 +352,26 @@ class AgentService:
             if isinstance(global_secrets, dict):
                 skills = global_secrets.get("skills")
                 if isinstance(skills, dict):
-                    merged.setdefault("skills", {})
-                    if isinstance(merged.get("skills"), dict):
-                        merged["skills"].update(skills)
+                    merged_skills = merged.get("skills")
+                    if not isinstance(merged_skills, dict):
+                        merged_skills = {}
+                        merged["skills"] = merged_skills
+                    merged_skills.update(skills)
 
             user_skills_secrets_path = resolve_user_skills_secrets_path(self.config, user_id)
             user_secrets = load_raw_secrets(user_skills_secrets_path)
             if isinstance(user_secrets, dict):
                 user_skills = user_secrets.get("skills")
                 if isinstance(user_skills, dict):
-                    merged.setdefault("skills", {})
-                    if isinstance(merged.get("skills"), dict):
-                        # Deep merge so per-user values override nested structures.
-                        from app.config import _deep_merge_dict
+                    merged_skills = merged.get("skills")
+                    if not isinstance(merged_skills, dict):
+                        merged_skills = {}
+                        merged["skills"] = merged_skills
 
-                        _deep_merge_dict(merged["skills"], user_skills)
+                    # Deep merge so per-user values override nested structures.
+                    from app.config import _deep_merge_dict
+
+                    _deep_merge_dict(merged_skills, user_skills)
         except Exception:
             pass
 
@@ -777,7 +782,10 @@ class AgentService:
             case ModelProvider.OPENAI:
                 if not self.config.openai_api_key:
                     raise ValueError("OpenAI API key required")
-                return OpenAIModel(
+                # Strands' runtime supports this config, but some type stubs
+                # model OpenAIModel as a **model_config kwargs API. Cast to Any
+                # to avoid false-positive call-arg diagnostics.
+                return cast(Any, OpenAIModel)(
                     model=self.config.openai_model_id,
                     api_key=self.config.openai_api_key,
                 )
@@ -1543,7 +1551,9 @@ class AgentService:
             messages=messages,
             conversation_manager=conversation_manager,
             tools=builtin_tools,
-            load_tools_from_directory=user_skills_dir,
+            # Strands' type hints declare this parameter as bool, but we rely on
+            # runtime backward-compat behavior where a string path is accepted.
+            load_tools_from_directory=cast(Any, user_skills_dir),
             system_prompt=self._build_system_prompt(user_id, memory_context, attachments),
         )
 
