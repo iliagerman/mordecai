@@ -302,12 +302,12 @@ env for subprocesses (e.g., config hot-reload helpers) may touch `os.environ`.
 
 ### Where Models Live
 
-| Type | Location |
-|------|----------|
-| Domain models (returned by DAOs) | `app/models/domain.py` |
-| Agent-specific models | `app/models/agent.py` |
-| Request/Response models | Router files or `app/models/api.py` |
-| Configuration | `app/config.py` (extends BaseSettings) |
+| Type                             | Location                               |
+| -------------------------------- | -------------------------------------- |
+| Domain models (returned by DAOs) | `app/models/domain.py`                 |
+| Agent-specific models            | `app/models/agent.py`                  |
+| Request/Response models          | Router files or `app/models/api.py`    |
+| Configuration                    | `app/config.py` (extends BaseSettings) |
 
 ### Where State Managers Live
 
