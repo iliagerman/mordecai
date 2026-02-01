@@ -156,8 +156,13 @@ class Application:
 
         # Initialize database
         self.database = Database(self.config.database_url)
-        await self.database.init_db()
-        logger.info("Database initialized")
+        if getattr(self.config, "auto_create_tables", False):
+            await self.database.init_db()
+            logger.info("Database initialized (auto_create_tables=true)")
+        else:
+            logger.info(
+                "Database initialized (auto_create_tables=false; relying on Alembic migrations)"
+            )
 
         # Initialize DAOs
         self.user_dao = UserDAO(self.database)
