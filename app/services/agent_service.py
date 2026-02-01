@@ -1087,7 +1087,7 @@ class AgentService:
                         max_chars=getattr(self.config, "personality_max_chars", 20_000),
                     )
                     prompt += (
-                        "\n## Short-Term Memory (Obsidian Scratchpad)\n\n"
+                        "\n## Short-Term Memory (Obsidian)\n\n"
                         "The following content comes from the user's Obsidian STM scratchpad. "
                         "It may include recent session summaries and notes that are not yet reliably "
                         "available via long-term memory retrieval.\n\n"
