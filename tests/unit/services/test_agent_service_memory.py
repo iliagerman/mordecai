@@ -85,16 +85,24 @@ class TestAgentServiceConversationHistory:
 
         assert service._get_conversation_history(user_id) == []
 
-    @patch("app.services.agent_service.AgentService._message_processor")
+    @patch("app.services.agent.model_factory.ModelFactory.create")
     @pytest.mark.asyncio
-    async def test_process_message_tracks_history(self, mock_processor, config):
+    async def test_process_message_tracks_history(self, mock_create_model, config):
         """Test process_message adds messages to history."""
-        mock_processor.run.return_value = "Response"
+        # Mock the model to avoid real AWS calls
+        mock_model = MagicMock()
+        mock_create_model.return_value = mock_model
 
-        service = AgentService(config)
-        user_id = "test-user"
+        # Mock the agent to return a response
+        mock_agent = MagicMock()
+        mock_agent.return_value = MagicMock(message={"content": [{"text": "Response"}]})
 
-        await service.process_message(user_id, "Hello")
+        # Patch strands.Agent at the agent_creation module level
+        with patch("app.services.agent.agent_creation.Agent", return_value=mock_agent):
+            service = AgentService(config)
+            user_id = "test-user"
+
+            await service.process_message(user_id, "Hello")
 
         history = service._get_conversation_history(user_id)
         assert len(history) == 2
@@ -161,30 +169,33 @@ class TestAgentServiceMemoryTools:
             memory_enabled=True,
         )
 
-    @patch("app.services.agent_service.AgentService._agent_creator")
-    def test_create_agent_includes_search_memory_tool(
-        self, mock_agent_creator, config
-    ):
+    def test_create_agent_includes_search_memory_tool(self, config):
         """Test _create_agent includes search_memory tool when memory enabled."""
         mock_memory_service = MagicMock()
-        mock_agent_creator.create_agent.return_value = MagicMock()
-
         service = AgentService(config, memory_service=mock_memory_service)
+
+        # Mock the agent creator to avoid creating real agents
+        service._agent_creator.create_agent = MagicMock(return_value=MagicMock())
         service._create_agent("test-user")
 
         # Verify create_agent was called
-        mock_agent_creator.create_agent.assert_called_once_with("test-user")
+        service._agent_creator.create_agent.assert_called_once()
+        call_kwargs = service._agent_creator.create_agent.call_args.kwargs
+        assert call_kwargs["user_id"] == "test-user"
 
-    @patch("app.services.agent_service.AgentService._agent_creator")
-    def test_create_agent_without_memory_service(self, mock_agent_creator, config):
+    def test_create_agent_without_memory_service(self, config):
         """Test _create_agent works without memory service."""
-        mock_agent_creator.create_agent.return_value = MagicMock()
         service = AgentService(config, memory_service=None)
+
+        # Mock the agent creator to avoid creating real agents
+        service._agent_creator.create_agent = MagicMock(return_value=MagicMock())
 
         # Should not raise
         service._create_agent("test-user")
 
-        mock_agent_creator.create_agent.assert_called_once_with("test-user")
+        service._agent_creator.create_agent.assert_called_once()
+        call_kwargs = service._agent_creator.create_agent.call_args.kwargs
+        assert call_kwargs["user_id"] == "test-user"
 
 
 class TestAgentServiceSystemPrompt:
@@ -317,15 +328,16 @@ class TestAgentServiceExplicitRemember:
             memory_enabled=True,
         )
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("app.services.agent.model_factory.ModelFactory.create")
     @pytest.mark.asyncio
-    async def test_process_message_stores_explicit_fact(self, _mock_model, mock_agent, config):
+    async def test_process_message_stores_explicit_fact(self, mock_create_model, config):
+        """Test that explicit 'remember' messages store facts."""
+        # Mock the model to avoid real AWS calls
+        mock_model = MagicMock()
+        mock_create_model.return_value = mock_model
+
         mock_result = MagicMock()
         mock_result.message = {"content": [{"text": "OK"}]}
-        mock_agent_instance = MagicMock()
-        mock_agent_instance.return_value = mock_result
-        mock_agent.return_value = mock_agent_instance
 
         memory_service = MagicMock()
         memory_service.retrieve_memory_context.return_value = {
@@ -335,29 +347,31 @@ class TestAgentServiceExplicitRemember:
         }
         memory_service.store_fact.return_value = True
 
-        service = AgentService(config, memory_service=memory_service)
+        # Mock the agent to return a response
+        mock_agent = MagicMock()
+        mock_agent.return_value = mock_result
 
-        await service.process_message(
-            "test-user",
-            "Remember we keep the shopping lists in the family vault.",
-        )
+        # Patch Agent at the agent_creation module level
+        with patch("app.services.agent.agent_creation.Agent", return_value=mock_agent):
+            service = AgentService(config, memory_service=memory_service)
+
+            await service.process_message(
+                "test-user",
+                "Remember we keep the shopping lists in the family vault.",
+            )
 
         memory_service.store_fact.assert_called()
         _kwargs = memory_service.store_fact.call_args.kwargs
         assert _kwargs["user_id"] == "test-user"
         assert "shopping lists" in _kwargs["fact"].lower()
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("app.services.agent.model_factory.ModelFactory.create")
     @pytest.mark.asyncio
-    async def test_process_message_does_not_store_sensitive_text(
-        self, _mock_model, mock_agent, config
-    ):
-        mock_result = MagicMock()
-        mock_result.message = {"content": [{"text": "OK"}]}
-        mock_agent_instance = MagicMock()
-        mock_agent_instance.return_value = mock_result
-        mock_agent.return_value = mock_agent_instance
+    async def test_process_message_does_not_store_sensitive_text(self, mock_create_model, config):
+        """Test that sensitive-looking text is not stored as fact."""
+        # Mock the model to avoid real AWS calls
+        mock_model = MagicMock()
+        mock_create_model.return_value = mock_model
 
         memory_service = MagicMock()
         memory_service.retrieve_memory_context.return_value = {
@@ -366,11 +380,17 @@ class TestAgentServiceExplicitRemember:
             "agent_name": None,
         }
 
-        service = AgentService(config, memory_service=memory_service)
+        # Mock the agent to return a response
+        mock_agent = MagicMock()
+        mock_agent.return_value = MagicMock(message={"content": [{"text": "OK"}]})
 
-        await service.process_message(
-            "test-user",
-            "Remember my api_key=sk-THISISNOTREALBUTLOOKSLIKEONE",
-        )
+        # Patch Agent at the agent_creation module level
+        with patch("app.services.agent.agent_creation.Agent", return_value=mock_agent):
+            service = AgentService(config, memory_service=memory_service)
+
+            await service.process_message(
+                "test-user",
+                "Remember my api_key=sk-THISISNOTREALBUTLOOKSLIKEONE",
+            )
 
         memory_service.store_fact.assert_not_called()

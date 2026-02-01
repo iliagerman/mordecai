@@ -138,4 +138,5 @@ email = "user@example.com"
     assert "**himalaya**" in prompt
 
     # If a config file already exists, we should not keep prompting for credentials.
-    assert "Skill Setup Required" not in prompt
+    # Check for the actual section, not just the string which also appears in general instructions
+    assert "## Skill Setup Required" not in prompt

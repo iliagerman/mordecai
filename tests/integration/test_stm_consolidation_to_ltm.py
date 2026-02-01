@@ -11,8 +11,22 @@ from app.tools.short_term_memory_vault import append_memory, short_term_memory_p
 def _make_minimal_config(tmp_path):
     cfg = MagicMock(spec=AgentConfig)
     cfg.skills_base_dir = str(tmp_path / "skills")
+    cfg.shared_skills_dir = str(tmp_path / "shared_skills")
     cfg.obsidian_vault_root = str(tmp_path / "vault")
     cfg.personality_max_chars = 20_000
+    cfg.personality_enabled = False
+    cfg.telegram_bot_token = "test-token"
+    cfg.timezone = "UTC"
+    cfg.memory_enabled = False
+    cfg.agent_commands = []
+    cfg.working_folder_base_dir = str(tmp_path / "workspaces")
+    cfg.extraction_timeout_seconds = 1
+    cfg.model_provider = "bedrock"
+    cfg.bedrock_model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
+    cfg.aws_region = "us-east-1"
+    cfg.conversation_window_size = 20
+    cfg.user_skills_dir_template = None
+    cfg.secrets_path = str(tmp_path / "secrets.yml")
     return cfg
 
 
