@@ -467,6 +467,24 @@ class TelegramMessageHandlers:
         # Check if user needs onboarding (returns context if this is first interaction)
         onboarding_context = await self._check_and_handle_onboarding(user_id, chat_id)
 
+        # If onboarding was triggered, send the onboarding message FIRST.
+        #
+        # We do this deterministically because relying on the LLM to "SHOW" the
+        # soul.md / id.md content is flaky and can regress with model changes.
+        # The user's first experience should always include the actual content
+        # of these files and an explicit invitation to request changes.
+        if onboarding_context is not None and self.onboarding_service is not None:
+            try:
+                await self._send_response(
+                    chat_id,
+                    self.onboarding_service.get_onboarding_message(user_id),
+                )
+                # Avoid duplicating the onboarding content in the model-generated
+                # response; we already delivered it as the first message.
+                onboarding_context = None
+            except Exception:
+                logger.exception("Failed to send onboarding message for user %s", user_id)
+
         if len(message_text) > 50:
             preview = message_text[:50] + "..."
         else:
@@ -780,7 +798,9 @@ class TelegramMessageHandlers:
         # Sort by file_size and return largest
         return max(photos, key=lambda p: p.file_size or 0)
 
-    async def _check_and_handle_onboarding(self, user_id: str, chat_id: int) -> dict[str, str | None] | None:
+    async def _check_and_handle_onboarding(
+        self, user_id: str, chat_id: int
+    ) -> dict[str, str | None] | None:
         """Check if user needs onboarding and handle it if needed.
 
         Args:

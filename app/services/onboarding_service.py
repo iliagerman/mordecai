@@ -15,8 +15,13 @@ from app.services.personality_service import PersonalityDocKind
 
 logger = logging.getLogger(__name__)
 
-# Maximum preview length for each file in the onboarding message
-PREVIEW_MAX_CHARS = 800
+# Maximum preview length for each file in the onboarding message.
+#
+# NOTE: We generally prefer showing the *full* default soul.md/id.md content
+# (bounded by max_chars) on first interaction so the user can understand what
+# the agent is running with. Keep this constant as a safety valve in case
+# these templates grow too large.
+PREVIEW_MAX_CHARS = 20_000
 
 
 class OnboardingService:
@@ -126,9 +131,7 @@ class OnboardingService:
             raise ValueError(f"Path escapes vault root: {resolved}") from e
         return resolved
 
-    async def ensure_user_personality_files(
-        self, user_id: str
-    ) -> tuple[bool, str]:
+    async def ensure_user_personality_files(self, user_id: str) -> tuple[bool, str]:
         """Copy default soul.md and id.md to user's folder in vault.
 
         Args:
@@ -200,6 +203,8 @@ class OnboardingService:
         soul_content = self.get_default_soul()
         id_content = self.get_default_id()
 
+        # Show the full templates (bounded by max_chars) on first contact so the
+        # user can immediately see what drives the agent's behavior.
         soul_preview = self._truncate_preview(soul_content) if soul_content else "*Not found*"
         id_preview = self._truncate_preview(id_content) if id_content else "*Not found*"
 
@@ -213,8 +218,10 @@ class OnboardingService:
             f"---\n\n"
             f"## id.md (Identity)\n\n{id_preview}\n\n"
             f"---\n\n"
-            f"💡 You can customize these files anytime by editing them directly,\n"
-            f"or use the personality_write tool when chatting with me.\n\n"
+            f"💡 Want to change how I behave or what I call myself? Just ask.\n"
+            f"Tell me what you want to change (tone, verbosity, boundaries, identity metadata, etc.) and I can update:\n"
+            f"- `me/{user_id}/soul.md` (personality)\n"
+            f"- `me/{user_id}/id.md` (identity)\n\n"
             f"How can I help you today?"
         )
 

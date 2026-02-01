@@ -852,6 +852,17 @@ def refresh_runtime_env_from_secrets(
 
                 try:
                     # Only write when changed to reduce churn.
+                    if dest.exists() and dest.is_dir():
+                        # A common mistake is `mkdir -p some-config.toml`, which creates a
+                        # directory where a file is expected. Recover safely when empty.
+                        try:
+                            if any(dest.iterdir()):
+                                # Non-empty: avoid destructive behavior.
+                                continue
+                            dest.rmdir()
+                        except Exception:
+                            continue
+
                     if dest.exists():
                         try:
                             existing = dest.read_text(encoding="utf-8")
