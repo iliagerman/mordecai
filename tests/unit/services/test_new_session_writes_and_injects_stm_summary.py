@@ -24,6 +24,10 @@ async def test_new_session_appends_summary_to_stm_and_next_prompt_injects_it(tmp
     cfg.agent_commands = []
     cfg.working_folder_base_dir = str(tmp_path / "workspaces")
     cfg.extraction_timeout_seconds = 1
+    cfg.model_provider = ModelProvider.BEDROCK
+    cfg.bedrock_model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
+    cfg.aws_region = "us-east-1"
+    cfg.conversation_window_size = 20
 
     # MemoryExtractionService config (minimal)
     mcfg = MagicMock()

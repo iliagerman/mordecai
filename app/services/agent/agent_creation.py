@@ -10,25 +10,26 @@ This module handles agent instance creation including:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.models.model import Model
 
 from app.models.agent import AttachmentInfo, MemoryContext
 
 if TYPE_CHECKING:
-    from strands.models.model import Model
     from app.config import AgentConfig
-    from app.services.memory_service import MemoryService
+    from app.services.agent.model_factory import ModelFactory
+    from app.services.agent.prompt_builder import SystemPromptBuilder
+    from app.services.agent.skills import SkillRepository
+    from app.services.agent.state import SessionManager as SessionIdManager
     from app.services.cron_service import CronService
     from app.services.file_service import FileService
+    from app.services.memory_service import MemoryService
     from app.services.pending_skill_service import PendingSkillService
-    from app.services.agent.state import SessionManager as SessionIdManager
-    from app.services.agent.model_factory import ModelFactory
-    from app.services.agent.skills import SkillRepository
-    from app.services.agent.prompt_builder import SystemPromptBuilder
 
 from app.tools import (
     cron_tools as cron_tools_module,
@@ -87,8 +88,8 @@ class AgentCreator:
         prompt_builder: SystemPromptBuilder,
         user_conversation_managers: dict,
         user_agents: dict,
-        get_session_id: callable,
-        on_agent_name_changed: callable,
+        get_session_id: Callable[[str], str],
+        on_agent_name_changed: Callable[[str, str], None],
     ):
         """Initialize the agent creator.
 
@@ -123,7 +124,7 @@ class AgentCreator:
         self._get_session_id = get_session_id
         self._on_agent_name_changed = on_agent_name_changed
 
-    def create_model(self, use_vision: bool = False) -> "Model":
+    def create_model(self, use_vision: bool = False) -> Model:
         """Create a model instance."""
         return self._model_factory.create(use_vision=use_vision)
 

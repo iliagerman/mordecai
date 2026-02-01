@@ -116,13 +116,17 @@ async def test_process_message_explicit_remember_writes_stm_note(tmp_path, monke
         def messages(self):
             return []
 
-    monkeypatch.setattr("strands.Agent", _FakeAgent)
+    # Patch Agent at the agent_creation module level (where it's imported)
+    monkeypatch.setattr("app.services.agent.agent_creation.Agent", _FakeAgent)
 
-    # BedrockModel ctor can still touch env; keep it inert.
+    # Patch ModelFactory.create to avoid BedrockModel instantiation
     class _FakeModel:
-        pass
+        async def stream(self, *args, **kwargs):
+            # Return an empty async generator to avoid real LLM calls
+            return
+            yield  # This makes it an async generator
 
-    monkeypatch.setattr("strands.models.BedrockModel", lambda *a, **k: _FakeModel())
+    monkeypatch.setattr("app.services.agent.model_factory.ModelFactory.create", lambda *a, **k: _FakeModel())
 
     service = AgentService(config, memory_service=memory_service)
 
@@ -198,12 +202,17 @@ async def test_process_message_does_not_write_stm_for_retrieval_question(tmp_pat
         def messages(self):
             return []
 
-    monkeypatch.setattr("strands.Agent", _FakeAgent)
+    # Patch Agent at the agent_creation module level (where it's imported)
+    monkeypatch.setattr("app.services.agent.agent_creation.Agent", _FakeAgent)
 
+    # Patch ModelFactory.create to avoid BedrockModel instantiation
     class _FakeModel:
-        pass
+        async def stream(self, *args, **kwargs):
+            # Return an empty async generator to avoid real LLM calls
+            return
+            yield  # This makes it an async generator
 
-    monkeypatch.setattr("strands.models.BedrockModel", lambda *a, **k: _FakeModel())
+    monkeypatch.setattr("app.services.agent.model_factory.ModelFactory.create", lambda *a, **k: _FakeModel())
 
     service = AgentService(config, memory_service=memory_service)
 
