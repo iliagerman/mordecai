@@ -34,6 +34,7 @@ class UserModel(Base):
     id = Column(String, primary_key=True)
     telegram_id = Column(String, unique=True, nullable=False, index=True)
     agent_name = Column(String, nullable=True)  # Custom name for the agent
+    onboarding_completed = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     last_active = Column(DateTime, nullable=False, default=datetime.utcnow)
 

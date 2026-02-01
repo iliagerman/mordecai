@@ -31,10 +31,12 @@ from telegram.ext import (
 )
 
 from app.config import AgentConfig
+from app.dao import UserDAO
 from app.enums import LogSeverity
 from app.services.command_parser import CommandParser
 from app.services.file_service import FileService
 from app.services.logging_service import LoggingService
+from app.services.onboarding_service import OnboardingService
 from app.services.skill_service import SkillService
 
 # Telegram helper modules
@@ -78,6 +80,8 @@ class TelegramBotInterface:
         skill_service: SkillService,
         file_service: FileService | None = None,
         command_parser: CommandParser | None = None,
+        user_dao: UserDAO | None = None,
+        onboarding_service: OnboardingService | None = None,
     ) -> None:
         """Initialize the Telegram bot interface.
 
@@ -90,6 +94,8 @@ class TelegramBotInterface:
             skill_service: Skill service for skill management.
             file_service: File service for attachment handling.
             command_parser: Optional command parser (creates default if None).
+            user_dao: User DAO for user management operations.
+            onboarding_service: Service for handling user onboarding.
         """
         self.config = config
         self.agent_service = agent_service
@@ -97,6 +103,8 @@ class TelegramBotInterface:
         self.skill_service = skill_service
         self.file_service = file_service or FileService(config)
         self.command_parser = command_parser or CommandParser()
+        self.user_dao = user_dao
+        self.onboarding_service = onboarding_service
 
         # Hot-reloading whitelist: reads allowed_users from secrets.yml on demand.
         from app.security.whitelist import live_allowed_users
@@ -129,6 +137,8 @@ class TelegramBotInterface:
             command_parser=self.command_parser,
             bot_application=self.application,
             get_allowed_users=self._get_allowed_users_live,
+            user_dao=user_dao,
+            onboarding_service=onboarding_service,
         )
 
         # Setup handlers

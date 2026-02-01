@@ -43,6 +43,7 @@ class UserDAO(BaseDAO[User]):
                 id=user_model.id,
                 telegram_id=user_model.telegram_id,
                 agent_name=user_model.agent_name,
+                onboarding_completed=user_model.onboarding_completed,
                 created_at=user_model.created_at,
                 last_active=user_model.last_active,
             )
@@ -126,6 +127,7 @@ class UserDAO(BaseDAO[User]):
                 id=user_model.id,
                 telegram_id=user_model.telegram_id,
                 agent_name=user_model.agent_name,
+                onboarding_completed=user_model.onboarding_completed,
                 created_at=user_model.created_at,
                 last_active=user_model.last_active,
             )
@@ -152,6 +154,7 @@ class UserDAO(BaseDAO[User]):
                 id=user_model.id,
                 telegram_id=user_model.telegram_id,
                 agent_name=user_model.agent_name,
+                onboarding_completed=user_model.onboarding_completed,
                 created_at=user_model.created_at,
                 last_active=user_model.last_active,
             )
@@ -210,3 +213,39 @@ class UserDAO(BaseDAO[User]):
                 select(UserModel.agent_name).where(UserModel.id == user_id)
             )
             return result.scalar_one_or_none()
+
+    async def is_onboarding_completed(self, user_id: str) -> bool:
+        """Check if user has completed onboarding.
+
+        Args:
+            user_id: User identifier.
+
+        Returns:
+            True if onboarding is completed, False otherwise.
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(UserModel.onboarding_completed).where(UserModel.id == user_id)
+            )
+            value = result.scalar_one_or_none()
+            return bool(value) if value is not None else False
+
+    async def set_onboarding_completed(self, user_id: str) -> bool:
+        """Mark user as having completed onboarding.
+
+        Args:
+            user_id: User identifier.
+
+        Returns:
+            True if user was found and updated, False otherwise.
+        """
+        async with self._db.session() as session:
+            result = await session.execute(select(UserModel).where(UserModel.id == user_id))
+            user_model = result.scalar_one_or_none()
+
+            if user_model is None:
+                return False
+
+            user_model.onboarding_completed = True
+            user_model.last_active = datetime.utcnow()
+            return True

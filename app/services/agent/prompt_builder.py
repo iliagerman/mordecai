@@ -170,11 +170,13 @@ class SystemPromptBuilder:
             out += (
                 "Obsidian vault root is **not configured**. You do NOT have filesystem access to the user's Obsidian notes. "
                 "Do not claim you can read or write Obsidian. Ask the user to paste content or send files as attachments.\n\n"
+                "If/when Obsidian access is enabled, prefer a **bounded search** (limited depth/results) rather than scanning an entire vault.\n\n"
             )
         elif not vault_accessible:
             out += (
                 f"Obsidian vault root is configured as {vault_root_display}, but it is **not accessible in this runtime** (missing path / not mounted / no permissions). "
                 "Do not claim you can read the user's vault. Ask the user to paste the relevant note contents (or attach the file), or fix the deployment so the vault is mounted and readable.\n\n"
+                "If the vault becomes accessible later, use a **bounded search** (limit depth/results; avoid scanning the entire vault) when locating notes by keyword.\n\n"
             )
         else:
             out += (
