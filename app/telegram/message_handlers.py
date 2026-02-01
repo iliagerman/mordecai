@@ -18,6 +18,8 @@ from app.enums import LogSeverity
 from app.security.whitelist import DEFAULT_FORBIDDEN_DETAIL, is_whitelisted, live_allowed_users
 
 if TYPE_CHECKING:
+    from app.dao.user_dao import UserDAO
+    from app.services.onboarding_service import OnboardingService
     from app.telegram.models import TelegramAttachment
     from app.services.logging_service import LoggingService
     from app.services.file_service import FileService
@@ -41,6 +43,8 @@ class TelegramMessageHandlers:
         command_parser: Any,
         bot_application: Any,
         get_allowed_users: callable,
+        user_dao: "UserDAO | None" = None,
+        onboarding_service: "OnboardingService | None" = None,
     ):
         """Initialize the message handlers.
 
@@ -52,6 +56,8 @@ class TelegramMessageHandlers:
             command_parser: Command parser instance.
             bot_application: Telegram bot application.
             get_allowed_users: Function to get live allowed users.
+            user_dao: User DAO for user management operations.
+            onboarding_service: Service for handling user onboarding.
         """
         self.config = config
         self.logging_service = logging_service
@@ -60,6 +66,8 @@ class TelegramMessageHandlers:
         self.command_parser = command_parser
         self.bot = bot_application.bot
         self._get_allowed_users_live = get_allowed_users
+        self.user_dao = user_dao
+        self.onboarding_service = onboarding_service
 
     def extract_telegram_identity(self, update: Update) -> tuple:
         """Extract user identity from a Telegram update.
@@ -461,6 +469,9 @@ class TelegramMessageHandlers:
 
         self.migrate_legacy_skill_folder(telegram_user_id, user_id)
 
+        # Check if user needs onboarding
+        await self._check_and_handle_onboarding(user_id, chat_id)
+
         if len(message_text) > 50:
             preview = message_text[:50] + "..."
         else:
@@ -773,3 +784,58 @@ class TelegramMessageHandlers:
         """
         # Sort by file_size and return largest
         return max(photos, key=lambda p: p.file_size or 0)
+
+    async def _check_and_handle_onboarding(self, user_id: str, chat_id: int) -> None:
+        """Check if user needs onboarding and handle it if needed.
+
+        Args:
+            user_id: The user's identifier.
+            chat_id: Telegram chat ID for sending messages.
+        """
+        if self.user_dao is None or self.onboarding_service is None:
+            # Onboarding not configured, skip
+            return
+
+        # Check if user has already completed onboarding
+        try:
+            is_completed = await self.user_dao.is_onboarding_completed(user_id)
+            if is_completed:
+                return
+        except Exception as e:
+            logger.warning("Failed to check onboarding status for %s: %s", user_id, e)
+            return
+
+        # Copy personality files to user's folder
+        if self.onboarding_service.is_enabled():
+            try:
+                success, result_msg = await self.onboarding_service.ensure_user_personality_files(user_id)
+                if success:
+                    logger.info("Created personality files for user %s: %s", user_id, result_msg)
+                else:
+                    logger.warning("Personality file setup for %s: %s", user_id, result_msg)
+            except Exception as e:
+                logger.error("Failed to create personality files for %s: %s", user_id, e)
+
+        # Send onboarding message
+        try:
+            onboarding_message = self.onboarding_service.get_onboarding_message(user_id)
+            await self._send_response(chat_id, onboarding_message)
+        except Exception as e:
+            logger.error("Failed to send onboarding message to %s: %s", user_id, e)
+
+        # Mark onboarding as completed
+        try:
+            await self.user_dao.set_onboarding_completed(user_id)
+            logger.info("Marked onboarding as completed for user %s", user_id)
+        except Exception as e:
+            logger.error("Failed to mark onboarding complete for %s: %s", user_id, e)
+
+        # Log the action
+        try:
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action="Completed onboarding",
+                severity=LogSeverity.INFO,
+            )
+        except Exception:
+            logger.exception("Failed to log onboarding completion for %s", user_id)

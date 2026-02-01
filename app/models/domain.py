@@ -20,6 +20,7 @@ class User(JsonModel):
     id: str
     telegram_id: str
     agent_name: str | None = None  # Custom name for the agent
+    onboarding_completed: bool = False
     created_at: datetime
     last_active: datetime
 

@@ -45,6 +45,7 @@ from app.services import (
 from app.services.agent_service import AgentService
 from app.services.cron_service import CronService
 from app.services.memory_service import MemoryService
+from app.services.onboarding_service import OnboardingService
 from app.sqs.message_processor import MessageProcessor
 from app.sqs.queue_manager import SQSQueueManager
 from app.telegram.bot import TelegramBotInterface
@@ -170,6 +171,9 @@ class Application:
         self.command_parser = CommandParser()
         self.logging_service = LoggingService(self.log_dao)
         self.skill_service = SkillService(self.config)
+        self.onboarding_service = OnboardingService(
+            vault_root=self.config.obsidian_vault_root,
+        )
 
         # Pending skills: create service and run preflight (bounded, non-fatal)
         self.pending_skill_service = PendingSkillService(self.config)
@@ -234,6 +238,8 @@ class Application:
             logging_service=self.logging_service,
             skill_service=self.skill_service,
             command_parser=self.command_parser,
+            user_dao=self.user_dao,
+            onboarding_service=self.onboarding_service,
         )
         logger.info("Telegram bot initialized")
 
