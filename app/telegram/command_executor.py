@@ -189,6 +189,10 @@ class CommandExecutor:
     async def execute_install_skill(self, user_id: str, chat_id: int, url: str) -> None:
         """Execute the 'install skill' command.
 
+        Skills are always installed to the user's personal folder, never to shared.
+        This ensures isolation between users - each user has their own copy of
+        installed skills.
+
         Args:
             user_id: Telegram user ID.
             chat_id: Telegram chat ID for responses.

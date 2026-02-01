@@ -1,5 +1,9 @@
 # Mordecai
 
+<!-- LOGO_PLACEHOLDER -->
+<img src="docs/images/logo.png" alt="Mordecai Logo" width="200">
+<!-- END_LOGO_PLACEHOLDER -->
+
 Mordecai is a multi-user AI agent platform built on the Strands Agents SDK, featuring Telegram bot integration, skills/plugins system, and a kanban-style task dashboard.
 
 ## Features
@@ -13,6 +17,18 @@ Mordecai is a multi-user AI agent platform built on the Strands Agents SDK, feat
 - **Kanban Dashboard**: Web-based task visualization (Pending → In Progress → Done)
 - **Per-User SQS Queues**: Async message processing with isolation
 
+## Skill Installation
+
+When a user asks the bot to install a skill (via `/install skill <url>` command or through conversation), the skill is **always installed to the user's personal folder** at `skills/<user_id>/`. Skills are never installed to the shared folder when requested by users through the bot interface.
+
+- **User skills**: `skills/<user_id>/` - Each user has their own isolated skills directory
+- **Shared skills**: `skills/shared/` - Available to all users (managed by administrators)
+
+This isolation ensures that:
+1. Users cannot affect other users' skills
+2. Each user can have their own version of a skill
+3. User-specific configurations and secrets are properly isolated
+
 ## Skill secrets & per-user config templates
 
 Mordecai supports multi-user skills that may require secrets (API keys, passwords) and/or config files.
@@ -23,7 +39,7 @@ Mordecai supports multi-user skills that may require secrets (API keys, password
 - Per-user skill secrets live in `skills/<USER_ID>/skills_secrets.yml` (git-ignored).
 - Example templates (e.g. `secrets.yml_example`) are always committed.
 
-The agent will ask for missing required values (declared in each skill’s `SKILL.md`) and persist them automatically.
+The agent will ask for missing required values (declared in each skill's `SKILL.md`) and persist them automatically.
 
 ### *_example template materialization
 
@@ -109,6 +125,122 @@ Or with uvicorn for the API server:
 ```bash
 uvicorn app.main:get_fastapi_app --host 0.0.0.0 --port 8000 --factory
 ```
+
+### 5. Start Using the Bot
+
+1. Open Telegram and search for your bot by username
+2. Send `/start` to begin a conversation
+3. Use `/help` to see available commands
+
+## Deployment
+
+### Docker Deployment (Recommended)
+
+#### Prerequisites
+
+- Docker Engine 20.10+
+- Docker Compose 2.0+
+
+#### Quick Deploy with Docker Compose
+
+```bash
+# 1. Prepare configuration files
+cp config.example.json config.json
+cp secrets.yml_example secrets.yml  # Edit with your secrets
+
+# 2. Build and start all services
+docker-compose up -d
+
+# 3. View logs
+docker-compose logs -f mordecai
+
+# 4. Stop services
+docker-compose down
+```
+
+The Docker Compose setup includes:
+- **Mordecai container** - Main application
+- **LocalStack container** - Local AWS SQS emulation
+- **Persistent volumes** - Database, sessions, and skills data
+
+#### Configuration for Docker
+
+Environment variables in `docker-compose.yml` override config defaults:
+
+```bash
+# .env file for Docker Compose
+AGENT_API_PORT=8000
+SKIP_MIGRATIONS=false
+```
+
+Mount required volumes in `docker-compose.yml`:
+- `./config.json:/app/config.json:ro` - Configuration
+- `./secrets.yml:/app/secrets.yml:ro` - Secrets
+- `./skills:/app/skills:rw` - Skills directory
+
+#### Manual Docker Build
+
+```bash
+# Build the image
+docker build -t mordecai:latest .
+
+# Run a container
+docker run -d \
+  --name mordecai \
+  -v $(pwd)/config.json:/app/config.json:ro \
+  -v $(pwd)/secrets.yml:/app/secrets.yml:ro \
+  -v mordecai-db:/app/data \
+  -v mordecai-sessions:/app/sessions \
+  -v $(pwd)/skills:/app/skills:rw \
+  -p 8000:8000 \
+  mordecai:latest
+```
+
+### Production Deployment
+
+#### AWS ECS / Fargate
+
+1. Push image to ECR:
+```bash
+aws ecr create-repository --repository-name mordecai
+docker tag mordecai:latest <account-id>.dkr.ecr.<region>.amazonaws.com/mordecai:latest
+docker push <account-id>.dkr.ecr.<region>.amazonaws.com/mordecai:latest
+```
+
+2. Create ECS task definition with:
+   - Container image: ECR URI
+   - Environment variables for secrets (use Secrets Manager)
+   - IAM role for SQS and Bedrock access
+   - Health check: `CMD-SHELL curl -f http://localhost:8000/health || exit 1`
+
+3. Configure Application Load Balancer with:
+   - Target group on port 8000
+   - Health check path: `/health`
+
+#### Railway / Render / Fly.io
+
+The application can be deployed to any PaaS supporting Docker:
+
+1. Connect GitHub repository
+2. Set environment variables in the platform dashboard
+3. Deploy - the platform will build from Dockerfile
+
+Required environment variables:
+```
+AGENT_TELEGRAM_BOT_TOKEN=your_token
+AGENT_MODEL_PROVIDER=bedrock
+AGENT_AWS_REGION=us-east-1
+```
+
+#### Health Check
+
+The application exposes a health endpoint:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Returns `{"status": "healthy"}` when the application is running.
 
 ## Configuration Options
 
@@ -256,6 +388,10 @@ Interact with the agent via Telegram using these commands:
 | `help`                   | Show available commands            |
 
 ## Architecture
+
+<!-- DIAGRAM_PLACEHOLDER -->
+<img src="docs/images/architecture-diagram.png" alt="Mordecai Architecture Diagram">
+<!-- END_DIAGRAM_PLACEHOLDER -->
 
 ```
 ┌─────────────────────────────────────────────────────────────┐

@@ -1095,15 +1095,15 @@ class TestAgentServiceNewSessionClearsWorkingFolder:
 
 
 class TestAgentServicePersonalityInjection:
-     """Tests for personality injection in the system prompt.
+    """Tests for personality injection in the system prompt.
 
-     Resolution order (per file):
-     1) Per-user overrides in the external Obsidian vault (when configured):
-         - me/<TELEGRAM_ID>/{soul,id}.md
-     2) Built-in repo defaults:
-         - instructions/{soul,id}.md
-     (No vault-wide defaults; defaults come from the repo `instructions/` directory.)
-     """
+    Resolution order (per file):
+    1) Per-user overrides in the external Obsidian vault (when configured):
+        - me/<TELEGRAM_ID>/{soul,id}.md
+    2) Built-in repo defaults:
+        - instructions/{soul,id}.md
+    (No vault-wide defaults; defaults come from the repo `instructions/` directory.)
+    """
 
     @pytest.fixture
     def vault_dir(self, tmp_path):
