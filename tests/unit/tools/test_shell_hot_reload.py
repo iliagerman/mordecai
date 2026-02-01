@@ -158,3 +158,31 @@ def test_shell_hot_reloads_from_updated_secrets_file_without_restart(tmp_path: P
 
     out2 = shell_env_module.shell(command="echo noop")
     assert out2.get("stdout") == "disk-secret"
+
+
+def test_shell_applies_default_timeout_for_himalaya_commands(tmp_path: Path, monkeypatch):
+    """Himalaya can hang on network/auth; ensure we apply a default timeout."""
+
+    secrets_path = tmp_path / "secrets.yml"
+    secrets_path.write_text("skills: {}\n", encoding="utf-8")
+
+    user_id = "u_timeout"
+    monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    captured: dict[str, object] = {}
+
+    def _fake_base_shell(**kwargs):
+        captured.update(kwargs)
+        return {"stdout": "ok", "returncode": 0}
+
+    monkeypatch.setattr(shell_env_module, "_call_base_shell", _fake_base_shell)
+
+    out = shell_env_module.shell(
+        command='HIMALAYA_CONFIG="/tmp/himalaya.toml" himalaya envelope list --output json',
+        # Intentionally omit timeout_seconds.
+    )
+
+    assert out.get("stdout") == "ok"
+    assert captured.get("timeout_seconds") == 45

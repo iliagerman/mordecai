@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import Literal
 
 from app.config import (
+    load_raw_secrets,
     refresh_runtime_env_from_secrets,
     resolve_user_skills_secrets_path,
+    save_raw_secrets,
     upsert_skill_config,
     upsert_skill_env_vars,
 )
@@ -214,3 +216,99 @@ def set_skill_config(
         )
 
     return result
+
+
+@tool(
+    name="unset_skill_config_keys",
+    description=(
+        "Remove one or more top-level keys from a skill's structured config in secrets.yml. "
+        "This is useful for cleaning up stale values (e.g., OUTLOOK_* keys in the himalaya config). "
+        'Provide keys_json as a JSON array of strings (e.g., ["OUTLOOK_EMAIL", "OUTLOOK_APP_PASSWORD"]).'
+    ),
+)
+def unset_skill_config_keys(
+    skill_name: str,
+    keys_json: str,
+    apply_to: Literal["user", "global"] = "user",
+) -> str:
+    tool_t0 = time.perf_counter()
+    if get_trace_id() is not None:
+        trace_event(
+            "tool.unset_skill_config_keys.start",
+            skill_name=skill_name,
+            apply_to=apply_to,
+        )
+
+    if not skill_name or not skill_name.strip():
+        return "skill_name is required."
+
+    if apply_to == "user" and _current_user_id is None:
+        return "User context not available."
+
+    try:
+        raw = json.loads(keys_json)
+    except Exception:
+        return 'keys_json must be valid JSON (e.g., ["KEY1", "KEY2"]).'
+
+    if not isinstance(raw, list):
+        return "keys_json must decode to a JSON array."
+
+    keys: list[str] = []
+    for item in raw:
+        k = str(item).strip()
+        if k:
+            keys.append(k)
+
+    if not keys:
+        return "No keys provided."
+
+    user_id = None if apply_to == "global" else _current_user_id
+
+    # Per-user values live in skills/<user>/skills_secrets.yml.
+    target_path = _secrets_path
+    if user_id is not None:
+        if _config is None:
+            return "Skill secrets context misconfigured (missing config)."
+        target_path = resolve_user_skills_secrets_path(_config, user_id)
+
+    secrets = load_raw_secrets(target_path)
+    skills = secrets.get("skills")
+    if not isinstance(skills, dict):
+        skills = {}
+        secrets["skills"] = skills
+
+    skill_block = skills.get(skill_name)
+    if not isinstance(skill_block, dict):
+        return f"No config found for skill '{skill_name}' in {target_path}."
+
+    removed: list[str] = []
+    for k in keys:
+        if k in {"env", "users"}:
+            continue
+        if k in skill_block:
+            skill_block.pop(k, None)
+            removed.append(k)
+
+    save_raw_secrets(target_path, secrets)
+
+    # Hot-reload into the running process so subsequent shell/subprocess calls see it.
+    refresh_runtime_env_from_secrets(
+        secrets_path=_secrets_path,
+        user_id=user_id,
+        skill_names=[skill_name],
+        config=_config,
+    )
+
+    if get_trace_id() is not None:
+        trace_event(
+            "tool.unset_skill_config_keys.end",
+            duration_ms=int((time.perf_counter() - tool_t0) * 1000),
+            skill_name=skill_name,
+            apply_to=apply_to,
+            removed=sorted(removed),
+            scope=("global" if user_id is None else f"user:{user_id}"),
+        )
+
+    if not removed:
+        return f"No keys removed for skill '{skill_name}' (none of the provided keys were set)."
+    return f"Removed {len(removed)} key(s) for skill '{skill_name}': {', '.join(sorted(removed))}"

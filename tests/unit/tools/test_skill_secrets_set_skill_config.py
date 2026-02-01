@@ -12,7 +12,9 @@ def test_set_skill_config_persists_to_secrets_and_materializes_file(tmp_path: Pa
     config_path = tmp_path / "himalaya" / "config.toml"
 
     # Minimal config for per-user skill secrets path resolution.
-    agent_cfg = AgentConfig(telegram_bot_token="test-token", skills_base_dir=str(tmp_path / "skills"))
+    agent_cfg = AgentConfig(
+        telegram_bot_token="test-token", skills_base_dir=str(tmp_path / "skills")
+    )
 
     set_skill_secrets_context(user_id="u1", secrets_path=secrets_path, config=agent_cfg)
 
@@ -48,3 +50,34 @@ def test_set_skill_config_persists_to_secrets_and_materializes_file(tmp_path: Pa
     assert config_path.exists()
     content = config_path.read_text(encoding="utf-8")
     assert "user@example.com" in content
+
+
+def test_set_skill_config_null_deletes_existing_keys(tmp_path: Path):
+    """Regression: allow cleaning up stale skill config keys by passing null."""
+
+    secrets_path = tmp_path / "secrets.yml"
+    agent_cfg = AgentConfig(
+        telegram_bot_token="test-token", skills_base_dir=str(tmp_path / "skills")
+    )
+
+    set_skill_secrets_context(user_id="u1", secrets_path=secrets_path, config=agent_cfg)
+
+    # Seed an existing (stale) key.
+    set_skill_config(
+        skill_name="himalaya",
+        config_json=json.dumps({"OUTLOOK_EMAIL": "old@example.com", "EMAIL_PROVIDER": "outlook"}),
+        apply_to="user",
+    )
+
+    # Now delete the stale key via explicit null.
+    set_skill_config(
+        skill_name="himalaya",
+        config_json=json.dumps({"OUTLOOK_EMAIL": None, "EMAIL_PROVIDER": "gmail"}),
+        apply_to="user",
+    )
+
+    user_secrets_path = resolve_user_skills_secrets_path(agent_cfg, "u1")
+    data = yaml.safe_load(user_secrets_path.read_text(encoding="utf-8"))
+    assert data["skills"]["himalaya"].get("OUTLOOK_EMAIL") is None
+    # Key should actually be removed from the mapping.
+    assert "OUTLOOK_EMAIL" not in data["skills"]["himalaya"]

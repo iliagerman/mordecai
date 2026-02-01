@@ -89,6 +89,17 @@ def shell(
     # - command: str
     # - work_dir: str
     # - timeout_seconds: int
+
+    # Guardrail: certain CLIs (notably himalaya over IMAP/SMTP) can block for a long time
+    # on network/auth issues. If a skill forgets to pass a timeout, apply a conservative
+    # default so the agent doesn't hang indefinitely.
+    cmd = (command or "").strip()
+    if timeout_seconds is None:
+        # Detect common patterns like:
+        #   himalaya ...
+        #   HIMALAYA_CONFIG=... himalaya ...
+        if cmd.startswith("himalaya ") or " himalaya " in f" {cmd} ":
+            timeout_seconds = 45
     tool_t0 = time.perf_counter()
 
     if get_trace_id() is not None:
