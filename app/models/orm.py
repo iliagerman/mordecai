@@ -136,6 +136,9 @@ class LongMemoryModel(Base):
 
     __tablename__ = "long_memory"
 
+    # One value per key per user.
+    __table_args__ = (UniqueConstraint("user_id", "key", name="uq_user_memory_key"),)
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(
         String,
@@ -203,9 +206,7 @@ class CronTaskModel(Base):
     user = relationship("UserModel", back_populates="cron_tasks")
 
     # Unique constraint: one task name per user
-    __table_args__ = (
-        UniqueConstraint("user_id", "name", name="uq_user_cron_task_name"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_user_cron_task_name"),)
 
 
 class CronLockModel(Base):
