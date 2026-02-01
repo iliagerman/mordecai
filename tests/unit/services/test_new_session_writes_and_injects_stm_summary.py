@@ -46,11 +46,9 @@ async def test_new_session_appends_summary_to_stm_and_next_prompt_injects_it(tmp
     user_id = "u1"
 
     # Seed some in-memory conversation history + message count so /new will summarize.
-    svc._conversation_history[user_id] = [
-        {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": "Hi"},
-    ]
-    svc._user_message_counts[user_id] = 2
+    svc._conversation_history_state.add_message(user_id, "user", "Hello")
+    svc._conversation_history_state.add_message(user_id, "assistant", "Hi")
+    svc._message_counter.increment(user_id, 2)
 
     # Ensure stm doesn't exist yet
     stm_path = short_term_memory_path(cfg.obsidian_vault_root, user_id)
@@ -64,7 +62,7 @@ async def test_new_session_appends_summary_to_stm_and_next_prompt_injects_it(tmp
     assert "Decided B" in (svc._obsidian_stm_cache.get(user_id) or "")
 
     # In-memory session state cleared
-    assert svc._conversation_history.get(user_id) == []
+    assert svc._conversation_history_state.get(user_id) == []
     assert svc.get_message_count(user_id) == 0
 
     # Next session prompt includes STM content (injected)

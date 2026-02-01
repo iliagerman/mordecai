@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from app.config import refresh_runtime_env_from_secrets, resolve_user_skills_dir
+from app.models.agent import MissingSkillRequirements, RequirementSpec, SkillInfo, WhenClause
 from app.services.agent.frontmatter import (
     extract_required_config,
     extract_required_env,
     parse_skill_frontmatter,
 )
-from app.services.agent.types import MissingSkillRequirements, RequirementSpec, SkillInfo
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ class SharedSkillsSynchronizer:
         # Determine which shared entries should be mirrored.
         shared_items: dict[str, Path] = {}
         for item in self.shared_dir.iterdir():
-            # Skip private/dunder entries and non-skill reserved dirs.
+            # Skip private/under entries and non-skill reserved dirs.
             if item.name.startswith("__"):
                 continue
             if item.is_file() and item.name == "__init__.py":
@@ -225,11 +225,11 @@ class SkillRepository:
                 content = skill_md.read_text(encoding="utf-8")
                 frontmatter = parse_skill_frontmatter(content)
                 skill_name = str(frontmatter.get("name") or item.name)
-                skills_by_name[skill_name] = {
-                    "name": skill_name,
-                    "description": str(frontmatter.get("description") or ""),
-                    "path": str(item.resolve()),
-                }
+                skills_by_name[skill_name] = SkillInfo(
+                    name=skill_name,
+                    description=str(frontmatter.get("description") or ""),
+                    path=str(item.resolve()),
+                )
             except Exception as e:
                 logger.warning("Failed to read skill %s: %s", item, e)
 
@@ -313,22 +313,22 @@ class SkillRepository:
         def is_active_req(req: RequirementSpec, *, skill_cfg: dict[str, Any]) -> bool:
             """Return True if a requirement is active given its optional `when` clause."""
 
-            when = req.get("when")
-            if not isinstance(when, dict) or not when:
+            when = req.when
+            if not isinstance(when, WhenClause) or not when:
                 return True
 
-            cfg_key = when.get("config")
+            cfg_key = when.config
             if isinstance(cfg_key, str) and cfg_key.strip():
                 actual = skill_cfg.get(cfg_key)
-                if "equals" in when:
-                    return str(actual) == str(when.get("equals"))
+                if when.equals is not None:
+                    return str(actual) == str(when.equals)
                 return bool(actual)
 
-            env_key = when.get("env")
+            env_key = when.env
             if isinstance(env_key, str) and env_key.strip():
                 actual = os.environ.get(env_key)
-                if "equals" in when:
-                    return str(actual) == str(when.get("equals"))
+                if when.equals is not None:
+                    return str(actual) == str(when.equals)
                 return bool(actual)
 
             return True
@@ -336,8 +336,8 @@ class SkillRepository:
         missing_by_skill: dict[str, MissingSkillRequirements] = {}
 
         for info in self.discover(user_id):
-            skill_name = (info.get("name") or "").strip()
-            skill_path = (info.get("path") or "").strip()
+            skill_name = (info.name or "").strip()
+            skill_path = (info.path or "").strip()
             if not skill_name or not skill_path:
                 continue
 
@@ -365,7 +365,7 @@ class SkillRepository:
             for r in env_reqs:
                 if not is_active_req(r, skill_cfg=skill_cfg):
                     continue
-                n = (r.get("name") or "").strip()
+                n = (r.name or "").strip()
                 if not n:
                     continue
                 val = os.environ.get(n)
@@ -387,7 +387,7 @@ class SkillRepository:
                 for r in cfg_reqs:
                     if not is_active_req(r, skill_cfg=skill_cfg):
                         continue
-                    n = (r.get("name") or "").strip()
+                    n = (r.name or "").strip()
                     if not n:
                         continue
                     v = skill_cfg.get(n)
@@ -395,11 +395,9 @@ class SkillRepository:
                         missing_cfg.append(r)
 
             if missing_env or missing_cfg:
-                rec: MissingSkillRequirements = {}
-                if missing_env:
-                    rec["env"] = missing_env
-                if missing_cfg:
-                    rec["config"] = missing_cfg
-                missing_by_skill[skill_name] = rec
+                missing_by_skill[skill_name] = MissingSkillRequirements(
+                    env=missing_env,
+                    config=missing_cfg,
+                )
 
         return missing_by_skill

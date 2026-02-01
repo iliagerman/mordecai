@@ -4,7 +4,7 @@ This package contains small, typed helpers extracted from `app.services.agent_se
 They are intentionally dependency-light so they can be unit-tested in isolation.
 """
 
-from app.services.agent.types import AttachmentInfo, ConversationMessage, MemoryContext, SkillInfo
+from app.models.agent import AttachmentInfo, ConversationMessage, MemoryContext, SkillInfo
 
 __all__ = [
     "AttachmentInfo",

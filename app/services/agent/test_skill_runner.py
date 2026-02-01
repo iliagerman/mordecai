@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.models.agent import SkillInfo
 from app.services.agent.skills import SkillRepository
-from app.services.agent.types import SkillInfo
 
 logger = logging.getLogger(__name__)
 
@@ -36,14 +36,14 @@ class DeterministicEchoSkillRunner:
 
         matches: list[SkillInfo] = []
         for s in skills:
-            name = str(s.get("name") or "").strip()
+            name = str(s.name or "").strip()
             if name and name.lower() in msg_lower:
                 matches.append(s)
 
         if len(matches) != 1:
             return None
 
-        skill_path = str(matches[0].get("path") or "").strip()
+        skill_path = str(matches[0].path or "").strip()
         if not skill_path:
             return None
 

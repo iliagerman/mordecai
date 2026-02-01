@@ -60,7 +60,7 @@ class TestAgentServiceModelProvider:
             skills_base_dir=temp_dir,
         )
 
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("app.services.agent.model_factory.BedrockModel")
     def test_bedrock_model_created_with_config(self, mock_bedrock_model, bedrock_config):
         """Test Bedrock model is created with correct configuration."""
         service = AgentService(bedrock_config)
@@ -71,7 +71,7 @@ class TestAgentServiceModelProvider:
             region_name=bedrock_config.aws_region,
         )
 
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("app.services.agent.model_factory.BedrockModel")
     def test_bedrock_api_key_sets_env_var(self, mock_bedrock_model, temp_dir):
         """Test Bedrock API key sets AWS_BEARER_TOKEN_BEDROCK env var."""
         import os
@@ -90,7 +90,7 @@ class TestAgentServiceModelProvider:
         assert os.environ.get("AWS_BEARER_TOKEN_BEDROCK") == "test-bedrock-api-key"
         mock_bedrock_model.assert_called_once()
 
-    @patch("app.services.agent_service.OpenAIModel")
+    @patch("app.services.agent.model_factory.OpenAIModel")
     def test_openai_model_created_with_config(self, mock_openai_model, openai_config):
         """Test OpenAI model is created with correct configuration."""
         service = AgentService(openai_config)
@@ -149,8 +149,8 @@ class TestAgentServiceSession:
             skills_base_dir=temp_dir,
         )
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     def test_get_or_create_agent_creates_new_agent(self, mock_model, mock_agent, config):
         """Test get_or_create_agent creates agent for new user."""
         service = AgentService(config)
@@ -160,8 +160,8 @@ class TestAgentServiceSession:
 
         mock_agent.assert_called_once()
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     def test_get_or_create_agent_returns_existing_agent(self, mock_model, mock_agent, config):
         """Test get_or_create_agent returns cached agent for the same user."""
         service = AgentService(config)
@@ -173,8 +173,8 @@ class TestAgentServiceSession:
         # Agent is cached per user within a session
         assert mock_agent.call_count == 1
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_new_session_clears_existing_agent(self, mock_model, mock_agent, config):
         """Test new_session creates new agent and clears session manager."""
@@ -191,8 +191,8 @@ class TestAgentServiceSession:
         # Should create a new agent
         assert mock_agent.call_count == 2
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_new_session_clears_session_manager(self, mock_model, mock_agent, config):
         """Test new_session clears conversation history for user."""
@@ -201,7 +201,7 @@ class TestAgentServiceSession:
 
         # Add conversation history
         service._add_to_conversation_history(user_id, "user", "Hello")
-        assert user_id in service._conversation_history
+        assert user_id in service._conversation_history_state._history
 
         # Create new session
         await service.new_session(user_id)
@@ -209,8 +209,8 @@ class TestAgentServiceSession:
         # Conversation history should be cleared
         assert user_id not in service._conversation_history
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_new_session_runs_extraction_and_summary_when_available(
         self, mock_model, mock_agent, config
@@ -258,12 +258,12 @@ class TestAgentServiceSession:
 
         # Add conversation history and agent name
         service._add_to_conversation_history(user_id, "user", "Hello")
-        service._user_agent_names[user_id] = "TestAgent"
+        service._agent_name_registry.set(user_id, "TestAgent")
 
         service.cleanup_user(user_id)
 
-        assert user_id not in service._conversation_history
-        assert user_id not in service._user_agent_names
+        assert user_id not in service._conversation_history_state._history
+        assert user_id not in service._agent_name_registry._names
 
 
 class TestAgentServiceMessageProcessing:
@@ -294,8 +294,8 @@ class TestAgentServiceMessageProcessing:
         )
 
     @pytest.mark.asyncio
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     async def test_process_message_returns_response(self, mock_model, mock_agent, config):
         """Test process_message returns agent response."""
         # Setup mock agent response
@@ -311,8 +311,8 @@ class TestAgentServiceMessageProcessing:
         assert response == "Hello! How can I help you?"
 
     @pytest.mark.asyncio
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     async def test_process_message_calls_agent(self, mock_model, mock_agent, config):
         """Test process_message invokes agent with message."""
         mock_result = MagicMock()
@@ -474,8 +474,8 @@ class TestAgentServiceAutomaticExtraction:
             extraction_timeout_seconds=5,
         )
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_process_message_increments_count_for_user_and_response(
         self, mock_model, mock_agent, config_with_low_limit
@@ -499,8 +499,8 @@ class TestAgentServiceAutomaticExtraction:
         # Count should be 2 (user message + agent response)
         assert service.get_message_count(user_id) == 2
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_process_message_triggers_extraction_at_limit(
         self, mock_model, mock_agent, config_with_low_limit
@@ -536,8 +536,8 @@ class TestAgentServiceAutomaticExtraction:
         assert "summarized" in response.lower()
         assert "saved" in response.lower()
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_process_message_resets_count_after_extraction(
         self, mock_model, mock_agent, config_with_low_limit
@@ -578,8 +578,8 @@ class TestAgentServiceAutomaticExtraction:
         # Count should be reset to 0
         assert service.get_message_count(user_id) == 0
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_extraction_not_triggered_below_limit(
         self, mock_model, mock_agent, config_with_low_limit
@@ -605,8 +605,8 @@ class TestAgentServiceAutomaticExtraction:
         # Response should NOT contain extraction notification
         assert "summarized" not in response.lower()
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_extraction_clears_session_memory(
         self, mock_model, mock_agent, config_with_low_limit
@@ -648,7 +648,7 @@ class TestAgentServiceAutomaticExtraction:
         await asyncio.sleep(0.1)
 
         # Conversation history should be cleared
-        assert user_id not in service._conversation_history
+        assert user_id not in service._conversation_history_state._history
 
 
 class TestVisionModelSelection:
@@ -692,7 +692,7 @@ class TestVisionModelSelection:
             skills_base_dir=temp_dir,
         )
 
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("app.services.agent.model_factory.BedrockModel")
     def test_vision_model_used_when_configured_and_requested(
         self, mock_bedrock_model, config_with_vision
     ):
@@ -706,7 +706,7 @@ class TestVisionModelSelection:
             region_name=config_with_vision.aws_region,
         )
 
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("app.services.agent.model_factory.BedrockModel")
     def test_default_model_used_when_vision_not_configured(
         self, mock_bedrock_model, config_without_vision
     ):
@@ -720,7 +720,7 @@ class TestVisionModelSelection:
             region_name=config_without_vision.aws_region,
         )
 
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("app.services.agent.model_factory.BedrockModel")
     def test_default_model_used_when_use_vision_false(self, mock_bedrock_model, config_with_vision):
         """Test default model is used when use_vision=False."""
         service = AgentService(config_with_vision)
@@ -869,8 +869,8 @@ class TestVisionProcessingFallback:
         image_path.write_bytes(png_data)
         return str(image_path)
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_fallback_on_agent_error(self, mock_model, mock_agent, config, temp_image):
         """Test fallback message when agent raises an error."""
@@ -889,9 +889,9 @@ class TestVisionProcessingFallback:
         assert temp_image in response
         assert "file system tools" in response
 
-    @patch("app.services.agent_service.SlidingWindowConversationManager")
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.agent.conversation_manager.SlidingWindowConversationManager")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_successful_vision_processing(
         self, mock_model, mock_agent, mock_conv_manager, config, temp_image
@@ -912,9 +912,9 @@ class TestVisionProcessingFallback:
 
         assert response == "I see a test image."
 
-    @patch("app.services.agent_service.SlidingWindowConversationManager")
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.agent.conversation_manager.SlidingWindowConversationManager")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_process_image_increments_message_count(
         self, mock_model, mock_agent, mock_conv_manager, config, temp_image
@@ -1031,8 +1031,8 @@ class TestAgentServiceNewSessionClearsWorkingFolder:
             working_folder_base_dir=temp_dir,
         )
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_new_session_clears_working_folder(self, mock_model, mock_agent, config):
         """Test that new_session clears the working folder."""
@@ -1125,8 +1125,8 @@ class TestAgentServicePersonalityInjection:
         assert "DEFAULT_ID" not in prompt
         assert "source: user" in prompt
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("strands.Agent")
+    @patch("app.services.agent.model_factory.BedrockModel")
     @pytest.mark.asyncio
     async def test_new_session_without_file_service_succeeds(self, mock_model, mock_agent, config):
         """Test that new_session works without file service."""
@@ -1197,7 +1197,7 @@ class TestGeminiModelProvider:
         assert config.google_model_id == "gemini-2.0-pro"
         assert config.google_api_key == "custom-api-key"
 
-    @patch("app.services.agent_service.GeminiModel")
+    @patch("strands.models.gemini.GeminiModel")
     def test_gemini_model_created_with_config(self, mock_gemini_model, google_config):
         """Test GeminiModel is created with correct configuration."""
         service = AgentService(google_config)
@@ -1209,7 +1209,7 @@ class TestGeminiModelProvider:
             params={"max_output_tokens": 4096},
         )
 
-    @patch("app.services.agent_service.GeminiModel")
+    @patch("strands.models.gemini.GeminiModel")
     def test_gemini_model_receives_api_key_in_client_args(self, mock_gemini_model, temp_dir):
         """Test GeminiModel receives api_key in client_args."""
         config = AgentConfig(
@@ -1226,7 +1226,7 @@ class TestGeminiModelProvider:
         call_kwargs = mock_gemini_model.call_args[1]
         assert call_kwargs["client_args"]["api_key"] == "my-secret-key"
 
-    @patch("app.services.agent_service.GeminiModel")
+    @patch("strands.models.gemini.GeminiModel")
     def test_gemini_model_receives_model_id(self, mock_gemini_model, temp_dir):
         """Test GeminiModel receives correct model_id."""
         config = AgentConfig(
