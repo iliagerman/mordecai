@@ -220,6 +220,29 @@ class OnboardingService:
 
         return message
 
+    def get_onboarding_context(self, user_id: str) -> dict[str, str | None] | None:
+        """Return the onboarding context for injection into agent prompt.
+
+        This provides the raw soul.md and id.md content so the agent can
+        generate its own welcome message instead of us sending a hardcoded one.
+
+        Args:
+            user_id: The user's identifier.
+
+        Returns:
+            Dict with 'soul' and 'id' keys, or None if onboarding not available.
+        """
+        soul_content = self.get_default_soul()
+        id_content = self.get_default_id()
+
+        if not soul_content and not id_content:
+            return None
+
+        return {
+            "soul": soul_content,
+            "id": id_content,
+        }
+
     def is_enabled(self) -> bool:
         """Check if onboarding service is properly configured."""
         return self._vault_root() is not None or self._repo_instructions_dir() is not None

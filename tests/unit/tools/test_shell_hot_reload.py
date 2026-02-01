@@ -186,3 +186,36 @@ def test_shell_applies_default_timeout_for_himalaya_commands(tmp_path: Path, mon
 
     assert out.get("stdout") == "ok"
     assert captured.get("timeout") == 45
+
+
+def test_shell_forces_non_interactive_when_stdin_not_tty(tmp_path: Path, monkeypatch):
+    """Prevent hangs: in headless tool execution, force non_interactive=True.
+
+    The upstream strands_tools shell uses an interactive PTY mode that can block
+    when stdin isn't a real TTY. Our wrapper should force non-interactive mode
+    when stdin is not a TTY, even if the caller/tool schema default is False.
+    """
+
+    secrets_path = tmp_path / "secrets.yml"
+    secrets_path.write_text("skills: {}\n", encoding="utf-8")
+
+    user_id = "u_non_tty"
+    monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    # Simulate a non-interactive/headless environment.
+    monkeypatch.setattr(shell_env_module, "_stdin_is_tty", lambda: False)
+
+    captured: dict[str, object] = {}
+
+    def _fake_base_shell(**kwargs):
+        captured.update(kwargs)
+        return {"stdout": "ok", "returncode": 0}
+
+    monkeypatch.setattr(shell_env_module, "_call_base_shell", _fake_base_shell)
+
+    out = shell_env_module.shell(command="echo noop", non_interactive=False)
+
+    assert out.get("stdout") == "ok"
+    assert captured.get("non_interactive") is True

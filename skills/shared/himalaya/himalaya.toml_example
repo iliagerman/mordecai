@@ -39,5 +39,5 @@ message.send.backend.encryption.type = "start-tls"
 message.send.backend.login = "[GMAIL]"
 message.send.backend.auth.type = "password"
 message.send.backend.auth.raw = "[PASSWORD]"
-[accounts.outlook]
+
 
