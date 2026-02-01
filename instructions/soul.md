@@ -1,6 +1,6 @@
 ---
 type: soul
-version: 2
+version: 1
 ---
 
 # Soul (Personality)

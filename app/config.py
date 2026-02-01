@@ -884,8 +884,12 @@ def refresh_runtime_env_from_secrets(
                 # This stays generic and applies to any skill following the convention.
                 if dest.name == f"{skill}.toml":
                     env_key = f"{str(skill).upper()}_CONFIG"
-                    extra_env[env_key] = str(dest)
-                    config_env_lines[env_key] = str(dest)
+                    # Always export absolute paths. In container this should look like:
+                    #   /app/skills/<user>/<skill>.toml
+                    # while in local tests it will be an absolute temp dir path.
+                    abs_dest = str(dest.resolve())
+                    extra_env[env_key] = abs_dest
+                    config_env_lines[env_key] = abs_dest
 
         # Write a per-user .env convenience file (git-ignored) containing only *_CONFIG vars.
         if config_env_lines:
