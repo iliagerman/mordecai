@@ -252,9 +252,23 @@ class TelegramBotInterface:
     # Queue Operations (delegate to message_queue module)
     # ========================================================================
 
-    async def _enqueue_message(self, user_id: str, chat_id: int, message: str) -> None:
-        """Enqueue a message to the user's SQS queue for processing."""
-        self._queue_handler.enqueue_message(user_id, chat_id, message)
+    async def _enqueue_message(
+        self,
+        user_id: str,
+        chat_id: int,
+        message: str,
+        onboarding_context: dict[str, str | None] | None = None,
+    ) -> None:
+        """Enqueue a message to the user's SQS queue for processing.
+
+        Args:
+            user_id: Telegram user ID.
+            chat_id: Telegram chat ID for responses.
+            message: Message text to process.
+            onboarding_context: Optional onboarding context (soul.md, id.md content)
+                if this is the user's first interaction.
+        """
+        self._queue_handler.enqueue_message(user_id, chat_id, message, onboarding_context)
 
         # Log the action
         try:

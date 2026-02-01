@@ -464,8 +464,8 @@ class TelegramMessageHandlers:
 
         self.migrate_legacy_skill_folder(telegram_user_id, user_id)
 
-        # Check if user needs onboarding
-        await self._check_and_handle_onboarding(user_id, chat_id)
+        # Check if user needs onboarding (returns context if this is first interaction)
+        onboarding_context = await self._check_and_handle_onboarding(user_id, chat_id)
 
         if len(message_text) > 50:
             preview = message_text[:50] + "..."
@@ -479,8 +479,8 @@ class TelegramMessageHandlers:
         # Parse the message for commands
         parsed = self.command_parser.parse(message_text)
 
-        # Execute based on command type
-        await execute_command(parsed, user_id, chat_id, message_text)
+        # Execute based on command type (pass onboarding context for first interaction)
+        await execute_command(parsed, user_id, chat_id, message_text, onboarding_context)
 
     async def handle_document(
         self,
@@ -780,16 +780,21 @@ class TelegramMessageHandlers:
         # Sort by file_size and return largest
         return max(photos, key=lambda p: p.file_size or 0)
 
-    async def _check_and_handle_onboarding(self, user_id: str, chat_id: int) -> None:
+    async def _check_and_handle_onboarding(self, user_id: str, chat_id: int) -> dict[str, str | None] | None:
         """Check if user needs onboarding and handle it if needed.
 
         Args:
             user_id: The user's identifier.
             chat_id: Telegram chat ID for sending messages.
+
+        Returns:
+            Onboarding context dict with 'soul' and 'id' content if onboarding
+            was just performed, None otherwise. The caller should inject this
+            into the agent's prompt so it can generate a personalized welcome.
         """
         if self.user_dao is None or self.onboarding_service is None:
             # Onboarding not configured, skip
-            return
+            return None
 
         # Ensure the user exists before onboarding checks.
         #
@@ -813,16 +818,16 @@ class TelegramMessageHandlers:
                 )
         except Exception as e:
             logger.warning("Failed to get_or_create user before onboarding for %s: %s", user_id, e)
-            return
+            return None
 
         # Check if user has already completed onboarding
         try:
             is_completed = await self.user_dao.is_onboarding_completed(onboarding_user_id)
             if is_completed:
-                return
+                return None
         except Exception as e:
             logger.warning("Failed to check onboarding status for %s: %s", user_id, e)
-            return
+            return None
 
         # Copy personality files to user's folder
         if self.onboarding_service.is_enabled():
@@ -837,12 +842,12 @@ class TelegramMessageHandlers:
             except Exception as e:
                 logger.error("Failed to create personality files for %s: %s", user_id, e)
 
-        # Send onboarding message
+        # Get onboarding context (soul.md and id.md content) for agent injection
+        onboarding_context = None
         try:
-            onboarding_message = self.onboarding_service.get_onboarding_message(user_id)
-            await self._send_response(chat_id, onboarding_message)
+            onboarding_context = self.onboarding_service.get_onboarding_context(user_id)
         except Exception as e:
-            logger.error("Failed to send onboarding message to %s: %s", user_id, e)
+            logger.error("Failed to get onboarding context for %s: %s", user_id, e)
 
         # Mark onboarding as completed
         try:
@@ -866,3 +871,5 @@ class TelegramMessageHandlers:
             )
         except Exception:
             logger.exception("Failed to log onboarding completion for %s", user_id)
+
+        return onboarding_context

@@ -96,3 +96,8 @@ agent.db
 splintermaster
 temp_files
 himalaya.toml
+
+
+# Skills - ignore all except shared
+skills/*
+!skills/shared

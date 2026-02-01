@@ -243,6 +243,7 @@ class AgentCreator:
         user_id: str,
         memory_context: MemoryContext | None = None,
         attachments: list[AttachmentInfo] | None = None,
+        onboarding_context: dict[str, str | None] | None = None,
     ) -> str:
         """Build the system prompt for a user.
 
@@ -250,6 +251,8 @@ class AgentCreator:
             user_id: User's telegram ID.
             memory_context: Optional memory context to include.
             attachments: Optional attachment info to include.
+            onboarding_context: Optional onboarding context (soul.md, id.md content)
+                if this is the user's first interaction.
 
         Returns:
             Complete system prompt string.
@@ -258,6 +261,7 @@ class AgentCreator:
             user_id=user_id,
             memory_context=memory_context,
             attachments=attachments,
+            onboarding_context=onboarding_context,
         )
 
     def create_agent(
@@ -266,6 +270,7 @@ class AgentCreator:
         memory_context: MemoryContext | None = None,
         attachments: list[AttachmentInfo] | None = None,
         messages: list[Any] | None = None,
+        onboarding_context: dict[str, str | None] | None = None,
     ) -> Agent:
         """Create an agent instance.
 
@@ -274,6 +279,8 @@ class AgentCreator:
             memory_context: Retrieved memory context.
             attachments: List of file attachment metadata.
             messages: Previous conversation messages to restore context.
+            onboarding_context: Optional onboarding context (soul.md, id.md content)
+                if this is the user's first interaction.
 
         Returns:
             Configured Agent instance.
@@ -428,7 +435,9 @@ class AgentCreator:
             # Strands' type hints declare this parameter as bool, but we rely on
             # runtime backward-compat behavior where a string path is accepted.
             load_tools_from_directory=cast(Any, user_skills_dir),
-            system_prompt=self.build_system_prompt(user_id, memory_context, attachments),
+            system_prompt=self.build_system_prompt(
+                user_id, memory_context, attachments, onboarding_context
+            ),
         )
 
         # Log loaded skills for this user

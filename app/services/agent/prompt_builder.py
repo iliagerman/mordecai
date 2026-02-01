@@ -29,6 +29,7 @@ class SystemPromptBuilder:
         user_id: str,
         memory_context: MemoryContext | None = None,
         attachments: list[AttachmentInfo] | None = None,
+        onboarding_context: dict[str, str | None] | None = None,
     ) -> str:
         memory_context = memory_context or MemoryContext()
 
@@ -58,6 +59,10 @@ class SystemPromptBuilder:
             f"## Current Date and Time\n\n{current_datetime}\n\n"
             f"## Identity\n\n{identity}\n"
         )
+
+        # Add onboarding welcome section if this is the first interaction
+        if onboarding_context:
+            prompt += self._onboarding_section(onboarding_context)
 
         prompt += self._personality_section(user_id)
         prompt += self._obsidian_access_section()
@@ -447,3 +452,38 @@ class SystemPromptBuilder:
 
         lines.append("")
         return "\n".join(lines)
+
+    def _onboarding_section(self, onboarding_context: dict[str, str | None]) -> str:
+        """Generate the onboarding section for first-time users.
+
+        When a user first interacts with the agent, this section provides
+        the soul.md and id.md content and instructs the agent to welcome the user.
+
+        Args:
+            onboarding_context: Dict with 'soul' and 'id' keys containing
+                the personality file content.
+
+        Returns:
+            Onboarding section string for the prompt.
+        """
+        soul = onboarding_context.get("soul", "")
+        id_content = onboarding_context.get("id", "")
+
+        lines = ["## Welcome - First Interaction\n\n"]
+        lines.append(
+            "This is the user's first interaction with you! Please send a warm, "
+            "friendly welcome message. Introduce yourself and mention that you're here "
+            "to help. Keep it concise and conversational.\n\n"
+        )
+
+        if soul:
+            lines.append("### Your Personality (soul.md)\n\n")
+            lines.append(soul)
+            lines.append("\n\n")
+
+        if id_content:
+            lines.append("### Your Identity (id.md)\n\n")
+            lines.append(id_content)
+            lines.append("\n\n")
+
+        return "".join(lines)

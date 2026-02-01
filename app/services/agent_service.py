@@ -347,6 +347,7 @@ class AgentService:
         memory_context: MemoryContext | None = None,
         attachments: list[AttachmentInfo] | None = None,
         messages: list[Any] | None = None,
+        onboarding_context: dict[str, str | None] | None = None,
     ) -> "Agent":
         """Create an agent instance."""
         return self._agent_creator.create_agent(
@@ -354,6 +355,7 @@ class AgentService:
             memory_context=memory_context,
             attachments=attachments,
             messages=messages,
+            onboarding_context=onboarding_context,
         )
 
     def get_or_create_agent(self, user_id: str) -> "Agent":
@@ -372,21 +374,45 @@ class AgentService:
     # Message Processing Methods (delegated to MessageProcessor)
     # ========================================================================
 
-    async def process_message(self, user_id: str, message: str) -> str:
-        """Process a user message through the agent."""
-        return await self._message_processor.process_message(user_id, message)
+    async def process_message(
+        self,
+        user_id: str,
+        message: str,
+        onboarding_context: dict[str, str | None] | None = None,
+    ) -> str:
+        """Process a user message through the agent.
+
+        Args:
+            user_id: User's telegram ID.
+            message: User's message to process.
+            onboarding_context: Optional onboarding context (soul.md, id.md content)
+                if this is the user's first interaction.
+        """
+        return await self._message_processor.process_message(
+            user_id, message, onboarding_context
+        )
 
     async def process_message_with_attachments(
         self,
         user_id: str,
         message: str,
         attachments: list[AttachmentInfo],
+        onboarding_context: dict[str, str | None] | None = None,
     ) -> str:
-        """Process a message with file attachments."""
+        """Process a message with file attachments.
+
+        Args:
+            user_id: User's telegram ID.
+            message: User's message to process.
+            attachments: List of attachment metadata.
+            onboarding_context: Optional onboarding context (soul.md, id.md content)
+                if this is the user's first interaction.
+        """
         return await self._message_processor.process_message_with_attachments(
             user_id=user_id,
             message=message,
             attachments=attachments,
+            onboarding_context=onboarding_context,
         )
 
     def _maybe_run_simple_skill_echo_for_tests(self, *, user_id: str, message: str) -> str | None:
