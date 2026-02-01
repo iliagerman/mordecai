@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config import AgentConfig
 from app.enums import ModelProvider
-from app.models.agent import AttachmentInfo, ConversationMessage, MemoryContext
+from app.models.agent import AttachmentInfo, ConversationMessage, MemoryContext, SkillInfo
 from app.services.agent.agent_creation import AgentCreator
 from app.services.agent.attachment_handler import AttachmentHandler
 
@@ -300,7 +300,7 @@ class AgentService:
         """Cache an agent instance for a user."""
         self._agent_creator.cache_agent(user_id, agent)
 
-    def _discover_skills(self, user_id: str) -> list[dict]:
+    def _discover_skills(self, user_id: str) -> list[SkillInfo]:
         """Discover installed instruction-based skills for a user."""
         return self._agent_creator.discover_skills(user_id)
 
