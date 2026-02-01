@@ -18,7 +18,7 @@ from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.models.model import Model
 
-from app.models.agent import AttachmentInfo, MemoryContext
+from app.models.agent import AttachmentInfo, MemoryContext, SkillInfo
 
 if TYPE_CHECKING:
     from app.config import AgentConfig
@@ -175,7 +175,7 @@ class AgentCreator:
             return self._user_agents[user_id]
         return self.create_agent(user_id)
 
-    def discover_skills(self, user_id: str) -> list[dict]:
+    def discover_skills(self, user_id: str) -> list[SkillInfo]:
         """Discover installed instruction-based skills for a user.
 
         Skills are instruction-based: they contain a SKILL.md file with
@@ -185,7 +185,7 @@ class AgentCreator:
         message. Therefore, the single source of truth for what the agent can
         load is the user's directory.
         """
-        return cast(list[dict], self._skill_repo.discover(user_id))
+        return self._skill_repo.discover(user_id)
 
     def get_user_skills_dir(self, user_id: str) -> Path:
         """Get the skills directory for a specific user.
@@ -440,7 +440,7 @@ class AgentCreator:
         )
         skills = self.discover_skills(user_id)
         if skills:
-            skill_names = [s["name"] for s in skills]
+            skill_names = [s.name for s in skills]
             logger.info(
                 "User %s: Loaded %d skills: %s", user_id, len(skills), ", ".join(skill_names)
             )
