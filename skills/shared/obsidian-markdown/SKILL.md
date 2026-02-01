@@ -36,7 +36,6 @@ Within that single vault, top-level folders are used as categories/areas:
 
 - `me/` (agent-owned root)
   - `me/[USER_ID]/` (per-user area; default write target)
-  - `me/default/` (default/fallback files when a user file does not exist)
 - `family/`
 - `work/`
 - `personal/`
@@ -88,11 +87,13 @@ Personality/identity instructions are stored as markdown files in the vault:
 - Per-user:
   - `me/[USER_ID]/soul.md`
   - `me/[USER_ID]/id.md`
-- Default fallback:
-  - `me/default/soul.md`
-  - `me/default/id.md`
 
-When the per-user file is missing, the backend will fall back to `me/default/`.
+Default fallback templates live in the repo:
+
+- `instructions/soul.md`
+- `instructions/id.md`
+
+When the per-user file is missing, the backend will fall back to the repo defaults under `instructions/`.
 - For `obsidian://open` links:
   - `vault` should be the **vault name on that device** (it’s the folder name you opened in Obsidian).
   - `file` should be a path *within the vault*, e.g. `me/[USER_ID]/Notes/Welcome.md`.

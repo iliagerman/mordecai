@@ -521,7 +521,7 @@ class AgentService:
         lines: list[str] = []
         lines.append("## Personality (Obsidian Vault)\n")
         lines.append(
-            "The following files are loaded from the configured Obsidian vault and must be followed as system-level instructions.\n"
+            "The following files are loaded from repo defaults and/or the configured Obsidian vault and must be followed as system-level instructions.\n"
         )
 
         if "soul" in docs:
