@@ -500,13 +500,24 @@ def upsert_skill_config(
         target_block = user_block
 
     clean: dict[str, Any] = {}
+    keys_to_delete: set[str] = set()
     for k, v in (config_data or {}).items():
         key = str(k)
         if key in {"env", "users"}:
             continue
+        # Support explicit deletions: if a caller passes null for a key in config_json,
+        # remove it from the stored skill config instead of persisting a null.
+        # This is especially useful for cleaning up stale provider credentials.
+        if v is None:
+            keys_to_delete.add(key)
+            continue
         clean[key] = v
 
     _deep_merge_dict(target_block, clean)
+
+    # Apply deletions after merge.
+    for key in keys_to_delete:
+        target_block.pop(key, None)
     save_raw_secrets(secrets_path, secrets)
     return secrets
 
