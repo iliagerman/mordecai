@@ -78,6 +78,5 @@ def test_set_skill_config_null_deletes_existing_keys(tmp_path: Path):
 
     user_secrets_path = resolve_user_skills_secrets_path(agent_cfg, "u1")
     data = yaml.safe_load(user_secrets_path.read_text(encoding="utf-8"))
-    assert data["skills"]["himalaya"].get("OUTLOOK_EMAIL") is None
     # Key should actually be removed from the mapping.
     assert "OUTLOOK_EMAIL" not in data["skills"]["himalaya"]

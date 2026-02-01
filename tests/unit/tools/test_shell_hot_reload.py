@@ -185,4 +185,4 @@ def test_shell_applies_default_timeout_for_himalaya_commands(tmp_path: Path, mon
     )
 
     assert out.get("stdout") == "ok"
-    assert captured.get("timeout_seconds") == 45
+    assert captured.get("timeout") == 45

@@ -88,18 +88,34 @@ def shell(
     # kwargs are forwarded to strands_tools.shell. Typical args:
     # - command: str
     # - work_dir: str
-    # - timeout_seconds: int
+    # - timeout: int
+
+    # Guardrail: certain CLIs (notably himalaya over IMAP/SMTP) can block for a long time
+    # on network/auth issues. If a skill forgets to pass a timeout, apply a conservative
+    # default so the agent doesn't hang indefinitely.
+    # Normalize timeout argument naming across strands_tools versions.
+    # The upstream tool uses `timeout`, while some callers/models use `timeout_seconds`.
+    # Priority:
+    #   explicit timeout_seconds param > kwargs.timeout
+    effective_timeout: int | None = None
+    if timeout_seconds is not None:
+        effective_timeout = int(timeout_seconds)
+    elif kwargs.get("timeout") is not None:
+        try:
+            effective_timeout = int(kwargs.get("timeout"))
+        except Exception:
+            effective_timeout = None
 
     # Guardrail: certain CLIs (notably himalaya over IMAP/SMTP) can block for a long time
     # on network/auth issues. If a skill forgets to pass a timeout, apply a conservative
     # default so the agent doesn't hang indefinitely.
     cmd = (command or "").strip()
-    if timeout_seconds is None:
+    if effective_timeout is None:
         # Detect common patterns like:
         #   himalaya ...
         #   HIMALAYA_CONFIG=... himalaya ...
         if cmd.startswith("himalaya ") or " himalaya " in f" {cmd} ":
-            timeout_seconds = 45
+            effective_timeout = 45
     tool_t0 = time.perf_counter()
 
     if get_trace_id() is not None:
@@ -133,10 +149,14 @@ def shell(
 
     # Some models try to pass a literal `kwargs` field. Never forward it.
     forwarded.pop("kwargs", None)
+    # Also normalize/remove other timeout spellings that could be injected.
+    forwarded.pop("timeout_seconds", None)
+    forwarded.pop("timeoutSeconds", None)
+    forwarded.pop("timeout", None)
     if work_dir is not None:
         forwarded["work_dir"] = work_dir
-    if timeout_seconds is not None:
-        forwarded["timeout_seconds"] = timeout_seconds
+    if effective_timeout is not None:
+        forwarded["timeout"] = effective_timeout
 
     try:
         result = _call_base_shell(**forwarded)
