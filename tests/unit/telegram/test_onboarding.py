@@ -1,10 +1,12 @@
 """Unit tests for onboarding behavior in Telegram handlers.
 
-Tests the new onboarding flow where:
-1. Onboarding context (soul.md, id.md) is returned to the caller
-2. No direct message is sent from _check_and_handle_onboarding
-3. The context flows through the message queue to the agent
-4. The agent generates a personalized welcome message
+These tests cover the Telegram-side onboarding trigger logic.
+
+Notes:
+- `_check_and_handle_onboarding()` returns onboarding context (soul/id content)
+    and is responsible for marking onboarding completed in the DB.
+- The actual onboarding *message* is sent from `handle_message()` (so it is
+    deterministic and not dependent on an LLM).
 """
 
 from __future__ import annotations
@@ -38,8 +40,7 @@ class _StubOnboardingService(OnboardingService):
         return True, "Personality files created"
 
     def get_onboarding_message(self, user_id: str) -> str:
-        # Deprecated method - should not be used in new flow
-        return f"ONBOARD:{user_id}"
+        return f"ONBOARD:{user_id}\n\nSOUL:{self.soul_content}\n\nID:{self.id_content}"
 
     def get_onboarding_context(self, user_id: str) -> dict[str, str | None] | None:
         """Return onboarding context for agent prompt injection."""
@@ -167,8 +168,8 @@ async def test_onboarding_returns_none_when_no_content(user_dao: UserDAO) -> Non
     # Should return None when no content is available
     assert context is None
 
-    # But user is still marked as completed (onboarding was attempted)
-    assert await user_dao.is_onboarding_completed(user_id) is True
+    # User should NOT be marked as completed when we couldn't load onboarding content.
+    assert await user_dao.is_onboarding_completed(user_id) is False
 
 
 @pytest.mark.asyncio
@@ -239,3 +240,62 @@ async def test_onboarding_no_message_sent_directly(user_dao: UserDAO) -> None:
 
     # But context should be returned
     assert await user_dao.is_onboarding_completed(user_id) is True
+
+
+@pytest.mark.asyncio
+async def test_handle_message_sends_onboarding_message_first(user_dao: UserDAO) -> None:
+    """When onboarding context exists, handle_message should send the onboarding
+    message immediately (deterministically) before forwarding the user's message
+    for agent processing.
+    """
+
+    logging_service = MagicMock()
+    logging_service.log_action = AsyncMock()
+
+    command_parser = MagicMock()
+    parsed = MagicMock()
+    command_parser.parse.return_value = parsed
+
+    handler = TelegramMessageHandlers(
+        config=MagicMock(),
+        logging_service=logging_service,
+        skill_service=MagicMock(),
+        file_service=MagicMock(),
+        command_parser=command_parser,
+        bot_application=MagicMock(),
+        get_allowed_users=lambda: set(),
+        user_dao=user_dao,
+        onboarding_service=_StubOnboardingService(soul_content="SOUL", id_content="ID"),
+    )
+
+    # Capture messages sent by the handler.
+    sent: list[str] = []
+
+    async def _capture_send(chat_id: int, response: str) -> None:
+        sent.append(response)
+
+    handler._send_response = AsyncMock(side_effect=_capture_send)  # type: ignore[method-assign]
+
+    execute_command = AsyncMock()
+
+    # Minimal Update mock needed by handle_message
+    update = MagicMock()
+    update.effective_chat = MagicMock()
+    update.effective_chat.id = 123
+    update.effective_user = MagicMock()
+    update.effective_user.id = 999
+    update.effective_user.username = "testuser"
+    update.effective_user.first_name = "Test"
+    update.message = MagicMock()
+    update.message.text = "hi"
+
+    await handler.handle_message(update, MagicMock(), execute_command)
+
+    # We should have sent an onboarding message.
+    assert sent, "Expected an onboarding message to be sent"
+    assert "ONBOARD:testuser" in sent[0]
+    assert "SOUL:SOUL" in sent[0]
+    assert "ID:ID" in sent[0]
+
+    # The user's message should still be forwarded for processing.
+    assert execute_command.await_count == 1

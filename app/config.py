@@ -1100,6 +1100,32 @@ class AgentConfig(BaseSettings):
         description="Fraction of traces to log (0.0-1.0).",
     )
 
+    # Runtime safety / watchdog
+    shell_default_timeout_seconds: int = Field(
+        default=180,
+        description=(
+            "Default hard timeout applied to shell tool commands when the caller does not specify one. "
+            "This prevents hung commands from wedging the agent indefinitely."
+        ),
+    )
+    health_stall_seconds: int = Field(
+        default=180,
+        description=(
+            "If the process has inflight work and no progress has been recorded for this many seconds, "
+            "health checks will report stalled."
+        ),
+    )
+    health_fail_on_stall: bool = Field(
+        default=True,
+        description="If true, /health returns 503 when stalled (recommended for orchestrator restarts).",
+    )
+    self_restart_on_stall: bool = Field(
+        default=False,
+        description=(
+            "If true, a watchdog thread will os._exit(1) when stalled so a supervisor can restart the process."
+        ),
+    )
+
     # Skills settings (base directory, per-user subdirs created automatically)
     skills_base_dir: str = Field(default="./skills")
     shared_skills_dir: str = Field(default="./skills/shared")

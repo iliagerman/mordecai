@@ -52,6 +52,10 @@ from app.telegram.bot import TelegramBotInterface
 from app.logging_filters import install_uvicorn_access_log_filters
 from app.observability.forbidden_access_log import log_forbidden_request
 from app.security.whitelist import live_allowed_users
+from app.observability.health_state import (
+    snapshot as health_snapshot,
+    start_stall_watchdog,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -415,7 +419,13 @@ class Application:
         @self.fastapi_app.get("/health")
         async def health_check():
             """Health check endpoint."""
-            return {"status": "healthy", "service": "mordecai"}
+            stall_seconds = int(getattr(self.config, "health_stall_seconds", 180) or 180)
+            snap = health_snapshot(stall_seconds=stall_seconds)
+            if snap.status != "healthy" and bool(
+                getattr(self.config, "health_fail_on_stall", True)
+            ):
+                raise HTTPException(status_code=503, detail=snap.to_dict(mode="json"))
+            return snap.to_dict(mode="json")
 
         return self.fastapi_app
 
@@ -429,6 +439,18 @@ class Application:
             - 6.1: Start cron scheduler on application startup
         """
         logger.info("Starting background services...")
+
+        # Start stall watchdog early so a wedged tool can trigger a restart.
+        # This is optional and should generally be enabled only when a process
+        # supervisor (ECS/K8s/systemd) will restart on exit.
+        try:
+            start_stall_watchdog(
+                stall_seconds=int(getattr(self.config, "health_stall_seconds", 180) or 180),
+                enabled=bool(getattr(self.config, "self_restart_on_stall", False)),
+            )
+        except Exception:
+            # Never break startup due to watchdog configuration.
+            pass
 
         # Start message processor
         if self.message_processor:

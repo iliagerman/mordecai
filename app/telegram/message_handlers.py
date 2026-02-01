@@ -869,6 +869,18 @@ class TelegramMessageHandlers:
         except Exception as e:
             logger.error("Failed to get onboarding context for %s: %s", user_id, e)
 
+        # If we couldn't load any onboarding content, do NOT mark onboarding as
+        # completed.
+        #
+        # This prevents a bad deployment (e.g. missing /instructions in a
+        # container image) from permanently skipping onboarding for the user.
+        if onboarding_context is None:
+            logger.warning(
+                "Onboarding content unavailable for user %s; will retry on next message",
+                user_id,
+            )
+            return None
+
         # Mark onboarding as completed
         try:
             updated = await self.user_dao.set_onboarding_completed(onboarding_user_id)

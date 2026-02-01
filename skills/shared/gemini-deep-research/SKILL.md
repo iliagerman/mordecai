@@ -2,6 +2,11 @@
 name: gemini-deep-research
 description: Perform complex, long-running research tasks using Gemini Deep Research Agent. Use when asked to research topics requiring multi-source synthesis, competitive analysis, market research, or comprehensive technical investigations that benefit from systematic web search and analysis.
 metadata: {"clawdbot":{"emoji":"🔬","requires":{"env":["GEMINI_API_KEY"]},"primaryEnv":"GEMINI_API_KEY"}}
+requires:
+  env:
+    - name: GEMINI_API_KEY
+      prompt: "Provide your Gemini API key for Gemini Deep Research (it will be stored in skills_secrets.yml and used for research calls)."
+      example: "AIzaSy..."
 ---
 
 # Gemini Deep Research

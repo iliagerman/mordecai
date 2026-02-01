@@ -20,6 +20,7 @@ from app.enums import LogSeverity, ModelProvider
 from app.models.agent import AttachmentInfo, ConversationMessage, MemoryContext
 from app.observability.trace_context import new_trace_id, set_trace
 from app.observability.trace_logging import trace_event
+from app.observability.health_state import inflight_inc, inflight_dec, mark_progress
 from app.services.agent.response_extractor import extract_response_text
 
 if TYPE_CHECKING:
@@ -112,108 +113,114 @@ class MessageProcessor:
         Returns:
             Agent's response text.
         """
-        trace_this = False
-        trace_id: str | None = None
-        if getattr(self.config, "trace_enabled", False):
-            try:
-                sample_rate = float(getattr(self.config, "trace_sample_rate", 1.0) or 0.0)
-                sample_rate = min(max(sample_rate, 0.0), 1.0)
-            except Exception:
-                sample_rate = 1.0
-            trace_this = random.random() <= sample_rate
+        inflight_inc()
+        mark_progress("agent.message.start")
+        response: str | None = None
+        try:
+            trace_this = False
+            trace_id: str | None = None
+            if getattr(self.config, "trace_enabled", False):
+                try:
+                    sample_rate = float(getattr(self.config, "trace_sample_rate", 1.0) or 0.0)
+                    sample_rate = min(max(sample_rate, 0.0), 1.0)
+                except Exception:
+                    sample_rate = 1.0
+                trace_this = random.random() <= sample_rate
 
-        if trace_this:
-            trace_id = new_trace_id()
-            set_trace(trace_id=trace_id, actor_id=user_id)
+            if trace_this:
+                trace_id = new_trace_id()
+                set_trace(trace_id=trace_id, actor_id=user_id)
 
-        t0 = time.perf_counter()
+            t0 = time.perf_counter()
 
-        # ------------------------------------------------------------------
-        # Pytest-only deterministic fallback for simple skills
-        # ------------------------------------------------------------------
-        # Integration tests can be flaky because the model may choose to
-        # "investigate" instead of executing a trivial SKILL.md command.
-        # When running under pytest, if the user requests a specific skill and
-        # that skill's SKILL.md contains a single safe echo command, execute it
-        # deterministically via the shell tool.
-        if os.getenv("PYTEST_CURRENT_TEST") and self._deterministic_skill_runner:
-            deterministic = self._maybe_run_simple_skill_echo_for_tests(
-                user_id=user_id,
-                message=message,
-            )
-            if deterministic is not None:
-                # Keep behavior closer to the normal flow (sync + counts).
-                self._sync_shared_skills(user_id)
-                self._increment_message_count(user_id, 1)
-                # Track both sides for extraction consistency
-                self._add_to_conversation_history(user_id, "user", message)
-                self._add_to_conversation_history(user_id, "assistant", deterministic)
-                self._increment_message_count(user_id, 1)
-                return deterministic
-
-        # Sync shared skills into user skills on every message.
-        self._sync_shared_skills(user_id)
-
-        # Increment count for user message (6.1)
-        self._increment_message_count(user_id, 1)
-
-        # Track user message for extraction
-        self._add_to_conversation_history(user_id, "user", message)
-
-        # If the user explicitly asks to remember something, store it
-        # immediately (do not rely on end-of-session extraction).
-        self._maybe_store_explicit_memory(user_id=user_id, message=message)
-
-        # Retrieve memory context based on user's message
-        memory_context: MemoryContext | None = None
-        if self.config.memory_enabled and self.memory_service is not None:
-            try:
-                ctx_dict = self.memory_service.retrieve_memory_context(user_id=user_id, query=message)
-                memory_context = MemoryContext(
-                    agent_name=ctx_dict.get("agent_name"),
-                    facts=ctx_dict.get("facts", []),
-                    preferences=ctx_dict.get("preferences", []),
+            # ------------------------------------------------------------------
+            # Pytest-only deterministic fallback for simple skills
+            # ------------------------------------------------------------------
+            # Integration tests can be flaky because the model may choose to
+            # "investigate" instead of executing a trivial SKILL.md command.
+            # When running under pytest, if the user requests a specific skill and
+            # that skill's SKILL.md contains a single safe echo command, execute it
+            # deterministically via the shell tool.
+            if os.getenv("PYTEST_CURRENT_TEST") and self._deterministic_skill_runner:
+                deterministic = self._maybe_run_simple_skill_echo_for_tests(
+                    user_id=user_id,
+                    message=message,
                 )
-                logger.info(
-                    "Memory context for %s: facts=%d, prefs=%d",
-                    user_id,
-                    len(memory_context.facts or []),
-                    len(memory_context.preferences or []),
-                )
-            except Exception as e:
-                logger.warning("Failed to retrieve memory: %s", e)
-                memory_context = None
+                if deterministic is not None:
+                    # Keep behavior closer to the normal flow (sync + counts).
+                    self._sync_shared_skills(user_id)
+                    self._increment_message_count(user_id, 1)
+                    # Track both sides for extraction consistency
+                    self._add_to_conversation_history(user_id, "user", message)
+                    self._add_to_conversation_history(user_id, "assistant", deterministic)
+                    self._increment_message_count(user_id, 1)
+                    return deterministic
 
-        # Log model being used
-        match self.config.model_provider:
-            case ModelProvider.BEDROCK:
-                model_id = self.config.bedrock_model_id
-            case ModelProvider.GOOGLE:
-                model_id = self.config.google_model_id
-            case ModelProvider.OPENAI:
-                model_id = self.config.openai_model_id
-            case _:
-                model_id = "unknown"
+            # Sync shared skills into user skills on every message.
+            self._sync_shared_skills(user_id)
 
-        if trace_this:
-            fields: dict = {
-                "model_provider": str(self.config.model_provider),
-                "model_id": model_id,
-                "session_id": self._get_session_id(user_id),
-                "memory_enabled": bool(self.config.memory_enabled),
-            }
-            if getattr(self.config, "trace_model_io_enabled", False):
-                fields.update(
-                    {
-                        "user_message": message,
-                        "user_message_len": len(message or ""),
-                    }
+            # Increment count for user message (6.1)
+            self._increment_message_count(user_id, 1)
+
+            # Track user message for extraction
+            self._add_to_conversation_history(user_id, "user", message)
+
+            # If the user explicitly asks to remember something, store it
+            # immediately (do not rely on end-of-session extraction).
+            self._maybe_store_explicit_memory(user_id=user_id, message=message)
+
+            # Retrieve memory context based on user's message
+            memory_context: MemoryContext | None = None
+            if self.config.memory_enabled and self.memory_service is not None:
+                try:
+                    ctx_dict = self.memory_service.retrieve_memory_context(
+                        user_id=user_id, query=message
+                    )
+                    memory_context = MemoryContext(
+                        agent_name=ctx_dict.get("agent_name"),
+                        facts=ctx_dict.get("facts", []),
+                        preferences=ctx_dict.get("preferences", []),
+                    )
+                    logger.info(
+                        "Memory context for %s: facts=%d, prefs=%d",
+                        user_id,
+                        len(memory_context.facts or []),
+                        len(memory_context.preferences or []),
+                    )
+                except Exception as e:
+                    logger.warning("Failed to retrieve memory: %s", e)
+                    memory_context = None
+
+            # Log model being used
+            match self.config.model_provider:
+                case ModelProvider.BEDROCK:
+                    model_id = self.config.bedrock_model_id
+                case ModelProvider.GOOGLE:
+                    model_id = self.config.google_model_id
+                case ModelProvider.OPENAI:
+                    model_id = self.config.openai_model_id
+                case _:
+                    model_id = "unknown"
+
+            if trace_this:
+                fields: dict[str, object] = {
+                    "model_provider": str(self.config.model_provider),
+                    "model_id": model_id,
+                    "session_id": self._get_session_id(user_id),
+                    "memory_enabled": bool(self.config.memory_enabled),
+                }
+                if getattr(self.config, "trace_model_io_enabled", False):
+                    fields.update(
+                        {
+                            "user_message": message,
+                            "user_message_len": len(message or ""),
+                        }
+                    )
+                trace_event(
+                    "agent.message.start",
+                    max_chars=getattr(self.config, "trace_max_chars", 2000),
+                    **fields,
                 )
-            trace_event(
-                "agent.message.start",
-                max_chars=getattr(self.config, "trace_max_chars", 2000),
-                **fields,
-            )
 
             # Best-effort: persist a compact milestone into DB-backed activity logs
             # so users can view recent agent activity via Telegram /logs.
@@ -233,21 +240,83 @@ class MessageProcessor:
                 except Exception:
                     # Never break message processing due to logging.
                     pass
-        logger.info(
-            "Creating agent with model_provider=%s, model_id=%s",
-            self.config.model_provider,
-            model_id,
-        )
-
-        # Get previous messages to maintain conversation context
-        previous_messages = self._get_user_messages(user_id)
-
-        try:
-            agent = self._create_agent(
-                user_id, memory_context, onboarding_context=onboarding_context, messages=previous_messages
+            logger.info(
+                "Creating agent with model_provider=%s, model_id=%s",
+                self.config.model_provider,
+                model_id,
             )
-            result = agent(message)
+
+            # Get previous messages to maintain conversation context
+            previous_messages = self._get_user_messages(user_id)
+            agent = self._create_agent(
+                user_id,
+                memory_context,
+                onboarding_context=onboarding_context,
+                messages=previous_messages,
+            )
+
+            # IMPORTANT:
+            # Strands agent calls are synchronous and can execute tools that may
+            # block (subprocess/network). Running them in a background thread keeps
+            # the asyncio event loop responsive so /health continues to answer.
+            mark_progress("agent.invoke.start")
+            result = await asyncio.to_thread(agent, message)
+            mark_progress("agent.invoke.end")
+
             response = self._extract_response_text(result)
+
+            # Track agent response for extraction
+            self._add_to_conversation_history(user_id, "assistant", response)
+
+            # Increment count for agent response (6.1)
+            self._increment_message_count(user_id, 1)
+
+            # Check if extraction needed (6.1, 6.2)
+            current_count = self._message_counter.get(user_id)
+            if current_count >= self.config.max_conversation_messages:
+                # Trigger non-blocking extraction (6.2)
+                if not self._extraction_lock.is_locked(user_id):
+                    asyncio.create_task(self._trigger_extraction_and_clear(user_id))
+                    # Append notification to response (6.4)
+                    response = (
+                        f"{response}\n\n"
+                        "✨ Your conversation has been summarized and important "
+                        "information saved. Starting fresh!"
+                    )
+
+            if trace_this:
+                end_fields: dict[str, object] = {
+                    "duration_ms": int((time.perf_counter() - t0) * 1000),
+                    "message_count": self._message_counter.get(user_id),
+                }
+                if getattr(self.config, "trace_model_io_enabled", False):
+                    end_fields.update(
+                        {
+                            "assistant_response": response,
+                            "assistant_response_len": len(response or ""),
+                        }
+                    )
+                trace_event(
+                    "agent.message.end",
+                    max_chars=getattr(self.config, "trace_max_chars", 2000),
+                    **end_fields,
+                )
+
+            if self.logging_service is not None:
+                try:
+                    await self.logging_service.log_action(
+                        user_id=user_id,
+                        action="Processed message: completed",
+                        severity=LogSeverity.INFO,
+                        details={
+                            "trace_id": trace_id,
+                            "duration_ms": int((time.perf_counter() - t0) * 1000),
+                        },
+                    )
+                except Exception:
+                    pass
+
+            return response
         except Exception as e:
             if trace_this:
                 trace_event(
@@ -258,74 +327,24 @@ class MessageProcessor:
                     duration_ms=int((time.perf_counter() - t0) * 1000),
                 )
 
-                if self.logging_service is not None:
-                    try:
-                        await self.logging_service.log_action(
-                            user_id=user_id,
-                            action="Processed message: failed",
-                            severity=LogSeverity.ERROR,
-                            details={
-                                "trace_id": trace_id,
-                                "error": str(e),
-                                "error_type": type(e).__name__,
-                            },
-                        )
-                    except Exception:
-                        pass
-            raise
-
-        # Track agent response for extraction
-        self._add_to_conversation_history(user_id, "assistant", response)
-
-        # Increment count for agent response (6.1)
-        self._increment_message_count(user_id, 1)
-
-        # Check if extraction needed (6.1, 6.2)
-        current_count = self._message_counter.get(user_id)
-        if current_count >= self.config.max_conversation_messages:
-            # Trigger non-blocking extraction (6.2)
-            if not self._extraction_lock.is_locked(user_id):
-                asyncio.create_task(self._trigger_extraction_and_clear(user_id))
-                # Append notification to response (6.4)
-                response = (
-                    f"{response}\n\n"
-                    "✨ Your conversation has been summarized and important "
-                    "information saved. Starting fresh!"
-                )
-
-        if trace_this:
-            fields = {
-                "duration_ms": int((time.perf_counter() - t0) * 1000),
-                "message_count": self._message_counter.get(user_id),
-            }
-            if getattr(self.config, "trace_model_io_enabled", False):
-                fields.update(
-                    {
-                        "assistant_response": response,
-                        "assistant_response_len": len(response or ""),
-                    }
-                )
-            trace_event(
-                "agent.message.end",
-                max_chars=getattr(self.config, "trace_max_chars", 2000),
-                **fields,
-            )
-
             if self.logging_service is not None:
                 try:
                     await self.logging_service.log_action(
                         user_id=user_id,
-                        action="Processed message: completed",
-                        severity=LogSeverity.INFO,
+                        action="Processed message: failed",
+                        severity=LogSeverity.ERROR,
                         details={
                             "trace_id": trace_id,
-                            "duration_ms": fields.get("duration_ms"),
+                            "error": str(e),
+                            "error_type": type(e).__name__,
                         },
                     )
                 except Exception:
                     pass
-
-        return response
+            raise
+        finally:
+            # Keep inflight accounting accurate even on early returns/exceptions.
+            inflight_dec()
 
     async def process_message_with_attachments(
         self,
@@ -361,6 +380,8 @@ class MessageProcessor:
             - 4.2: Provide full path to downloaded files
             - 4.3: Include file metadata in context
         """
+        inflight_inc()
+        mark_progress("agent.attachments.start")
         # Sync shared skills into user skills on every message.
         self._sync_shared_skills(user_id)
 
@@ -402,7 +423,11 @@ class MessageProcessor:
 
         # Create agent with attachment context
         agent = self._create_agent(
-            user_id, memory_context, attachments, onboarding_context=onboarding_context, messages=previous_messages
+            user_id,
+            memory_context,
+            attachments,
+            onboarding_context=onboarding_context,
+            messages=previous_messages,
         )
 
         # Build prompt with file info if no message provided
@@ -416,8 +441,13 @@ class MessageProcessor:
         if not message:
             self._add_to_conversation_history(user_id, "user", prompt)
 
-        result = agent(prompt)
-        response = self._extract_response_text(result)
+        try:
+            mark_progress("agent.invoke.start")
+            result = await asyncio.to_thread(agent, prompt)
+            mark_progress("agent.invoke.end")
+            response = self._extract_response_text(result)
+        finally:
+            inflight_dec()
 
         # Track agent response for extraction
         self._add_to_conversation_history(user_id, "assistant", response)
