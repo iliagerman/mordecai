@@ -70,8 +70,8 @@ requires:
     }
 
     with (
-        patch.object(service, "_load_merged_skill_secrets", return_value=merged_secrets),
-        patch("app.services.agent_service.refresh_runtime_env_from_secrets"),
+        patch("app.services.agent.skills.SkillRepository.load_merged_skill_secrets", return_value=merged_secrets),
+        patch("app.config.refresh_runtime_env_from_secrets"),
     ):
         missing = service._get_missing_skill_requirements(user_id)
 

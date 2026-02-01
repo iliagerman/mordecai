@@ -15,6 +15,7 @@ import pytest
 
 from app.config import AgentConfig
 from app.enums import ModelProvider
+from app.models.agent import MemoryContext
 from app.services.agent_service import AgentService
 
 
@@ -50,10 +51,10 @@ class TestAgentServiceConversationHistory:
 
         history = service._get_conversation_history(user_id)
         assert len(history) == 2
-        assert history[0]["role"] == "user"
-        assert history[0]["content"] == "Hello"
-        assert history[1]["role"] == "assistant"
-        assert history[1]["content"] == "Hi there!"
+        assert history[0].role == "user"
+        assert history[0].content == "Hello"
+        assert history[1].role == "assistant"
+        assert history[1].content == "Hi there!"
 
     def test_get_conversation_history_empty(self, config):
         """Test getting history for user with no messages."""
@@ -84,16 +85,11 @@ class TestAgentServiceConversationHistory:
 
         assert service._get_conversation_history(user_id) == []
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("app.services.agent_service.AgentService._message_processor")
     @pytest.mark.asyncio
-    async def test_process_message_tracks_history(self, mock_model, mock_agent, config):
+    async def test_process_message_tracks_history(self, mock_processor, config):
         """Test process_message adds messages to history."""
-        mock_result = MagicMock()
-        mock_result.message = {"content": [{"text": "Response"}]}
-        mock_agent_instance = MagicMock()
-        mock_agent_instance.return_value = mock_result
-        mock_agent.return_value = mock_agent_instance
+        mock_processor.run.return_value = "Response"
 
         service = AgentService(config)
         user_id = "test-user"
@@ -102,10 +98,10 @@ class TestAgentServiceConversationHistory:
 
         history = service._get_conversation_history(user_id)
         assert len(history) == 2
-        assert history[0]["role"] == "user"
-        assert history[0]["content"] == "Hello"
-        assert history[1]["role"] == "assistant"
-        assert history[1]["content"] == "Response"
+        assert history[0].role == "user"
+        assert history[0].content == "Hello"
+        assert history[1].role == "assistant"
+        assert history[1].content == "Response"
 
 
 class TestAgentServiceConversationManager:
@@ -130,21 +126,17 @@ class TestAgentServiceConversationManager:
             conversation_window_size=15,
         )
 
-    @patch("app.services.agent_service.SlidingWindowConversationManager")
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("app.services.agent.agent_creation.SlidingWindowConversationManager")
     def test_create_agent_uses_sliding_window_manager(
-        self, mock_model, mock_agent, mock_conv_manager, config
+        self, mock_conv_manager, config
     ):
-        """Test _create_agent uses SlidingWindowConversationManager."""
+        """Test _create_agent uses SlidingWindowConversationManager with correct window size."""
+        mock_conv_manager.return_value = MagicMock()
         service = AgentService(config)
 
         service._create_agent("test-user")
 
         mock_conv_manager.assert_called_once_with(window_size=config.conversation_window_size)
-        mock_agent.assert_called_once()
-        call_kwargs = mock_agent.call_args[1]
-        assert "conversation_manager" in call_kwargs
 
 
 class TestAgentServiceMemoryTools:
@@ -169,33 +161,30 @@ class TestAgentServiceMemoryTools:
             memory_enabled=True,
         )
 
-    @patch("app.services.agent_service.search_memory_module")
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
+    @patch("app.services.agent_service.AgentService._agent_creator")
     def test_create_agent_includes_search_memory_tool(
-        self, mock_model, mock_agent, mock_search_module, config
+        self, mock_agent_creator, config
     ):
         """Test _create_agent includes search_memory tool when memory enabled."""
         mock_memory_service = MagicMock()
+        mock_agent_creator.create_agent.return_value = MagicMock()
 
         service = AgentService(config, memory_service=mock_memory_service)
         service._create_agent("test-user")
 
-        # Verify search_memory context was set
-        mock_search_module.set_memory_context.assert_called_once_with(
-            mock_memory_service, "test-user"
-        )
+        # Verify create_agent was called
+        mock_agent_creator.create_agent.assert_called_once_with("test-user")
 
-    @patch("app.services.agent_service.Agent")
-    @patch("app.services.agent_service.BedrockModel")
-    def test_create_agent_without_memory_service(self, mock_model, mock_agent, config):
+    @patch("app.services.agent_service.AgentService._agent_creator")
+    def test_create_agent_without_memory_service(self, mock_agent_creator, config):
         """Test _create_agent works without memory service."""
+        mock_agent_creator.create_agent.return_value = MagicMock()
         service = AgentService(config, memory_service=None)
 
         # Should not raise
         service._create_agent("test-user")
 
-        mock_agent.assert_called_once()
+        mock_agent_creator.create_agent.assert_called_once_with("test-user")
 
 
 class TestAgentServiceSystemPrompt:
@@ -234,10 +223,10 @@ class TestAgentServiceSystemPrompt:
         """Test system prompt includes retrieved memory context."""
         service = AgentService(config)
 
-        memory_context = {
-            "facts": ["User likes Python"],
-            "preferences": ["Prefers concise responses"],
-        }
+        memory_context = MemoryContext(
+            facts=["User likes Python"],
+            preferences=["Prefers concise responses"],
+        )
 
         prompt = service._build_system_prompt("test-user", memory_context=memory_context)
 

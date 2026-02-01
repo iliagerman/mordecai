@@ -248,8 +248,8 @@ When asked to test something, respond with "Test successful!"
         # Verify discovery
         skills = agent_service._discover_skills(user_id)
         assert len(skills) == 1
-        assert skills[0]["name"] == "test-skill"
-        assert "testing" in skills[0]["description"].lower()
+        assert skills[0].name == "test-skill"
+        assert "testing" in skills[0].description.lower()
 
         # Verify in system prompt
         prompt = agent_service._build_system_prompt(user_id)
@@ -322,7 +322,7 @@ description: A skill with detailed instructions
 
         # Get the skill info from discovery
         skills = agent_service._discover_skills(user_id)
-        skill_path = skills[0]["path"]
+        skill_path = skills[0].path
 
         # Verify the path points to a readable SKILL.md
         skill_md_path = Path(skill_path) / "SKILL.md"

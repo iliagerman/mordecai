@@ -69,6 +69,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _parse_skill_frontmatter(content: str) -> dict[str, Any]:
+    """Parse YAML frontmatter from a SKILL.md markdown string.
+
+    Backward-compatibility shim: historically this helper lived in
+    `app.services.agent_service` and is imported by tests and some callers.
+    The implementation has been moved to `app.services.agent.frontmatter`.
+
+    Returns an empty dict if no valid frontmatter is present.
+    """
+
+    # Local import avoids any potential import cycles during service startup.
+    from app.services.agent.frontmatter import parse_skill_frontmatter
+
+    return parse_skill_frontmatter(content)
+
+
 ### NOTE
 # A large amount of functionality previously lived directly in this module.
 # It has been extracted into smaller, typed helper components under
@@ -129,9 +145,7 @@ class AgentService:
 
         # Cached agent instances and conversation managers (third-party types)
         self._user_agents: dict[str, Agent] = {}
-        self._user_conversation_managers: dict[
-            str, SlidingWindowConversationManager
-        ] = {}
+        self._user_conversation_managers: dict[str, SlidingWindowConversationManager] = {}
 
         # External personality/identity loader (Obsidian vault)
         self.personality_service = PersonalityService(
@@ -272,7 +286,9 @@ class AgentService:
         """Create a model instance."""
         return self._agent_creator.create_model(use_vision=use_vision)
 
-    def _get_or_create_conversation_manager(self, user_id: str) -> "SlidingWindowConversationManager":
+    def _get_or_create_conversation_manager(
+        self, user_id: str
+    ) -> "SlidingWindowConversationManager":
         """Get or create a conversation manager for a user."""
         return self._agent_creator.get_or_create_conversation_manager(user_id)
 
@@ -457,11 +473,13 @@ class AgentService:
     def _extract_explicit_memory_text(self, message: str) -> tuple[str, str] | None:
         """Extract explicit memory text from a message."""
         from app.services.agent.explicit_memory import extract_explicit_memory_text
+
         return extract_explicit_memory_text(message)
 
     def _contains_sensitive_memory_text(self, text: str) -> bool:
         """Reject likely secrets/PII from being stored via explicit remember."""
         from app.services.agent.explicit_memory import contains_sensitive_memory_text
+
         return contains_sensitive_memory_text(text)
 
     # ========================================================================

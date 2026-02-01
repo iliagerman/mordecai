@@ -100,8 +100,8 @@ class TestPerUserSkillDiscovery:
         skills = agent_service._discover_skills(TEST_USER_ID)
 
         assert len(skills) == 1
-        assert skills[0]["name"] == "pptx"
-        assert "PowerPoint" in skills[0]["description"]
+        assert skills[0].name == "pptx"
+        assert "PowerPoint" in skills[0].description
 
     def test_skills_isolated_between_users(self, agent_service, temp_dir):
         """Test that users only see their own skills."""
@@ -112,10 +112,10 @@ class TestPerUserSkillDiscovery:
         user2_skills = agent_service._discover_skills("user2")
 
         assert len(user1_skills) == 1
-        assert user1_skills[0]["name"] == "skill-a"
+        assert user1_skills[0].name == "skill-a"
 
         assert len(user2_skills) == 1
-        assert user2_skills[0]["name"] == "skill-b"
+        assert user2_skills[0].name == "skill-b"
 
     def test_system_prompt_includes_user_skills(self, agent_service, temp_dir):
         """Test that system prompt includes user's installed skills."""
@@ -165,7 +165,7 @@ class TestAgentReload:
 
         skills = agent_service._discover_skills(TEST_USER_ID)
         assert len(skills) == 1
-        assert skills[0]["name"] == "new-skill"
+        assert skills[0].name == "new-skill"
 
     def test_get_user_skills_directory(self, agent_service, temp_dir):
         """Test getting user's skills directory."""

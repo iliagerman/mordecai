@@ -12,11 +12,11 @@ def test_set_skill_config_persists_to_secrets_and_materializes_file(tmp_path: Pa
     config_path = tmp_path / "himalaya" / "config.toml"
 
     # Minimal config for per-user skill secrets path resolution.
-    cfg = AgentConfig(telegram_bot_token="test-token", skills_base_dir=str(tmp_path / "skills"))
+    agent_cfg = AgentConfig(telegram_bot_token="test-token", skills_base_dir=str(tmp_path / "skills"))
 
-    set_skill_secrets_context(user_id="u1", secrets_path=secrets_path, config=cfg)
+    set_skill_secrets_context(user_id="u1", secrets_path=secrets_path, config=agent_cfg)
 
-    cfg = {
+    himalaya_cfg = {
         "path": str(config_path),
         "email": "user@example.com",
         "display_name": "Test User",
@@ -30,7 +30,7 @@ def test_set_skill_config_persists_to_secrets_and_materializes_file(tmp_path: Pa
 
     result = set_skill_config(
         skill_name="himalaya",
-        config_json=json.dumps(cfg),
+        config_json=json.dumps(himalaya_cfg),
         apply_to="user",
     )
 
@@ -38,7 +38,7 @@ def test_set_skill_config_persists_to_secrets_and_materializes_file(tmp_path: Pa
     assert "pw-should-not-appear-in-tool-result" not in result
     assert "user@example.com" not in result
 
-    user_secrets_path = resolve_user_skills_secrets_path(cfg, "u1")
+    user_secrets_path = resolve_user_skills_secrets_path(agent_cfg, "u1")
     data = yaml.safe_load(user_secrets_path.read_text(encoding="utf-8"))
 
     assert data["skills"]["himalaya"]["path"] == str(config_path)

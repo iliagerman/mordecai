@@ -116,13 +116,13 @@ async def test_process_message_explicit_remember_writes_stm_note(tmp_path, monke
         def messages(self):
             return []
 
-    monkeypatch.setattr("app.services.agent_service.Agent", _FakeAgent)
+    monkeypatch.setattr("strands.Agent", _FakeAgent)
 
     # BedrockModel ctor can still touch env; keep it inert.
     class _FakeModel:
         pass
 
-    monkeypatch.setattr("app.services.agent_service.BedrockModel", lambda *a, **k: _FakeModel())
+    monkeypatch.setattr("strands.models.BedrockModel", lambda *a, **k: _FakeModel())
 
     service = AgentService(config, memory_service=memory_service)
 
@@ -198,12 +198,12 @@ async def test_process_message_does_not_write_stm_for_retrieval_question(tmp_pat
         def messages(self):
             return []
 
-    monkeypatch.setattr("app.services.agent_service.Agent", _FakeAgent)
+    monkeypatch.setattr("strands.Agent", _FakeAgent)
 
     class _FakeModel:
         pass
 
-    monkeypatch.setattr("app.services.agent_service.BedrockModel", lambda *a, **k: _FakeModel())
+    monkeypatch.setattr("strands.models.BedrockModel", lambda *a, **k: _FakeModel())
 
     service = AgentService(config, memory_service=memory_service)
 

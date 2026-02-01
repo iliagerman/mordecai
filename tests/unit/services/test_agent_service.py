@@ -1197,7 +1197,7 @@ class TestGeminiModelProvider:
         assert config.google_model_id == "gemini-2.0-pro"
         assert config.google_api_key == "custom-api-key"
 
-    @patch("strands.models.gemini.GeminiModel")
+    @patch("app.services.agent.model_factory.GeminiModel")
     def test_gemini_model_created_with_config(self, mock_gemini_model, google_config):
         """Test GeminiModel is created with correct configuration."""
         service = AgentService(google_config)
@@ -1209,7 +1209,7 @@ class TestGeminiModelProvider:
             params={"max_output_tokens": 4096},
         )
 
-    @patch("strands.models.gemini.GeminiModel")
+    @patch("app.services.agent.model_factory.GeminiModel")
     def test_gemini_model_receives_api_key_in_client_args(self, mock_gemini_model, temp_dir):
         """Test GeminiModel receives api_key in client_args."""
         config = AgentConfig(
@@ -1226,7 +1226,7 @@ class TestGeminiModelProvider:
         call_kwargs = mock_gemini_model.call_args[1]
         assert call_kwargs["client_args"]["api_key"] == "my-secret-key"
 
-    @patch("strands.models.gemini.GeminiModel")
+    @patch("app.services.agent.model_factory.GeminiModel")
     def test_gemini_model_receives_model_id(self, mock_gemini_model, temp_dir):
         """Test GeminiModel receives correct model_id."""
         config = AgentConfig(

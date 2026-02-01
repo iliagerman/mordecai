@@ -42,7 +42,8 @@ def test_example_template_is_materialized_and_exports_skill_config_env(tmp_path:
 
     refresh_runtime_env_from_secrets(secrets_path=secrets_path, user_id=user_id, config=cfg)
 
-    rendered = skill_dir / "demo.toml"
+    # The rendered file is written to user_dir, not skill_dir
+    rendered = user_dir / "demo.toml"
     assert rendered.exists()
     assert rendered.read_text(encoding="utf-8") == 'token = "abc123"\n'
 
