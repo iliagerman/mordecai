@@ -117,3 +117,44 @@ def test_example_template_noncanonical_name_is_prefixed_to_avoid_collisions(tmp_
     expected_out = user_dir / "foo__config.toml"
     assert expected_out.exists() and expected_out.is_file()
     assert expected_out.read_text(encoding="utf-8").strip() == 'token = "abc123"'
+
+
+def test_example_template_recovers_if_destination_is_directory(tmp_path, monkeypatch):
+    """If the rendered output path exists as an empty directory, replace it with a file.
+
+    This guards against accidental `mkdir -p himalaya.toml` style mistakes.
+    """
+
+    cfg = SimpleNamespace(
+        skills_base_dir=str(tmp_path / "skills"),
+        shared_skills_dir=str(tmp_path / "skills" / "shared"),
+        user_skills_dir_template=None,
+    )
+
+    user_id = "u_test3"
+    user_dir = resolve_user_skills_dir(cfg, user_id, create=True)
+
+    skill_dir = user_dir / "himalaya"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "himalaya.toml_example").write_text('email = "[GMAIL]"\n', encoding="utf-8")
+
+    secrets_path = resolve_user_skills_secrets_path(cfg, user_id, create=True)
+    _write_yaml(secrets_path, {"skills": {"himalaya": {"GMAIL": "a@b.com"}}})
+
+    global_secrets = tmp_path / "secrets.yml"
+    _write_yaml(global_secrets, {})
+
+    # Create an empty directory where the output file should be.
+    expected_out = user_dir / "himalaya.toml"
+    expected_out.mkdir(parents=True, exist_ok=True)
+    assert expected_out.exists() and expected_out.is_dir()
+
+    refresh_runtime_env_from_secrets(
+        secrets_path=global_secrets,
+        user_id=user_id,
+        skill_names=["himalaya"],
+        config=cfg,
+    )
+
+    assert expected_out.exists() and expected_out.is_file()
+    assert expected_out.read_text(encoding="utf-8").strip() == 'email = "a@b.com"'
