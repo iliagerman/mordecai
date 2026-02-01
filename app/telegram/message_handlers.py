@@ -181,8 +181,7 @@ class TelegramMessageHandlers:
         await TelegramMessageSender(self.bot).send_response(chat_id, response)
 
     def migrate_legacy_skill_folder(self, telegram_user_id: str | None, user_id: str) -> None:
-        """One-way migration: move skills/<numeric_id>/ -> skills/<username>/.        No backward-compat behavior is kept after migration.
-        """
+        """One-way migration: move skills/<numeric_id>/ -> skills/<username>/.        No backward-compat behavior is kept after migration."""
         if not telegram_user_id:
             return
         try:
@@ -204,9 +203,7 @@ class TelegramMessageHandlers:
                 user_id,
             )
 
-    async def handle_start_command(
-        self, update: Update, context: Any
-    ) -> None:
+    async def handle_start_command(self, update: Update, context: Any) -> None:
         """Handle /start command.
 
         Sends a welcome message to new users.
@@ -254,9 +251,7 @@ class TelegramMessageHandlers:
         except Exception:
             logger.exception("Failed to persist start interaction log")
 
-    async def handle_help_command(
-        self, update: Update, context: Any
-    ) -> None:
+    async def handle_help_command(self, update: Update, context: Any) -> None:
         """Handle /help command.
 
         Sends help text with available commands.
@@ -312,7 +307,9 @@ class TelegramMessageHandlers:
             return
         await execute_new(user_id, chat_id)
 
-    async def handle_logs_command(self, update: Update, context: Any, execute_logs: callable) -> None:
+    async def handle_logs_command(
+        self, update: Update, context: Any, execute_logs: callable
+    ) -> None:
         """Handle /logs command.
 
         Shows recent activity logs for the user.
@@ -430,9 +427,7 @@ class TelegramMessageHandlers:
         skill_name = context.args[0]
         await execute_uninstall(user_id, chat_id, skill_name)
 
-    async def handle_message(
-        self, update: Update, context: Any, execute_command: callable
-    ) -> None:
+    async def handle_message(self, update: Update, context: Any, execute_command: callable) -> None:
         """Handle incoming text messages.
 
         Parses the message for commands and either executes them directly
@@ -796,9 +791,33 @@ class TelegramMessageHandlers:
             # Onboarding not configured, skip
             return
 
+        # Ensure the user exists before onboarding checks.
+        #
+        # The onboarding flow is triggered in the Telegram handler (before the message
+        # is enqueued/processed by the SQS worker). The worker is what historically
+        # created the user row in the database. Without creating the user here,
+        # set_onboarding_completed() becomes a no-op and the onboarding message
+        # repeats on every incoming message.
+        try:
+            db_user = await self.user_dao.get_or_create(
+                user_id=user_id,
+                telegram_id=str(chat_id),
+            )
+            onboarding_user_id = db_user.id
+            if onboarding_user_id != user_id:
+                logger.warning(
+                    "Telegram username %s maps to existing user id %s (telegram_id=%s)",
+                    user_id,
+                    onboarding_user_id,
+                    chat_id,
+                )
+        except Exception as e:
+            logger.warning("Failed to get_or_create user before onboarding for %s: %s", user_id, e)
+            return
+
         # Check if user has already completed onboarding
         try:
-            is_completed = await self.user_dao.is_onboarding_completed(user_id)
+            is_completed = await self.user_dao.is_onboarding_completed(onboarding_user_id)
             if is_completed:
                 return
         except Exception as e:
@@ -808,7 +827,9 @@ class TelegramMessageHandlers:
         # Copy personality files to user's folder
         if self.onboarding_service.is_enabled():
             try:
-                success, result_msg = await self.onboarding_service.ensure_user_personality_files(user_id)
+                success, result_msg = await self.onboarding_service.ensure_user_personality_files(
+                    user_id
+                )
                 if success:
                     logger.info("Created personality files for user %s: %s", user_id, result_msg)
                 else:
@@ -825,8 +846,14 @@ class TelegramMessageHandlers:
 
         # Mark onboarding as completed
         try:
-            await self.user_dao.set_onboarding_completed(user_id)
-            logger.info("Marked onboarding as completed for user %s", user_id)
+            updated = await self.user_dao.set_onboarding_completed(onboarding_user_id)
+            if updated:
+                logger.info("Marked onboarding as completed for user %s", onboarding_user_id)
+            else:
+                logger.warning(
+                    "Failed to mark onboarding as completed (user not found) for user %s",
+                    onboarding_user_id,
+                )
         except Exception as e:
             logger.error("Failed to mark onboarding complete for %s: %s", user_id, e)
 
