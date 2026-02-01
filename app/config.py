@@ -850,6 +850,25 @@ def refresh_runtime_env_from_secrets(
 
                 rendered = re.sub(r"\[([A-Z0-9_]+)\]", _replace, raw)
 
+                # Skill-specific safety: if Himalaya is configured for Gmail,
+                # ensure we don't accidentally keep a stale Outlook section.
+                # This can happen if an older template included Outlook blocks.
+                if skill == "himalaya" and dest.name == "himalaya.toml":
+                    try:
+                        provider = (replacements.get("EMAIL_PROVIDER") or "").strip().lower()
+                        if provider == "gmail":
+                            # Remove the full [accounts.outlook] section if present.
+                            # We drop from the header line until the next [accounts.*] header
+                            # or end of file.
+                            rendered = re.sub(
+                                r"\n\[accounts\.outlook\]\n[\s\S]*?(?=\n\[accounts\.|\Z)",
+                                "\n",
+                                rendered,
+                                flags=re.IGNORECASE,
+                            )
+                    except Exception:
+                        pass
+
                 try:
                     # Only write when changed to reduce churn.
                     if dest.exists():
