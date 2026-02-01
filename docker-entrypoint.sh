@@ -32,9 +32,27 @@ fi
 # Run Alembic migrations unless SKIP_MIGRATIONS=true
 if [ "$SKIP_MIGRATIONS" != "true" ]; then
     echo "Running database migrations..."
-    if ! uv run alembic upgrade head; then
-        echo "ERROR: Database migration failed"
-        exit 1
+    set +e
+    MIGRATION_OUTPUT=$(uv run alembic upgrade head 2>&1)
+    MIGRATION_EXIT=$?
+    set -e
+
+    if [ $MIGRATION_EXIT -ne 0 ]; then
+        echo "$MIGRATION_OUTPUT"
+
+        # Common recovery case (SQLite): the app previously created tables via
+        # Base.metadata.create_all (no alembic_version), so the initial_schema
+        # migration fails with "table ... already exists".
+        #
+        # In that case, stamp the baseline revision and retry upgrading.
+        if echo "$MIGRATION_OUTPUT" | grep -q "table .* already exists"; then
+            echo "Detected existing schema without Alembic version table; stamping baseline and retrying..."
+            uv run alembic stamp d5b7e1de6779
+            uv run alembic upgrade head
+        else
+            echo "ERROR: Database migration failed"
+            exit 1
+        fi
     fi
     echo "Database migrations completed successfully"
 else

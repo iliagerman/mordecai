@@ -1015,6 +1015,16 @@ class AgentConfig(BaseSettings):
     # Database settings
     database_url: str = Field(default="sqlite+aiosqlite:///./agent.db")
 
+    auto_create_tables: bool = Field(
+        default=False,
+        description=(
+            "If true, the app will call Base.metadata.create_all() on startup. "
+            "This is convenient for quick local experimentation, but it bypasses "
+            "Alembic versioning and can cause later migrations to fail (e.g. 'table already exists'). "
+            "For containers/production, keep this false and rely on Alembic migrations."
+        ),
+    )
+
     # Session settings
     session_storage_dir: str = Field(default="./sessions")
 
