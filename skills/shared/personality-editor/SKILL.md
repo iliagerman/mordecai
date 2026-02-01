@@ -12,8 +12,8 @@ This skill explains how the agent modifies its own personality/identity **when t
 - Prerequisite: the backend must be configured with an Obsidian vault root (the agent needs filesystem access to the vault).
 - Verify configuration: ensure `obsidian_vault_root` is set (or `AGENT_OBSIDIAN_VAULT_ROOT` override is provided).
 - Verify expected files:
-   - Defaults exist (or can be created): `me/default/soul.md`, `me/default/id.md`
-   - Per-user files exist (or can be created): `me/<TELEGRAM_ID>/soul.md`, `me/<TELEGRAM_ID>/id.md`
+   - Repo defaults exist: `instructions/soul.md`, `instructions/id.md`
+   - Per-user files exist (or can be created in the vault): `me/<TELEGRAM_ID>/soul.md`, `me/<TELEGRAM_ID>/id.md`
 
 Example (verification flow):
 
@@ -27,24 +27,23 @@ personality_read(kind="id", source="auto")
 Vault root is configured by the backend (`obsidian_vault_root`, env override `AGENT_OBSIDIAN_VAULT_ROOT`).
 
 Files:
-
-- Defaults (fallback):
-  - `me/default/soul.md`
-  - `me/default/id.md`
-
 - Per-user (Telegram id):
   - `me/<TELEGRAM_ID>/soul.md`
   - `me/<TELEGRAM_ID>/id.md`
 
+- Defaults (built-in repo templates):
+   - `instructions/soul.md`
+   - `instructions/id.md`
+
 Resolution order (per file):
 
 1. If `me/<TELEGRAM_ID>/<file>.md` exists, it is used.
-2. Else `me/default/<file>.md` is used.
+2. Else `instructions/<file>.md` is used.
 
 ## When the user asks to change the agent's personality
 
 - The personality file to change is **always** the per-user file: `me/<TELEGRAM_ID>/soul.md`.
-- Do NOT edit `me/default/soul.md` unless the user explicitly asks to change defaults.
+- Do NOT edit the repo defaults (`instructions/soul.md`) unless the operator explicitly asks to change the global defaults.
 
 ### Process
 

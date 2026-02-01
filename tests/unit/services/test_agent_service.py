@@ -1095,16 +1095,15 @@ class TestAgentServiceNewSessionClearsWorkingFolder:
 
 
 class TestAgentServicePersonalityInjection:
-    """Tests for Obsidian personality injection in system prompt.
+     """Tests for personality injection in the system prompt.
 
-    Personality files are loaded from an external Obsidian vault root.
-
-    Layout:
-      - me/default/{soul,id}.md
-      - me/<TELEGRAM_ID>/{soul,id}.md
-
-    Resolution order: per-user file if present, else default.
-    """
+     Resolution order (per file):
+     1) Per-user overrides in the external Obsidian vault (when configured):
+         - me/<TELEGRAM_ID>/{soul,id}.md
+     2) Built-in repo defaults:
+         - instructions/{soul,id}.md
+     (No vault-wide defaults; defaults come from the repo `instructions/` directory.)
+     """
 
     @pytest.fixture
     def vault_dir(self, tmp_path):
@@ -1135,24 +1134,19 @@ class TestAgentServicePersonalityInjection:
         service = AgentService(config)
         user_id = "12345"
 
-        self._write(vault_dir, "me/default/soul.md", "DEFAULT_SOUL")
-        self._write(vault_dir, "me/default/id.md", "DEFAULT_ID")
-
         prompt = service._build_system_prompt(user_id)
 
         assert "## Personality (Obsidian Vault)" in prompt
         assert "## Obsidian Vault Access" in prompt
         assert "bounded search" in prompt.lower()
-        assert "DEFAULT_SOUL" in prompt
-        assert "DEFAULT_ID" in prompt
-        assert "source: default" in prompt
+        assert "# Soul (Personality)" in prompt
+        assert "# Identity" in prompt
+        assert "source: repo" in prompt
 
     def test_user_files_override_default(self, config, vault_dir):
         service = AgentService(config)
         user_id = "999"
 
-        self._write(vault_dir, "me/default/soul.md", "DEFAULT_SOUL")
-        self._write(vault_dir, "me/default/id.md", "DEFAULT_ID")
         self._write(vault_dir, f"me/{user_id}/soul.md", "USER_SOUL")
         self._write(vault_dir, f"me/{user_id}/id.md", "USER_ID")
 
@@ -1160,8 +1154,8 @@ class TestAgentServicePersonalityInjection:
 
         assert "USER_SOUL" in prompt
         assert "USER_ID" in prompt
-        assert "DEFAULT_SOUL" not in prompt
-        assert "DEFAULT_ID" not in prompt
+        assert "source: repo" not in prompt
+        assert "<BOT_NAME>" not in prompt
         assert "source: user" in prompt
 
     @patch("strands.Agent")

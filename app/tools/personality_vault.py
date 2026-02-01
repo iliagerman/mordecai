@@ -4,9 +4,9 @@ These tools are designed to safely edit ONLY:
 - me/<TELEGRAM_ID>/soul.md
 - me/<TELEGRAM_ID>/id.md
 
-…and to read defaults under:
-- me/default/soul.md
-- me/default/id.md
+…and to read built-in defaults from the repo under:
+- instructions/soul.md
+- instructions/id.md
 
 Vault root is configured via AgentConfig.obsidian_vault_root (env: AGENT_OBSIDIAN_VAULT_ROOT).
 """
@@ -68,6 +68,24 @@ def _filename(kind: PersonalityDocKind) -> str:
     return "soul.md" if kind == "soul" else "id.md"
 
 
+def _find_repo_root(*, start: Path) -> Path:
+    """Best-effort repository root discovery (pyproject.toml heuristic)."""
+
+    try:
+        start = start.resolve()
+        for p in [start, *start.parents]:
+            if (p / "pyproject.toml").exists():
+                return p
+    except Exception:
+        pass
+    return Path.cwd()
+
+
+def _repo_default_path(kind: PersonalityDocKind) -> Path:
+    repo_root = _find_repo_root(start=Path(__file__))
+    return (repo_root / "instructions" / _filename(kind)).resolve()
+
+
 def _safe_under_root(root: Path, candidate: Path) -> Path:
     resolved = candidate.expanduser().resolve()
     try:
@@ -81,10 +99,9 @@ def _paths_for(kind: PersonalityDocKind) -> dict[str, Path]:
     root = _vault_root()
     fname = _filename(kind)
     user_path = root / "me" / _current_user_id / fname  # type: ignore[arg-type]
-    default_path = root / "me" / "default" / fname
     return {
         "user": _safe_under_root(root, user_path),
-        "default": _safe_under_root(root, default_path),
+        "default": _repo_default_path(kind),
     }
 
 
@@ -182,8 +199,8 @@ def personality_write(
 @tool(
     name="personality_reset_to_default",
     description=(
-        "Reset the per-user personality/identity file to the default version (me/default/*.md). "
-        "Copies default into me/<TELEGRAM_ID>/*.md."
+        "Reset the per-user personality/identity file to the built-in default version (instructions/{soul,id}.md). "
+        "Copies the repo default into me/<TELEGRAM_ID>/*.md in the configured vault."
     ),
 )
 def personality_reset_to_default(kind: PersonalityDocKind) -> str:
