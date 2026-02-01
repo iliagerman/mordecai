@@ -511,13 +511,35 @@ class MemoryExtractionService:
         Returns:
             Extracted text string.
         """
-        if hasattr(result, "message") and result.message:
-            content = result.message.get("content", [])
+        # Strands agent results can expose `message` as either:
+        # - a dict: {"role": "assistant", "content": [{"text": "..."}, ...]}
+        # - an object/model: message.content may be a string or a list of blocks
+        msg = getattr(result, "message", None)
+        if not msg:
+            return str(result)
+
+        content: object = []
+
+        if isinstance(msg, dict):
+            content = msg.get("content", [])
+        else:
+            # Pydantic/objects
+            try:
+                content = getattr(msg, "content")
+            except Exception:
+                content = []
+
+        # Normalize content to iterable blocks.
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and "text" in block:
-                    return block["text"]
-                elif isinstance(block, str):
+                    return str(block["text"])
+                if isinstance(block, str):
                     return block
+
         return str(result)
 
     def _parse_extraction_response(

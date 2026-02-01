@@ -87,10 +87,17 @@ For **Outlook**, provide:
 
 When the placeholders are provided and persisted, Mordecai will:
 - Render a per-user `himalaya.toml` into the **per-user skills directory root** (the same folder as `skills_secrets.yml`)
-- Export `HIMALAYA_CONFIG` pointing to that file
+- Export `HIMALAYA_CONFIG` pointing to that file **as an absolute path**
 - Write a per-user `.env` convenience file under `skills/<user>/.env` (git-ignored)
 
 ### CRITICAL: how to run Himalaya commands
+
+**HARD REQUIREMENT:** `HIMALAYA_CONFIG` must be an **absolute path** to the rendered config file.
+
+- In the container / production layout, this should look like:
+  - `/app/skills/<USERNAME>/himalaya.toml`
+- Example:
+  - `/app/skills/splintermaster/himalaya.toml`
 
 Even if `HIMALAYA_CONFIG` is set in the process environment, the shell tool runner may not always propagate env vars to child processes.
 
@@ -101,15 +108,14 @@ Therefore, **EVERY** himalaya CLI command MUST be executed with an explicit `HIM
 
 If you need to inline the path explicitly:
 
+- ✅ `HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" himalaya ...`
 - ✅ `HIMALAYA_CONFIG="/absolute/path/to/himalaya.toml" himalaya ...`
 
-In this repo's default layout, the per-user config file is typically:
+In this repo's container layout, the per-user config file is:
 
-- `skills/<user>/himalaya.toml`
+- `/app/skills/<user>/himalaya.toml` (absolute; preferred)
 
-For example, if your user is `splintermaster`, the path is:
-
-- `skills/splintermaster/himalaya.toml`
+If you are running locally outside the container, it may instead be an absolute path under your workspace or a test temp directory.
 
 Alternative (equivalent) approach: pass the config path directly using CLI flags:
 

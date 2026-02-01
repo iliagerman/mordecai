@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from app.config import refresh_runtime_env_from_secrets
+from app.observability.health_state import mark_progress
 from app.observability.trace_context import get_trace_id
 from app.observability.trace_logging import trace_event
-from app.observability.health_state import mark_progress
 
 try:
     from strands import tool  # type: ignore[import-not-found]
@@ -115,6 +115,43 @@ def _truncate(s: str | None, limit: int = 60_000) -> str | None:
         return s
     # Keep the tail since it often contains the error.
     return s[-limit:]
+
+
+def _maybe_prefix_himalaya_config(command: str) -> str:
+    """Best-effort safety: ensure Himalaya sees its config.
+
+    Rationale:
+    - Himalaya commands can appear to "hang" (long network waits) or fail if it
+      cannot find the expected config.
+    - LLMs sometimes omit the required `HIMALAYA_CONFIG=...` prefix even when
+      documented.
+
+    If `HIMALAYA_CONFIG` is already explicitly provided (prefix or flags), we do nothing.
+    Otherwise, if the current process environment has `HIMALAYA_CONFIG`, we prefix it.
+
+    This is intentionally conservative and only kicks in when the command contains
+    the `himalaya` CLI.
+    """
+
+    cmd = (command or "").strip()
+    if not cmd:
+        return command
+
+    # Only touch commands that actually invoke himalaya.
+    if " himalaya" not in f" {cmd} ":
+        return command
+
+    # Respect explicit config injection (either env prefix or CLI flags).
+    if "HIMALAYA_CONFIG=" in cmd:
+        return command
+    if " --config " in f" {cmd} " or " -c " in f" {cmd} ":
+        return command
+
+    cfg = os.environ.get("HIMALAYA_CONFIG")
+    if not cfg or not str(cfg).strip():
+        return command
+
+    return f"HIMALAYA_CONFIG={shlex.quote(str(cfg))} {command}"
 
 
 def _safe_shell_run(
@@ -365,8 +402,9 @@ def shell(
         #
         # If a future need arises to use the upstream implementation, we can
         # add a config flag to opt back in.
+        effective_command = _maybe_prefix_himalaya_config(command)
         result = _safe_shell_run(
-            command=command,
+            command=effective_command,
             work_dir=work_dir,
             timeout_seconds=effective_timeout,
         )
