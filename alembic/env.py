@@ -32,7 +32,10 @@ if config.config_file_name is not None:
 # Import Base and all models so metadata is populated
 from app.database import Base
 from app.models.orm import (  # noqa: F401
+    CronLockModel,
+    CronTaskModel,
     LogModel,
+    LongMemoryModel,
     SkillMetadataModel,
     TaskModel,
     UserModel,
