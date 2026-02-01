@@ -24,6 +24,7 @@ from app.config import AgentConfig
 from app.enums import ModelProvider
 from app.services.file_service import FileMetadata, FileService
 from app.telegram.bot import TelegramBotInterface
+from app.telegram.message_handlers import TelegramMessageHandlers
 
 
 class TestPhotoResolutionSelection:
@@ -35,87 +36,71 @@ class TestPhotoResolutionSelection:
     **Validates: Requirements 2.5**
     """
 
-    @pytest.fixture
-    def temp_dir(self):
-        """Create a temporary directory."""
-        temp_path = tempfile.mkdtemp()
-        yield temp_path
-        shutil.rmtree(temp_path, ignore_errors=True)
-
-    @pytest.fixture
-    def config(self, temp_dir):
-        """Create test configuration."""
-        return AgentConfig(
-            model_provider=ModelProvider.BEDROCK,
-            bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
-            telegram_bot_token="test-bot-token",
-            session_storage_dir=temp_dir,
-            skills_base_dir=temp_dir,
-            temp_files_base_dir=temp_dir,
-            working_folder_base_dir=temp_dir,
-        )
-
-    @pytest.fixture
-    @patch("app.telegram.bot.Application")
-    def bot(self, mock_app, config):
-        """Create TelegramBotInterface instance."""
-        mock_app_instance = MagicMock()
-        mock_app_instance.bot = MagicMock()
-        mock_app_instance.bot.send_message = AsyncMock()
-        mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
-
-        mock_logging_service = MagicMock()
-        mock_logging_service.log_action = AsyncMock()
-
-        return TelegramBotInterface(
-            config=config,
-            sqs_client=MagicMock(),
-            queue_manager=MagicMock(),
-            agent_service=MagicMock(),
-            logging_service=mock_logging_service,
-            skill_service=MagicMock(),
-        )
-
-    def test_selects_largest_photo_from_list(self, bot):
+    def test_selects_largest_photo_from_list(self):
         """Test that largest photo by file_size is selected."""
+        # Import PhotoSize for type annotation
+        from telegram import PhotoSize
+
+        handlers = TelegramMessageHandlers(
+            config=MagicMock(),
+            logging_service=MagicMock(),
+            skill_service=MagicMock(),
+            file_service=MagicMock(),
+            command_parser=MagicMock(),
+            bot_application=MagicMock(),
+            get_allowed_users=lambda: [],
+        )
+
         # Create mock PhotoSize objects
-        small = MagicMock()
+        small = MagicMock(spec=PhotoSize)
         small.file_size = 1000
         small.width = 100
         small.height = 100
 
-        medium = MagicMock()
+        medium = MagicMock(spec=PhotoSize)
         medium.file_size = 5000
         medium.width = 500
         medium.height = 500
 
-        large = MagicMock()
+        large = MagicMock(spec=PhotoSize)
         large.file_size = 20000
         large.width = 1920
         large.height = 1080
 
         photos = [small, medium, large]
 
-        result = bot._select_highest_resolution_photo(photos)
+        result = handlers.select_highest_resolution_photo(photos)
 
         assert result == large
         assert result.file_size == 20000
 
-    def test_selects_largest_when_unsorted(self, bot):
+    def test_selects_largest_when_unsorted(self):
         """Test selection works regardless of list order."""
-        large = MagicMock()
+        from telegram import PhotoSize
+
+        handlers = TelegramMessageHandlers(
+            config=MagicMock(),
+            logging_service=MagicMock(),
+            skill_service=MagicMock(),
+            file_service=MagicMock(),
+            command_parser=MagicMock(),
+            bot_application=MagicMock(),
+            get_allowed_users=lambda: [],
+        )
+
+        large = MagicMock(spec=PhotoSize)
         large.file_size = 50000
 
-        small = MagicMock()
+        small = MagicMock(spec=PhotoSize)
         small.file_size = 1000
 
-        medium = MagicMock()
+        medium = MagicMock(spec=PhotoSize)
         medium.file_size = 10000
 
         # Unsorted order
         photos = [medium, large, small]
 
-        result = bot._select_highest_resolution_photo(photos)
+        result = handlers.select_highest_resolution_photo(photos)
 
         assert result == large
 
@@ -401,8 +386,8 @@ class TestFileSendRouting:
         test_file = Path(temp_dir) / "large_image.jpg"
         test_file.write_bytes(b"x" * (11 * 1024 * 1024))
 
-        # Mock send_file to track the call
-        with patch.object(bot, "send_file", new_callable=AsyncMock) as mock_send_file:
+        # Mock TelegramMessageSender.send_file to track the call
+        with patch("app.telegram.message_sender.TelegramMessageSender.send_file", new_callable=AsyncMock) as mock_send_file:
             mock_send_file.return_value = True
             result = await bot.send_photo(123, test_file, "Large image")
 
