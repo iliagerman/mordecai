@@ -41,9 +41,7 @@ def agent_service(config):
     return AgentService(config)
 
 
-def create_mock_skill(
-    skills_base_dir: str, user_id: str, name: str, description: str
-) -> Path:
+def create_mock_skill(skills_base_dir: str, user_id: str, name: str, description: str) -> Path:
     """Create a mock skill directory for a user."""
     skill_dir = Path(skills_base_dir) / user_id / name
     skill_dir.mkdir(parents=True, exist_ok=True)
@@ -93,9 +91,7 @@ class TestPerUserSkillDiscovery:
 
     def test_discover_user_skills(self, agent_service, temp_dir):
         """Test that agent discovers user's skills."""
-        create_mock_skill(
-            temp_dir, TEST_USER_ID, "pptx", "Create PowerPoint presentations"
-        )
+        create_mock_skill(temp_dir, TEST_USER_ID, "pptx", "Create PowerPoint presentations")
 
         skills = agent_service._discover_skills(TEST_USER_ID)
 
@@ -119,9 +115,7 @@ class TestPerUserSkillDiscovery:
 
     def test_system_prompt_includes_user_skills(self, agent_service, temp_dir):
         """Test that system prompt includes user's installed skills."""
-        create_mock_skill(
-            temp_dir, TEST_USER_ID, "pptx", "Create presentations"
-        )
+        create_mock_skill(temp_dir, TEST_USER_ID, "pptx", "Create presentations")
 
         prompt = agent_service._build_system_prompt(TEST_USER_ID)
 
@@ -136,9 +130,7 @@ class TestPerUserSkillDiscovery:
         assert "Installed Skills" not in prompt
         assert "helpful AI assistant" in prompt
 
-    def test_different_users_get_different_prompts(
-        self, agent_service, temp_dir
-    ):
+    def test_different_users_get_different_prompts(self, agent_service, temp_dir):
         """Test that different users get prompts with their own skills."""
         create_mock_skill(temp_dir, "user1", "skill-a", "Skill A")
         create_mock_skill(temp_dir, "user2", "skill-b", "Skill B")
@@ -178,13 +170,10 @@ class TestAgentReload:
 class TestSkillInstructionPrompt:
     """Tests for skill instruction guidance in system prompt."""
 
-    def test_system_prompt_instructs_to_read_skill_md(
-        self, agent_service, temp_dir
-    ):
+    def test_system_prompt_instructs_to_read_skill_md(self, agent_service, temp_dir):
         """Test that system prompt tells agent to read SKILL.md."""
         create_mock_skill(
-            temp_dir, TEST_USER_ID, "youtube-transcript",
-            "Download YouTube video transcripts"
+            temp_dir, TEST_USER_ID, "youtube-transcript", "Download YouTube video transcripts"
         )
 
         prompt = agent_service._build_system_prompt(TEST_USER_ID)
@@ -193,13 +182,10 @@ class TestSkillInstructionPrompt:
         assert "Read SKILL.md ONCE" in prompt or "SKILL.md" in prompt
         assert "file_read" in prompt
 
-    def test_system_prompt_instructs_to_use_shell(
-        self, agent_service, temp_dir
-    ):
+    def test_system_prompt_instructs_to_use_shell(self, agent_service, temp_dir):
         """Test that system prompt tells agent to use shell for commands."""
         create_mock_skill(
-            temp_dir, TEST_USER_ID, "youtube-transcript",
-            "Download YouTube video transcripts"
+            temp_dir, TEST_USER_ID, "youtube-transcript", "Download YouTube video transcripts"
         )
 
         prompt = agent_service._build_system_prompt(TEST_USER_ID)
@@ -208,13 +194,10 @@ class TestSkillInstructionPrompt:
         assert "shell" in prompt.lower()
         assert "shell(command=" in prompt or "shell()" in prompt
 
-    def test_system_prompt_warns_not_to_run_skill_as_command(
-        self, agent_service, temp_dir
-    ):
+    def test_system_prompt_warns_not_to_run_skill_as_command(self, agent_service, temp_dir):
         """Test that system prompt clarifies skill usage."""
         create_mock_skill(
-            temp_dir, TEST_USER_ID, "youtube-transcript",
-            "Download YouTube video transcripts"
+            temp_dir, TEST_USER_ID, "youtube-transcript", "Download YouTube video transcripts"
         )
 
         prompt = agent_service._build_system_prompt(TEST_USER_ID)
@@ -224,56 +207,36 @@ class TestSkillInstructionPrompt:
         assert "shell(command=" in prompt
         assert "→" in prompt  # Shows the flow
 
-    def test_system_prompt_shows_correct_file_read_syntax(
-        self, agent_service, temp_dir
-    ):
+    def test_system_prompt_shows_correct_file_read_syntax(self, agent_service, temp_dir):
         """Test that system prompt shows correct file_read with mode param."""
-        create_mock_skill(
-            temp_dir, TEST_USER_ID, "test-skill",
-            "A test skill"
-        )
+        create_mock_skill(temp_dir, TEST_USER_ID, "test-skill", "A test skill")
 
         prompt = agent_service._build_system_prompt(TEST_USER_ID)
 
         # Should show correct syntax with mode="view"
         assert 'mode="view"' in prompt
 
-    def test_system_prompt_warns_not_to_read_multiple_times(
-        self, agent_service, temp_dir
-    ):
+    def test_system_prompt_warns_not_to_read_multiple_times(self, agent_service, temp_dir):
         """Test that system prompt warns against reading same file repeatedly."""
-        create_mock_skill(
-            temp_dir, TEST_USER_ID, "test-skill",
-            "A test skill"
-        )
+        create_mock_skill(temp_dir, TEST_USER_ID, "test-skill", "A test skill")
 
         prompt = agent_service._build_system_prompt(TEST_USER_ID)
 
         # Should warn to read only once
         assert "ONCE" in prompt
 
-    def test_system_prompt_warns_to_use_shell_after_reading(
-        self, agent_service, temp_dir
-    ):
+    def test_system_prompt_warns_to_use_shell_after_reading(self, agent_service, temp_dir):
         """Test that system prompt tells agent to use shell after reading."""
-        create_mock_skill(
-            temp_dir, TEST_USER_ID, "test-skill",
-            "A test skill"
-        )
+        create_mock_skill(temp_dir, TEST_USER_ID, "test-skill", "A test skill")
 
         prompt = agent_service._build_system_prompt(TEST_USER_ID)
 
         # Should indicate shell comes after file_read
         assert "shell()" in prompt or "→ shell" in prompt
 
-    def test_system_prompt_lists_available_tools(
-        self, agent_service, temp_dir
-    ):
+    def test_system_prompt_lists_available_tools(self, agent_service, temp_dir):
         """Test that system prompt lists available tools."""
-        create_mock_skill(
-            temp_dir, TEST_USER_ID, "test-skill",
-            "A test skill"
-        )
+        create_mock_skill(temp_dir, TEST_USER_ID, "test-skill", "A test skill")
 
         prompt = agent_service._build_system_prompt(TEST_USER_ID)
 
@@ -281,14 +244,22 @@ class TestSkillInstructionPrompt:
         assert "shell(command=" in prompt
         assert "file_read(path=" in prompt
 
-    def test_skill_path_in_prompt_points_to_skill_md(
-        self, agent_service, temp_dir
-    ):
+    def test_system_prompt_inlines_required_env_vars_explicitly(self, agent_service, temp_dir):
+        """Agent should be told not to rely on implicit env propagation.
+
+        This is intentionally generic (not tied to any specific CLI).
+        """
+
+        create_mock_skill(temp_dir, TEST_USER_ID, "test-skill", "A test skill")
+
+        prompt = agent_service._build_system_prompt(TEST_USER_ID)
+
+        assert "inline it explicitly" in prompt
+        assert 'FOO="$FOO"' in prompt
+
+    def test_skill_path_in_prompt_points_to_skill_md(self, agent_service, temp_dir):
         """Test that skill path in prompt correctly points to SKILL.md."""
-        skill_dir = create_mock_skill(
-            temp_dir, TEST_USER_ID, "my-skill",
-            "My test skill"
-        )
+        skill_dir = create_mock_skill(temp_dir, TEST_USER_ID, "my-skill", "My test skill")
 
         prompt = agent_service._build_system_prompt(TEST_USER_ID)
 

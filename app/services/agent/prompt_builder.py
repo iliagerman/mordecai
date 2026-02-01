@@ -304,6 +304,8 @@ class SystemPromptBuilder:
             "1. file_read the SKILL.md ONCE\n"
             "2. Extract the bash commands from the instructions\n"
             '3. Run them with shell(command="the bash command")\n\n'
+            "IMPORTANT: If a command depends on an env var you set earlier, inline it explicitly in the command you run "
+            '(example: `FOO="$FOO" some-cli ...`). Do not assume env propagation will work automatically.\n\n'
             "**CRITICAL:** After reading SKILL.md, your next tool call is usually shell(), not file_read. "
             "However, if the skill has missing setup requirements (see 'Skill Setup Required'), you MUST ask the user and persist the values first (set_skill_env_vars / set_skill_config) before running shell commands for that skill.\n\n"
         )
@@ -473,7 +475,10 @@ class SystemPromptBuilder:
         lines.append(
             "This is the user's first interaction with you! Please send a warm, "
             "friendly welcome message. Introduce yourself and mention that you're here "
-            "to help. Keep it concise and conversational.\n\n"
+            "to help.\n\n"
+            "IMPORTANT: Tell the user that you've set up their personalized personality files "
+            "(soul.md and id.md) and SHOW them the content of these files below. "
+            "This helps them understand your personality and how you'll behave.\n\n"
         )
 
         if soul:
