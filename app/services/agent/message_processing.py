@@ -161,9 +161,11 @@ class MessageProcessor:
         memory_context: MemoryContext | None = None
         if self.config.memory_enabled and self.memory_service is not None:
             try:
-                memory_context = cast(
-                    MemoryContext,
-                    self.memory_service.retrieve_memory_context(user_id=user_id, query=message),
+                ctx_dict = self.memory_service.retrieve_memory_context(user_id=user_id, query=message)
+                memory_context = MemoryContext(
+                    agent_name=ctx_dict.get("agent_name"),
+                    facts=ctx_dict.get("facts", []),
+                    preferences=ctx_dict.get("preferences", []),
                 )
                 logger.info(
                     "Memory context for %s: facts=%d, prefs=%d",
@@ -173,6 +175,7 @@ class MessageProcessor:
                 )
             except Exception as e:
                 logger.warning("Failed to retrieve memory: %s", e)
+                memory_context = None
 
         # Log model being used
         match self.config.model_provider:
@@ -366,9 +369,11 @@ class MessageProcessor:
         if self.config.memory_enabled and self.memory_service is not None:
             try:
                 query = message if message else "file attachment"
-                memory_context = cast(
-                    MemoryContext,
-                    self.memory_service.retrieve_memory_context(user_id=user_id, query=query),
+                ctx_dict = self.memory_service.retrieve_memory_context(user_id=user_id, query=query)
+                memory_context = MemoryContext(
+                    agent_name=ctx_dict.get("agent_name"),
+                    facts=ctx_dict.get("facts", []),
+                    preferences=ctx_dict.get("preferences", []),
                 )
                 logger.info(
                     "Memory context for %s: facts=%d, prefs=%d",
@@ -378,6 +383,7 @@ class MessageProcessor:
                 )
             except Exception as e:
                 logger.warning("Failed to retrieve memory: %s", e)
+                memory_context = None
 
         # Get previous messages to maintain conversation context
         previous_messages = self._get_user_messages(user_id)

@@ -113,14 +113,17 @@ class AttachmentHandler:
         memory_context: MemoryContext | None = None
         if self.config.memory_enabled and self.memory_service is not None:
             try:
-                memory_context = cast(
-                    MemoryContext,
-                    self.memory_service.retrieve_memory_context(
-                        user_id=user_id, query=message or "image analysis"
-                    ),
+                ctx_dict = self.memory_service.retrieve_memory_context(
+                    user_id=user_id, query=message or "image analysis"
+                )
+                memory_context = MemoryContext(
+                    agent_name=ctx_dict.get("agent_name"),
+                    facts=ctx_dict.get("facts", []),
+                    preferences=ctx_dict.get("preferences", []),
                 )
             except Exception as e:
                 logger.warning("Failed to retrieve memory: %s", e)
+                memory_context = None
 
         try:
             # Try with vision model if configured (Req 3.1, 3.2)
