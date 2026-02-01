@@ -1,6 +1,11 @@
 ---
 name: nano-banana-pro
 description: Generate/edit images with Nano Banana Pro (Gemini 3 Pro Image). Use for image create/modify requests incl. edits. Supports text-to-image + image-to-image; 1K/2K/4K; use --input-image.
+requires:
+  env:
+    - name: GEMINI_API_KEY
+      prompt: "Provide your Gemini API key for Nano Banana Pro (it will be stored in skills_secrets.yml and used to call Google's Gemini image API)."
+      example: "AIzaSy..."
 ---
 
 # Nano Banana Pro Image Generation & Editing

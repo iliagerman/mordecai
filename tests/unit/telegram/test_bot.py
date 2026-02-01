@@ -297,7 +297,9 @@ class TestCommandExecutor:
         return CommandParser()
 
     @pytest.fixture
-    def executor(self, mock_agent_service, mock_logging_service, mock_skill_service, command_parser):
+    def executor(
+        self, mock_agent_service, mock_logging_service, mock_skill_service, command_parser
+    ):
         """Create CommandExecutor instance."""
         enqueue_callback = AsyncMock()
         send_response_callback = AsyncMock()
@@ -317,7 +319,7 @@ class TestCommandExecutor:
 
         await executor.execute_command(parsed, "user-1", 123, "Hello agent")
 
-        executor._enqueue_message.assert_called_once_with("user-1", 123, "Hello agent")
+        executor._enqueue_message.assert_called_once_with("user-1", 123, "Hello agent", None)
 
     @pytest.mark.asyncio
     async def test_execute_command_routes_new_to_handler(self, executor, mock_agent_service):
@@ -409,7 +411,9 @@ class TestTelegramMessageHandlers:
         update.effective_user.username = "testuser"
         update.effective_user.first_name = "Test"
 
-        user_id, telegram_user_id, username, display_name = handlers.extract_telegram_identity(update)
+        user_id, telegram_user_id, username, display_name = handlers.extract_telegram_identity(
+            update
+        )
 
         assert user_id == "testuser"
         assert telegram_user_id == "12345"
@@ -423,7 +427,9 @@ class TestTelegramMessageHandlers:
         update.effective_user.username = None
         update.effective_user.first_name = "Test"
 
-        user_id, telegram_user_id, username, display_name = handlers.extract_telegram_identity(update)
+        user_id, telegram_user_id, username, display_name = handlers.extract_telegram_identity(
+            update
+        )
 
         assert user_id is None  # Username is primary identifier
         assert telegram_user_id == "12345"
@@ -674,8 +680,13 @@ class TestTelegramBotIntegration:
         async def mock_reject(*args):
             return False
 
-        with patch.object(bot._message_handlers, "reject_if_not_whitelisted", side_effect=mock_reject):
-            with patch("app.telegram.message_sender.TelegramMessageSender.send_response", new_callable=AsyncMock) as mock_send:
+        with patch.object(
+            bot._message_handlers, "reject_if_not_whitelisted", side_effect=mock_reject
+        ):
+            with patch(
+                "app.telegram.message_sender.TelegramMessageSender.send_response",
+                new_callable=AsyncMock,
+            ) as mock_send:
                 await bot._handle_skills_command(update, context)
 
                 mock_send.assert_called_once()

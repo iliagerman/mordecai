@@ -10,14 +10,20 @@ We keep the public tool name as `shell` so skills continue to work.
 
 from __future__ import annotations
 
+import os
+import shlex
+import signal
+import subprocess
 import sys
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 from app.config import refresh_runtime_env_from_secrets
 from app.observability.trace_context import get_trace_id
 from app.observability.trace_logging import trace_event
+from app.observability.health_state import mark_progress
 
 try:
     from strands import tool  # type: ignore[import-not-found]
@@ -49,9 +55,11 @@ def _call_base_shell(**kwargs: Any):
     raise TypeError("strands_tools shell implementation is not callable")
 
 
-_current_user_id: str | None = None
-_secrets_path: Path = Path("secrets.yml")
-_config = None
+_current_user_id_var: ContextVar[str | None] = ContextVar("shell_env_current_user_id", default=None)
+_secrets_path_var: ContextVar[Path] = ContextVar(
+    "shell_env_secrets_path", default=Path("secrets.yml")
+)
+_config_var: ContextVar[object | None] = ContextVar("shell_env_config", default=None)
 
 
 def _stdin_is_tty() -> bool:
@@ -71,10 +79,167 @@ def _stdin_is_tty() -> bool:
 
 
 def set_shell_env_context(*, user_id: str, secrets_path: str | Path, config=None) -> None:
-    global _current_user_id, _secrets_path, _config
-    _current_user_id = user_id
-    _secrets_path = Path(secrets_path)
-    _config = config
+    # ContextVars make this safe under concurrent async tasks and also propagate
+    # into asyncio.to_thread() calls.
+    _current_user_id_var.set(user_id)
+    _secrets_path_var.set(Path(secrets_path))
+    _config_var.set(config)
+
+
+def _default_shell_timeout_seconds() -> int:
+    cfg = _config_var.get()
+    try:
+        v = getattr(cfg, "shell_default_timeout_seconds", None)
+        if v is None:
+            return 180
+        return max(1, int(v))
+    except Exception:
+        return 180
+
+
+def _choose_shell_executable() -> str | None:
+    # Prefer bash for consistent behavior with skills that use bash-isms.
+    for cand in ("/bin/bash", "/usr/bin/bash"):
+        try:
+            if Path(cand).exists():
+                return cand
+        except Exception:
+            continue
+    return None
+
+
+def _truncate(s: str | None, limit: int = 60_000) -> str | None:
+    if not isinstance(s, str):
+        return None
+    if len(s) <= limit:
+        return s
+    # Keep the tail since it often contains the error.
+    return s[-limit:]
+
+
+def _safe_shell_run(
+    *,
+    command: str,
+    work_dir: str | None,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    """Run a shell command safely with a hard timeout.
+
+    Why not delegate to strands_tools.shell?
+    - Some upstream versions can hang in PTY/interactive mode.
+    - We need a kill-on-timeout behavior to keep the service responsive.
+
+    Output shape is intentionally compatible with strands_tools' common dict form.
+    """
+
+    cwd = work_dir or None
+    shell_exe = _choose_shell_executable()
+
+    # Make tools non-interactive by default.
+    env = os.environ.copy()
+    env.setdefault("BYPASS_TOOL_CONSENT", "true")
+    env.setdefault("STRANDS_NON_INTERACTIVE", "true")
+
+    t0 = time.perf_counter()
+    timed_out = False
+    stdout = ""
+    stderr = ""
+    returncode: int | None = None
+
+    proc: subprocess.Popen[str] | None = None
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            executable=shell_exe,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,  # allows killing the whole process group
+        )
+        try:
+            out, err = proc.communicate(timeout=timeout_seconds)
+            stdout = out or ""
+            stderr = err or ""
+            returncode = int(proc.returncode or 0)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            # Kill the full process group to avoid orphaned children.
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+            # Give it a brief grace period, then SIGKILL.
+            try:
+                out, err = proc.communicate(timeout=2)
+                stdout = out or ""
+                stderr = err or ""
+            except Exception:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                try:
+                    out, err = proc.communicate(timeout=2)
+                    stdout = out or ""
+                    stderr = err or ""
+                except Exception:
+                    pass
+
+            returncode = 124  # common timeout exit code
+
+    finally:
+        # Best-effort: ensure returncode is populated.
+        if proc is not None and returncode is None:
+            try:
+                returncode = int(proc.poll() or 0)
+            except Exception:
+                returncode = 0
+
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    stdout_t = _truncate(stdout)
+    stderr_t = _truncate(stderr)
+
+    if timed_out:
+        msg = (
+            f"Command timed out after {timeout_seconds}s. "
+            "If this is expected, pass a larger timeout_seconds from the skill."
+        )
+        content_text = (stderr_t or "") + ("\n" if stderr_t else "") + msg
+        return {
+            "status": "error",
+            "returncode": returncode,
+            "stdout": stdout_t,
+            "stderr": content_text,
+            "timed_out": True,
+            "duration_ms": dt_ms,
+            "content": [{"text": content_text}],
+        }
+
+    # Success or normal non-zero exit.
+    status = "success" if returncode == 0 else "error"
+    combined = (stdout_t or "") + ("\n" if stdout_t and stderr_t else "") + (stderr_t or "")
+    if not combined:
+        combined = "(no output)"
+    return {
+        "status": status,
+        "returncode": returncode,
+        "stdout": stdout_t,
+        "stderr": stderr_t,
+        "timed_out": False,
+        "duration_ms": dt_ms,
+        "content": [{"text": combined}],
+    }
 
 
 @tool(
@@ -129,6 +294,9 @@ def shell(
     effective_non_interactive = bool(non_interactive) or (not _stdin_is_tty())
     tool_t0 = time.perf_counter()
 
+    # Heartbeat so stall detection can restart us if needed.
+    mark_progress("tool.shell.start")
+
     if get_trace_id() is not None:
         trace_event(
             "tool.shell.start",
@@ -144,9 +312,9 @@ def shell(
 
     try:
         refresh_runtime_env_from_secrets(
-            secrets_path=_secrets_path,
-            user_id=_current_user_id,
-            config=_config,
+            secrets_path=_secrets_path_var.get(),
+            user_id=_current_user_id_var.get(),
+            config=_config_var.get(),
         )
     except Exception:
         # Never block shell execution if refresh fails.
@@ -162,6 +330,15 @@ def shell(
         #   HIMALAYA_CONFIG=... himalaya ...
         if cmd.startswith("himalaya ") or " himalaya " in f" {cmd} ":
             effective_timeout = 45
+        else:
+            # Global default: prevent *any* command from hanging indefinitely.
+            effective_timeout = _default_shell_timeout_seconds()
+
+    # Safety: if the model tries to pass a crazy timeout, clamp it.
+    try:
+        effective_timeout = max(1, min(int(effective_timeout), 3600))
+    except Exception:
+        effective_timeout = _default_shell_timeout_seconds()
 
     forwarded: dict[str, Any] = {
         "command": command,
@@ -183,7 +360,19 @@ def shell(
         forwarded["timeout"] = effective_timeout
 
     try:
-        result = _call_base_shell(**forwarded)
+        # Prefer our safe runner (kill-on-timeout). This keeps the service
+        # responsive and prevents hung tools from wedging the process.
+        #
+        # If a future need arises to use the upstream implementation, we can
+        # add a config flag to opt back in.
+        result = _safe_shell_run(
+            command=command,
+            work_dir=work_dir,
+            timeout_seconds=effective_timeout,
+        )
+
+        # Heartbeat again after completion.
+        mark_progress("tool.shell.end")
         if get_trace_id() is not None:
             # Try to normalize common strands_tools result shapes.
             exit_code = None

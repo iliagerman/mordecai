@@ -8,7 +8,9 @@ requires:
   bins:
     - node
   env:
-    - TAVILY_API_KEY
+    - name: TAVILY_API_KEY
+      prompt: "Provide your Tavily API key (it will be stored in skills_secrets.yml and used for web search)."
+      example: "tvly-..."
 ---
 
 # Tavily Search

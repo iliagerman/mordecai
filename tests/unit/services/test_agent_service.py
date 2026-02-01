@@ -322,7 +322,7 @@ class TestAgentServiceMessageProcessing:
         service = AgentService(config)
 
         # Mock the message processor to return a response
-        async def mock_process(user_id, message):
+        async def mock_process(user_id, message, onboarding_context=None):
             return "Hello! How can I help you?"
 
         original_process = service._message_processor.process_message
@@ -345,8 +345,8 @@ class TestAgentServiceMessageProcessing:
         agent_called = []
         original_process = service._message_processor.process_message
 
-        async def tracked_process(user_id, message):
-            agent_called.append((user_id, message))
+        async def tracked_process(user_id, message, onboarding_context=None):
+            agent_called.append((user_id, message, onboarding_context))
             return "Response"
 
         service._message_processor.process_message = tracked_process
@@ -354,7 +354,7 @@ class TestAgentServiceMessageProcessing:
         await service.process_message("user-1", "Test message")
 
         # Verify agent was called
-        assert agent_called == [("user-1", "Test message")]
+        assert agent_called == [("user-1", "Test message", None)]
 
         # Restore
         service._message_processor.process_message = original_process
@@ -909,6 +909,7 @@ class TestVisionProcessingFallback:
 
         # Mock _create_model to raise an exception inside the try/except block
         original_create_model = service._attachment_handler._create_model
+
         def mock_create_model(*args, **kwargs):
             raise Exception("Model does not support images")
 

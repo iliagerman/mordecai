@@ -99,6 +99,10 @@ COPY alembic/ ./alembic/
 # Copy application source
 COPY app/ ./app/
 
+# Copy repo default personality templates (required for first-run onboarding and
+# for PersonalityService fallback when no Obsidian vault is configured/mounted).
+COPY instructions/ ./instructions/
+
 # Install Python dependencies via uv
 RUN uv sync --no-dev
 

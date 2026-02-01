@@ -14,6 +14,7 @@ from app.logging_filters import install_uvicorn_access_log_filters
 from app.main import Application
 from app.routers import create_task_router, create_webhook_router
 from app.security.whitelist import live_allowed_users
+from app.observability.health_state import snapshot as health_snapshot
 
 # Global application instance for lifespan management
 _application: Application | None = None
@@ -66,4 +67,18 @@ app = FastAPI(
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "service": "mordecai"}
+    # Note: config is loaded in lifespan; fall back to default if something goes wrong.
+    try:
+        cfg = AgentConfig.from_json_file()
+        stall_seconds = int(getattr(cfg, "health_stall_seconds", 180) or 180)
+        fail_on_stall = bool(getattr(cfg, "health_fail_on_stall", True))
+    except Exception:
+        stall_seconds = 180
+        fail_on_stall = True
+
+    snap = health_snapshot(stall_seconds=stall_seconds)
+    if snap.status != "healthy" and fail_on_stall:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=503, detail=snap.to_dict(mode="json"))
+    return snap.to_dict(mode="json")
