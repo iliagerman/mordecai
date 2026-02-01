@@ -107,9 +107,6 @@ def shell(
     # - work_dir: str
     # - timeout: int
 
-    # Guardrail: certain CLIs (notably himalaya over IMAP/SMTP) can block for a long time
-    # on network/auth issues. If a skill forgets to pass a timeout, apply a conservative
-    # default so the agent doesn't hang indefinitely.
     # Normalize timeout argument naming across strands_tools versions.
     # The upstream tool uses `timeout`, while some callers/models use `timeout_seconds`.
     # Priority:
@@ -124,17 +121,6 @@ def shell(
                 effective_timeout = int(raw_timeout)
             except Exception:
                 effective_timeout = None
-
-    # Guardrail: certain CLIs (notably himalaya over IMAP/SMTP) can block for a long time
-    # on network/auth issues. If a skill forgets to pass a timeout, apply a conservative
-    # default so the agent doesn't hang indefinitely.
-    cmd = (command or "").strip()
-    if effective_timeout is None:
-        # Detect common patterns like:
-        #   himalaya ...
-        #   HIMALAYA_CONFIG=... himalaya ...
-        if cmd.startswith("himalaya ") or " himalaya " in f" {cmd} ":
-            effective_timeout = 45
 
     # Force non-interactive mode when stdin is not a TTY.
     # This prevents the upstream tool's interactive PTY implementation from
@@ -165,6 +151,17 @@ def shell(
     except Exception:
         # Never block shell execution if refresh fails.
         pass
+
+    # Guardrail: certain CLIs (notably himalaya over IMAP/SMTP) can block for a long time
+    # on network/auth issues. If a skill forgets to pass a timeout, apply a conservative
+    # default so the agent doesn't hang indefinitely.
+    cmd = (command or "").strip()
+    if effective_timeout is None:
+        # Detect common patterns like:
+        #   himalaya ...
+        #   HIMALAYA_CONFIG=... himalaya ...
+        if cmd.startswith("himalaya ") or " himalaya " in f" {cmd} ":
+            effective_timeout = 45
 
     forwarded: dict[str, Any] = {
         "command": command,

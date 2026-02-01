@@ -103,6 +103,19 @@ If you need to inline the path explicitly:
 
 - ✅ `HIMALAYA_CONFIG="/absolute/path/to/himalaya.toml" himalaya ...`
 
+In this repo's default layout, the per-user config file is typically:
+
+- `skills/<user>/himalaya.toml`
+
+For example, if your user is `splintermaster`, the path is:
+
+- `skills/splintermaster/himalaya.toml`
+
+Alternative (equivalent) approach: pass the config path directly using CLI flags:
+
+- ✅ `himalaya -c "$HIMALAYA_CONFIG" account list`
+- ✅ `himalaya --config "$HIMALAYA_CONFIG" envelope list --output json not flag seen`
+
 Do NOT run plain `himalaya ...` without the explicit prefix.
 
 ## Installation Check
