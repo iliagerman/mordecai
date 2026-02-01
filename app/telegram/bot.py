@@ -17,9 +17,10 @@ Requirements:
 
 import json
 import logging
-from datetime import datetime, UTC
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol
 
 from telegram import PhotoSize, Update
 from telegram.error import TelegramError
@@ -33,6 +34,7 @@ from telegram.ext import (
 
 from app.config import AgentConfig
 from app.enums import CommandType, LogSeverity
+from app.security.whitelist import DEFAULT_FORBIDDEN_DETAIL, is_whitelisted, live_allowed_users
 from app.services.command_parser import CommandParser, ParsedCommand
 from app.services.file_service import FileService
 from app.services.logging_service import LoggingService
@@ -41,11 +43,18 @@ from app.services.skill_service import (
     SkillNotFoundError,
     SkillService,
 )
-from app.security.whitelist import DEFAULT_FORBIDDEN_DETAIL, is_whitelisted, live_allowed_users
+
+try:
+    # Type stubs for boto3 SQS are optional in this repo; fall back to a minimal
+    # Protocol so editors/type-checkers don't require mypy-boto3-sqs to be installed.
+    from mypy_boto3_sqs import SQSClient  # type: ignore[reportMissingImports]
+except Exception:  # pragma: no cover
+
+    class SQSClient(Protocol):
+        def send_message(self, **kwargs: Any) -> Any: ...
+
 
 if TYPE_CHECKING:
-    from mypy_boto3_sqs import SQSClient
-
     from app.services.agent_service import AgentService
     from app.sqs.queue_manager import SQSQueueManager
 
@@ -283,13 +292,17 @@ class TelegramBotInterface:
             update: Telegram update object.
             context: Callback context.
         """
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /start")
+            return
+        chat_id = chat.id
+
         user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
-        if await self._reject_if_not_whitelisted(
-            telegram_user_id or "unknown", username, update.effective_chat.id
-        ):
+        if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
         if not user_id:
-            await self._reject_if_missing_username(update.effective_chat.id)
+            await self._reject_if_missing_username(chat_id)
             return
 
         logger.info("User %s started the bot", user_id)
@@ -306,7 +319,7 @@ class TelegramBotInterface:
             "How can I help you today?"
         )
 
-        await self.send_response(update.effective_chat.id, welcome_message)
+        await self.send_response(chat_id, welcome_message)
 
         # Log the start action
         try:
@@ -332,17 +345,21 @@ class TelegramBotInterface:
         Requirements:
             - 11.5: Support basic commands (help)
         """
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /help")
+            return
+        chat_id = chat.id
+
         user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
-        if await self._reject_if_not_whitelisted(
-            telegram_user_id or "unknown", username, update.effective_chat.id
-        ):
+        if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
         if not user_id:
-            await self._reject_if_missing_username(update.effective_chat.id)
+            await self._reject_if_missing_username(chat_id)
             return
 
         help_text = self.command_parser.get_help_text()
-        await self.send_response(update.effective_chat.id, help_text)
+        await self.send_response(chat_id, help_text)
 
     async def _handle_new_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /new command.
@@ -357,15 +374,19 @@ class TelegramBotInterface:
             - 11.5: Support basic commands (new)
             - 11.6: Parse and execute appropriate actions
         """
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /new")
+            return
+        chat_id = chat.id
+
         user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
-        if await self._reject_if_not_whitelisted(
-            telegram_user_id or "unknown", username, update.effective_chat.id
-        ):
+        if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
         if not user_id:
-            await self._reject_if_missing_username(update.effective_chat.id)
+            await self._reject_if_missing_username(chat_id)
             return
-        await self._execute_new_command(user_id, update.effective_chat.id)
+        await self._execute_new_command(user_id, chat_id)
 
     async def _handle_logs_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -382,22 +403,31 @@ class TelegramBotInterface:
             - 11.5: Support basic commands (logs)
             - 11.6: Parse and execute appropriate actions
         """
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /logs")
+            return
+        chat_id = chat.id
+
         user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
-        if await self._reject_if_not_whitelisted(
-            telegram_user_id or "unknown", username, update.effective_chat.id
-        ):
+        if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
         if not user_id:
-            await self._reject_if_missing_username(update.effective_chat.id)
+            await self._reject_if_missing_username(chat_id)
             return
-        await self._execute_logs_command(user_id, update.effective_chat.id)
+        await self._execute_logs_command(user_id, chat_id)
 
     async def _handle_skills_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Handle /skills command - list all installed skills."""
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /skills")
+            return
+        chat_id = chat.id
+
         user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
-        chat_id = update.effective_chat.id
 
         if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
@@ -421,8 +451,13 @@ class TelegramBotInterface:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Handle /add_skill <url> command - install a skill from URL."""
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /add_skill")
+            return
+        chat_id = chat.id
+
         user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
-        chat_id = update.effective_chat.id
 
         if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
@@ -448,8 +483,13 @@ class TelegramBotInterface:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Handle /delete_skill <name> command - remove an installed skill."""
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /delete_skill")
+            return
+        chat_id = chat.id
+
         user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
-        chat_id = update.effective_chat.id
 
         if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
             return
@@ -487,8 +527,13 @@ class TelegramBotInterface:
         if not update.message or not update.message.text:
             return
 
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for message")
+            return
+        chat_id = chat.id
+
         user_id, telegram_user_id, username, display_name = self._extract_telegram_identity(update)
-        chat_id = update.effective_chat.id
         message_text = update.message.text
 
         if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
@@ -541,8 +586,13 @@ class TelegramBotInterface:
         if not update.message or not update.message.document:
             return
 
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for document")
+            return
+        chat_id = chat.id
+
         user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
-        chat_id = update.effective_chat.id
         document = update.message.document
         caption = update.message.caption or ""
 
@@ -555,8 +605,15 @@ class TelegramBotInterface:
 
         self._migrate_legacy_skill_folder(telegram_user_id, user_id)
 
+        if document.file_size is None:
+            await self.send_response(
+                chat_id,
+                "❌ Telegram did not provide a file size for this document; cannot accept it.",
+            )
+            return
+
         logger.info(
-            "Received document from user %s: %s (%d bytes)",
+            "Received document from user %s: %s (%s bytes)",
             user_id,
             document.file_name,
             document.file_size,
@@ -588,7 +645,7 @@ class TelegramBotInterface:
                 bot=self.application.bot,
                 file_id=document.file_id,
                 user_id=user_id,
-                file_name=validation.sanitized_name,
+                file_name=(validation.sanitized_name or document.file_name or "unnamed_file"),
                 mime_type=document.mime_type,
             )
 
@@ -661,8 +718,13 @@ class TelegramBotInterface:
         if not update.message or not update.message.photo:
             return
 
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for photo")
+            return
+        chat_id = chat.id
+
         user_id, telegram_user_id, username, _ = self._extract_telegram_identity(update)
-        chat_id = update.effective_chat.id
         caption = update.message.caption or ""
 
         if await self._reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
@@ -677,6 +739,13 @@ class TelegramBotInterface:
         # Select highest resolution photo (Requirement 2.5)
         # Photos are sorted by size, last one is largest
         photo = self._select_highest_resolution_photo(update.message.photo)
+
+        if photo.file_size is None:
+            await self.send_response(
+                chat_id,
+                "❌ Telegram did not provide a file size for this photo; cannot accept it.",
+            )
+            return
 
         logger.info(
             "Received photo from user %s: %dx%d (%d bytes)",
@@ -742,7 +811,7 @@ class TelegramBotInterface:
 
     def _select_highest_resolution_photo(
         self,
-        photos: list[PhotoSize],
+        photos: Sequence[PhotoSize],
     ) -> PhotoSize:
         """Select the highest resolution photo from variants.
 
@@ -759,7 +828,7 @@ class TelegramBotInterface:
             - 2.5: Download highest resolution version available
         """
         # Sort by file_size and return largest
-        return max(photos, key=lambda p: p.file_size)
+        return max(photos, key=lambda p: p.file_size or 0)
 
     async def _execute_command(
         self,
@@ -910,6 +979,19 @@ class TelegramBotInterface:
         try:
             res = self.skill_service.download_skill_to_pending(url, user_id, scope="user")
             metadata = res.get("metadata")
+
+            if metadata is None:
+                await self.send_response(
+                    chat_id,
+                    "❌ Skill download succeeded but no metadata was returned.",
+                )
+                logger.error(
+                    "SkillService.download_skill_to_pending returned no metadata (user_id=%s, url=%s)",
+                    user_id,
+                    url,
+                )
+                return
+
             await self.send_response(
                 chat_id,
                 (
@@ -1411,7 +1493,11 @@ class TelegramBotInterface:
         await self.application.start()
 
         # Start polling for updates
-        await self.application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        updater = self.application.updater
+        if updater is None:
+            logger.warning("Telegram Application.updater is None; cannot start polling")
+            return
+        await updater.start_polling(allowed_updates=Update.ALL_TYPES)
 
         logger.info("Telegram bot started and polling for updates")
 
@@ -1422,8 +1508,9 @@ class TelegramBotInterface:
         """
         logger.info("Stopping Telegram bot...")
 
-        if self.application.updater.running:
-            await self.application.updater.stop()
+        updater = self.application.updater
+        if updater is not None and updater.running:
+            await updater.stop()
 
         await self.application.stop()
         await self.application.shutdown()

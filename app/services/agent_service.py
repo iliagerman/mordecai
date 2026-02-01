@@ -21,44 +21,69 @@ Requirements:
 """
 
 import asyncio
-import json
 import logging
 import os
 import random
-import re
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
-from zoneinfo import ZoneInfo
 
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
-from strands.models import BedrockModel
-from strands.models.gemini import GeminiModel
-from strands.models.openai import OpenAIModel
 
-from app.config import (
-    AgentConfig,
-    refresh_runtime_env_from_secrets,
-    resolve_user_skills_dir,
-)
+from app.config import AgentConfig
 from app.enums import LogSeverity, ModelProvider
 from app.observability.trace_context import new_trace_id, set_trace
 from app.observability.trace_logging import trace_event
+from app.services.agent.explicit_memory import (
+    ExplicitMemoryWriter,
+    contains_sensitive_memory_text,
+    extract_explicit_memory_text,
+)
+from app.services.agent.model_factory import ModelFactory
+from app.services.agent.prompt_builder import SystemPromptBuilder
+from app.services.agent.response_extractor import extract_response_text
+from app.services.agent.skills import SkillRepository
+from app.services.agent.test_skill_runner import DeterministicEchoSkillRunner
+from app.services.agent.types import AttachmentInfo, ConversationMessage, MemoryContext
 from app.services.personality_service import PersonalityService
-from app.tools import cron_tools as cron_tools_module
-from app.tools import onboard_pending_skills as onboard_pending_skills_module
-from app.tools import download_skill as download_skill_module
-from app.tools import remember_memory as remember_memory_module
-from app.tools import search_memory as search_memory_module
-from app.tools import send_file as send_file_module
-from app.tools import set_agent_name as set_agent_name_tool
-from app.tools import file_read_env as file_read_env_module
-from app.tools import file_write_env as file_write_env_module
-from app.tools import personality_vault as personality_vault_module
-from app.tools import shell_env as shell_env_module
-from app.tools import skill_secrets as skill_secrets_module
+from app.tools import (
+    cron_tools as cron_tools_module,
+)
+from app.tools import (
+    download_skill as download_skill_module,
+)
+from app.tools import (
+    file_read_env as file_read_env_module,
+)
+from app.tools import (
+    file_write_env as file_write_env_module,
+)
+from app.tools import (
+    onboard_pending_skills as onboard_pending_skills_module,
+)
+from app.tools import (
+    personality_vault as personality_vault_module,
+)
+from app.tools import (
+    remember_memory as remember_memory_module,
+)
+from app.tools import (
+    search_memory as search_memory_module,
+)
+from app.tools import (
+    send_file as send_file_module,
+)
+from app.tools import (
+    set_agent_name as set_agent_name_tool,
+)
+from app.tools import (
+    shell_env as shell_env_module,
+)
+from app.tools import (
+    skill_secrets as skill_secrets_module,
+)
 
 if TYPE_CHECKING:
     from strands.models.model import Model
@@ -72,148 +97,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Directories inside skills/ that are not actual skills
-_RESERVED_SKILL_DIR_NAMES = {
-    "pending",
-    "failed",
-    ".venvs",
-    ".venv",
-    "__pycache__",
-}
-
-
-def _parse_skill_frontmatter(content: str) -> dict:
-    """Parse YAML frontmatter from SKILL.md content.
-
-    This intentionally supports nested YAML (e.g., requires.env) so skills can
-    declare required environment variables.
-    """
-    if not content.startswith("---"):
-        return {}
-
-    parts = content.split("---", 2)
-    if len(parts) < 3:
-        return {}
-
-    raw = parts[1]
-
-    # YAML forbids tab indentation. Some SKILL.md files historically used tabs.
-    # Be tolerant: normalize leading tabs to two spaces before parsing.
-    try:
-        normalized_lines: list[str] = []
-        for ln in raw.splitlines():
-            if ln.startswith("\t"):
-                # Replace all leading tabs (only) with spaces.
-                prefix_tabs = len(ln) - len(ln.lstrip("\t"))
-                normalized_lines.append(("  " * prefix_tabs) + ln.lstrip("\t"))
-            else:
-                normalized_lines.append(ln)
-        raw = "\n".join(normalized_lines)
-    except Exception:
-        pass
-
-    try:
-        import yaml
-
-        data = yaml.safe_load(raw) or {}
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _extract_required_env(frontmatter: dict) -> list[dict[str, Any]]:
-    """Extract requires.env entries (string or dict) from frontmatter."""
-    requires = frontmatter.get("requires")
-    if not isinstance(requires, dict):
-        return []
-
-    env_list = requires.get("env")
-    if not isinstance(env_list, list):
-        return []
-
-    out: list[dict[str, Any]] = []
-    for item in env_list:
-        if isinstance(item, str):
-            name = item.strip()
-            if name:
-                out.append({"name": name})
-        elif isinstance(item, dict):
-            name = str(item.get("name") or "").strip()
-            if not name:
-                continue
-            rec: dict[str, Any] = {"name": name}
-            prompt = item.get("prompt")
-            if isinstance(prompt, str) and prompt.strip():
-                rec["prompt"] = prompt.strip()
-            example = item.get("example")
-            if isinstance(example, str) and example.strip():
-                rec["example"] = example.strip()
-            when = item.get("when")
-            if isinstance(when, dict) and when:
-                # Preserve conditional requirements (e.g. depends on EMAIL_PROVIDER)
-                rec["when"] = when
-            out.append(rec)
-
-    # de-dup preserving order
-    seen: set[str] = set()
-    deduped: list[dict] = []
-    for r in out:
-        n = r.get("name")
-        if not n or n in seen:
-            continue
-        seen.add(n)
-        deduped.append(r)
-    return deduped
-
-
-def _extract_required_config(frontmatter: dict) -> list[dict[str, Any]]:
-    """Extract requires.config entries (string or dict) from frontmatter.
-
-    This is for skills that need structured secrets/config values (e.g. to render
-    *_example template files).
-    """
-
-    requires = frontmatter.get("requires")
-    if not isinstance(requires, dict):
-        return []
-
-    cfg_list = requires.get("config")
-    if not isinstance(cfg_list, list):
-        return []
-
-    out: list[dict[str, Any]] = []
-    for item in cfg_list:
-        if isinstance(item, str):
-            name = item.strip()
-            if name:
-                out.append({"name": name})
-        elif isinstance(item, dict):
-            name = str(item.get("name") or "").strip()
-            if not name:
-                continue
-            rec: dict[str, Any] = {"name": name}
-            prompt = item.get("prompt")
-            if isinstance(prompt, str) and prompt.strip():
-                rec["prompt"] = prompt.strip()
-            example = item.get("example")
-            if isinstance(example, str) and example.strip():
-                rec["example"] = example.strip()
-            when = item.get("when")
-            if isinstance(when, dict) and when:
-                # Preserve conditional requirements (e.g. depends on EMAIL_PROVIDER)
-                rec["when"] = when
-            out.append(rec)
-
-    # de-dup preserving order
-    seen: set[str] = set()
-    deduped: list[dict] = []
-    for r in out:
-        n = r.get("name")
-        if not n or n in seen:
-            continue
-        seen.add(n)
-        deduped.append(r)
-    return deduped
+### NOTE
+# A large amount of functionality previously lived directly in this module.
+# It has been extracted into smaller, typed helper components under
+# `app.services.agent.*` to keep this service focused on orchestration.
 
 
 class AgentService:
@@ -235,11 +122,11 @@ class AgentService:
         config: AgentConfig,
         memory_service: "MemoryService | None" = None,
         cron_service: "CronService | None" = None,
-        skill_service=None,
+        skill_service: Any | None = None,
         extraction_service: "MemoryExtractionService | None" = None,
         file_service: "FileService | None" = None,
         pending_skill_service: "PendingSkillService | None" = None,
-        logging_service=None,
+        logging_service: Any | None = None,
     ) -> None:
         """Initialize the agent service.
 
@@ -261,11 +148,9 @@ class AgentService:
         self.logging_service = logging_service
         self._user_sessions: dict[str, str] = {}
         self._user_agent_names: dict[str, str | None] = {}  # cached names
-        self._conversation_history: dict[str, list[dict]] = {}  # extraction
+        self._conversation_history: dict[str, list[ConversationMessage]] = {}  # extraction
         self._user_message_counts: dict[str, int] = {}  # per-user counts
         self._extraction_in_progress: dict[str, bool] = {}  # track extractions
-        self._skills_base_dir = Path(config.skills_base_dir)
-        self._skills_base_dir.mkdir(parents=True, exist_ok=True)
         self._user_agents: dict[str, Agent] = {}  # cached agent instances
         self._user_conversation_managers: dict[
             str, SlidingWindowConversationManager
@@ -281,6 +166,30 @@ class AgentService:
         self.personality_service = PersonalityService(
             config.obsidian_vault_root,
             max_chars=getattr(config, "personality_max_chars", 20_000),
+        )
+
+        # Extracted helper components
+        self._skill_repo = SkillRepository(config)
+        self._model_factory = ModelFactory(config)
+        self._prompt_builder = SystemPromptBuilder(
+            config=config,
+            skill_repo=self._skill_repo,
+            personality_service=self.personality_service,
+            working_dir_resolver=self._get_user_working_dir,
+            obsidian_stm_cache=self._obsidian_stm_cache,
+            user_agent_names=self._user_agent_names,
+            has_cron=self.cron_service is not None,
+        )
+        self._explicit_memory_writer = ExplicitMemoryWriter(
+            config=config,
+            memory_service=self.memory_service,
+            get_session_id=self._get_session_id,
+            logger=logger,
+        )
+        self._deterministic_skill_runner = DeterministicEchoSkillRunner(
+            config=config,
+            skill_repo=self._skill_repo,
+            get_working_dir=self._get_user_working_dir,
         )
 
     def _build_personality_section(self, user_id: str) -> str:
@@ -323,194 +232,12 @@ class AgentService:
         return "\n".join(lines)
 
     def _load_merged_skill_secrets(self, user_id: str) -> dict[str, Any]:
-        """Load merged skill secrets for a user.
-
-        Sources (later wins):
-          - repo-root config.yml (optional) [skills: only]
-          - secrets.yml (global)
-          - skills/<user>/skills_secrets.yml (per-user) [skills: only]
-        """
-
-        merged: dict[str, Any] = {}
-        try:
-            repo_root = Path(__file__).resolve().parents[2]
-            cfg_yml = repo_root / "config.yml"
-            if cfg_yml.exists() and cfg_yml.is_file():
-                import yaml
-
-                cfg_data = yaml.safe_load(cfg_yml.read_text(encoding="utf-8")) or {}
-                if isinstance(cfg_data, dict) and isinstance(cfg_data.get("skills"), dict):
-                    merged["skills"] = cfg_data.get("skills")
-        except Exception:
-            pass
-
-        try:
-            from app.config import load_raw_secrets, resolve_user_skills_secrets_path
-
-            secrets_path = Path(getattr(self.config, "secrets_path", "secrets.yml"))
-            global_secrets = load_raw_secrets(secrets_path)
-            if isinstance(global_secrets, dict):
-                skills = global_secrets.get("skills")
-                if isinstance(skills, dict):
-                    merged_skills = merged.get("skills")
-                    if not isinstance(merged_skills, dict):
-                        merged_skills = {}
-                        merged["skills"] = merged_skills
-                    merged_skills.update(skills)
-
-            user_skills_secrets_path = resolve_user_skills_secrets_path(self.config, user_id)
-            user_secrets = load_raw_secrets(user_skills_secrets_path)
-            if isinstance(user_secrets, dict):
-                user_skills = user_secrets.get("skills")
-                if isinstance(user_skills, dict):
-                    merged_skills = merged.get("skills")
-                    if not isinstance(merged_skills, dict):
-                        merged_skills = {}
-                        merged["skills"] = merged_skills
-
-                    # Deep merge so per-user values override nested structures.
-                    from app.config import _deep_merge_dict
-
-                    _deep_merge_dict(merged_skills, user_skills)
-        except Exception:
-            pass
-
-        return merged
+        return self._skill_repo.load_merged_skill_secrets(user_id)
 
     def _get_missing_skill_requirements(self, user_id: str) -> dict[str, dict[str, list[dict]]]:
-        """Return missing required env/config values for installed skills.
-
-        Uses the structured schema declared in SKILL.md frontmatter:
-          - requires.env
-          - requires.config
-
-        Missing env values are checked against the current process env after
-        hot-reloading from secrets + per-user skill secrets.
-
-        Missing config values are checked against the merged skill secrets mapping.
-        """
-        try:
-            refresh_runtime_env_from_secrets(
-                secrets_path=Path(getattr(self.config, "secrets_path", "secrets.yml")),
-                user_id=user_id,
-                config=self.config,
-            )
-        except Exception:
-            pass
-
-        merged_skill_secrets = self._load_merged_skill_secrets(user_id)
-        skills_block = merged_skill_secrets.get("skills")
-        if not isinstance(skills_block, dict):
-            skills_block = {}
-
-        def is_active_req(req: dict, *, skill_cfg: dict) -> bool:
-            """Return True if a requirement is active given its optional `when` clause.
-
-            Supported forms (in SKILL.md frontmatter):
-              when:
-                config: EMAIL_PROVIDER
-                equals: gmail
-
-              when:
-                env: SOME_ENV
-                equals: 1
-            """
-
-            when = req.get("when")
-            if not isinstance(when, dict) or not when:
-                return True
-
-            # config-based gating (preferred for skill setup)
-            cfg_key = when.get("config")
-            if isinstance(cfg_key, str) and cfg_key.strip():
-                actual = skill_cfg.get(cfg_key)
-                if "equals" in when:
-                    return str(actual) == str(when.get("equals"))
-                # If no equals provided, treat presence/truthiness as activation.
-                return bool(actual)
-
-            # env-based gating
-            env_key = when.get("env")
-            if isinstance(env_key, str) and env_key.strip():
-                actual = os.environ.get(env_key)
-                if "equals" in when:
-                    return str(actual) == str(when.get("equals"))
-                return bool(actual)
-
-            # Unknown/unsupported when clause: default to active.
-            return True
-
-        missing_by_skill: dict[str, dict[str, list[dict]]] = {}
-        for info in self._discover_skills(user_id):
-            skill_name = info.get("name") or ""
-            skill_path = info.get("path") or ""
-            if not skill_name or not skill_path:
-                continue
-
-            skill_md = Path(skill_path) / "SKILL.md"
-            if not skill_md.exists():
-                continue
-
-            try:
-                content = skill_md.read_text(encoding="utf-8")
-            except Exception:
-                continue
-
-            frontmatter = _parse_skill_frontmatter(content)
-            reqs = _extract_required_env(frontmatter)
-            cfg_reqs = _extract_required_config(frontmatter)
-            if not reqs and not cfg_reqs:
-                continue
-
-            # Per-skill config block from merged secrets.
-            skill_cfg = skills_block.get(skill_name) or skills_block.get(skill_name.lower())
-            if not isinstance(skill_cfg, dict):
-                skill_cfg = {}
-
-            missing_env: list[dict] = []
-            for r in reqs:
-                if not is_active_req(r, skill_cfg=skill_cfg):
-                    continue
-                n = r.get("name")
-                if not n:
-                    continue
-                val = os.environ.get(n)
-                if val is None or str(val).strip() == "":
-                    missing_env.append(r)
-
-            missing_cfg: list[dict] = []
-            if cfg_reqs:
-                # Heuristic: if a per-user generated config file exists at the
-                # user skills root (e.g. himalaya.toml), do not keep prompting
-                # for config placeholders.
-                try:
-                    user_root = resolve_user_skills_dir(self.config, user_id, create=True)
-                    generated_cfg = user_root / f"{skill_name.lower()}.toml"
-                    if generated_cfg.exists() and generated_cfg.is_file():
-                        cfg_reqs = []
-                except Exception:
-                    pass
-
-                for r in cfg_reqs:
-                    if not is_active_req(r, skill_cfg=skill_cfg):
-                        continue
-                    n = r.get("name")
-                    if not n:
-                        continue
-                    # Config keys are stored under skills.<skill>.<KEY> in skills_secrets.yml
-                    v = skill_cfg.get(n)
-                    if v is None or str(v).strip() == "":
-                        missing_cfg.append(r)
-
-            if missing_env or missing_cfg:
-                rec: dict[str, list[dict]] = {}
-                if missing_env:
-                    rec["env"] = missing_env
-                if missing_cfg:
-                    rec["config"] = missing_cfg
-                missing_by_skill[skill_name] = rec
-
-        return missing_by_skill
+        # Maintain historical return shape for unit tests that treat these as plain dicts.
+        missing = self._skill_repo.get_missing_skill_requirements(user_id)
+        return cast(dict[str, dict[str, list[dict]]], missing)
 
     def _get_user_skills_dir(self, user_id: str) -> Path:
         """Get the skills directory for a specific user.
@@ -522,9 +249,7 @@ class AgentService:
         on every call, overwriting any existing same-named entries. This keeps
         the per-user tools directory always in sync with shared skills.
         """
-        user_dir = resolve_user_skills_dir(self.config, user_id, create=True)
-        self._sync_shared_skills(user_dir)
-        return user_dir
+        return self._skill_repo.get_user_skills_dir(user_id, create=True)
 
     def _sync_shared_skills_for_user(self, user_id: str) -> Path:
         """Sync shared skills into the user's skills directory.
@@ -536,7 +261,7 @@ class AgentService:
         Returns:
             The user's skills directory path.
         """
-        return self._get_user_skills_dir(user_id)
+        return self._skill_repo.sync_shared_skills_for_user(user_id)
 
     def _sync_shared_skills(self, user_dir: Path) -> None:
         """Mirror shared skills into a user's directory.
@@ -556,153 +281,7 @@ class AgentService:
         Args:
             user_dir: User's skills directory.
         """
-        import shutil
-
-        shared_dir = Path(self.config.shared_skills_dir)
-        if not shared_dir.exists():
-            logger.debug("Shared skills dir does not exist: %s", shared_dir)
-            return
-
-        manifest_path = user_dir / ".shared_skills_sync.json"
-
-        def load_manifest() -> dict:
-            try:
-                if manifest_path.exists():
-                    return json.loads(manifest_path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-            return {"synced": {}}
-
-        def save_manifest(data: dict) -> None:
-            try:
-                tmp = manifest_path.with_suffix(".json.tmp")
-                tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-                tmp.replace(manifest_path)
-            except Exception as e:
-                logger.debug("Failed to write shared skills manifest: %s", e)
-
-        def fingerprint_path(p: Path) -> dict:
-            """Compute a best-effort fingerprint for p.
-
-            For directories, we hash only metadata (mtime_ns + size) of contained
-            files, not file contents.
-            """
-            try:
-                if p.is_file():
-                    st = p.stat()
-                    return {
-                        "kind": "file",
-                        "mtime_ns": st.st_mtime_ns,
-                        "size": st.st_size,
-                    }
-                if p.is_dir():
-                    max_mtime_ns = 0
-                    total_size = 0
-                    file_count = 0
-                    for root, _dirs, files in os.walk(p):
-                        for fn in files:
-                            fp = Path(root) / fn
-                            try:
-                                st = fp.stat()
-                            except OSError:
-                                continue
-                            file_count += 1
-                            total_size += int(st.st_size)
-                            max_mtime_ns = max(max_mtime_ns, int(st.st_mtime_ns))
-                    return {
-                        "kind": "dir",
-                        "max_mtime_ns": max_mtime_ns,
-                        "total_size": total_size,
-                        "file_count": file_count,
-                    }
-            except Exception:
-                pass
-
-            return {"kind": "unknown"}
-
-        manifest = load_manifest()
-        synced: dict[str, dict] = dict(manifest.get("synced", {}))
-
-        # Determine which shared entries should be mirrored.
-        shared_items: dict[str, Path] = {}
-        for item in shared_dir.iterdir():
-            # Skip private/dunder entries and non-skill reserved dirs.
-            if item.name.startswith("__"):
-                continue
-            if item.is_file() and item.name == "__init__.py":
-                continue
-            if item.is_dir() and item.name in _RESERVED_SKILL_DIR_NAMES:
-                continue
-
-            shared_items[item.name] = item
-
-        removed: list[str] = []
-        updated: list[str] = []
-
-        # Remove entries that were previously synced but no longer exist in shared.
-        for name in list(synced.keys()):
-            if name in shared_items:
-                continue
-            dest = user_dir / name
-            if dest.exists():
-                try:
-                    if dest.is_dir():
-                        shutil.rmtree(dest)
-                    else:
-                        dest.unlink()
-                    removed.append(name)
-                except Exception as e:
-                    logger.warning("Failed to remove stale shared skill %s: %s", name, e)
-            synced.pop(name, None)
-
-        # Mirror/overwrite current shared skills.
-        for name, src in shared_items.items():
-            dest = user_dir / name
-            fp = fingerprint_path(src)
-            prev_fp = (synced.get(name) or {}).get("fingerprint")
-
-            # Skip if unchanged and destination exists.
-            if prev_fp == fp and dest.exists():
-                continue
-
-            # Overwrite destination.
-            if dest.exists():
-                try:
-                    if dest.is_dir():
-                        shutil.rmtree(dest)
-                    else:
-                        dest.unlink()
-                except Exception as e:
-                    logger.warning(
-                        "Failed to remove existing dest for shared skill %s: %s",
-                        name,
-                        e,
-                    )
-                    # If we can't remove it, don't attempt to copy over it.
-                    continue
-
-            try:
-                if src.is_dir():
-                    shutil.copytree(src, dest)
-                else:
-                    shutil.copy2(src, dest)
-                synced[name] = {
-                    "fingerprint": fp,
-                    "synced_at": datetime.utcnow().isoformat(),
-                    "source": str(src),
-                }
-                updated.append(name)
-            except Exception as e:
-                logger.warning("Failed to sync shared skill %s: %s", name, e)
-
-        if removed or updated:
-            manifest["synced"] = synced
-            save_manifest(manifest)
-
-        if removed:
-            logger.info("Removed stale shared skills for user: %s", ", ".join(removed))
-        if updated:
-            logger.info("Synced/updated shared skills for user: %s", ", ".join(updated))
+        self._skill_repo.sync_shared_skills(user_dir)
 
     def _get_session_id(self, user_id: str) -> str:
         """Get or create a session ID for a user."""
@@ -745,60 +324,7 @@ class AgentService:
         self._user_message_counts[user_id] = 0
 
     def _create_model(self, use_vision: bool = False) -> "Model":
-        """Create model instance based on configured provider.
-
-        Args:
-            use_vision: If True and vision_model_id is configured,
-                use the vision model instead of the default model.
-
-        Returns:
-            Model instance for inference.
-
-        Requirements:
-            - 3.1: Use vision model when configured and processing images
-            - 3.2: Detect vision capability based on vision_model_id setting
-            - 3.3: Fall back to default model if no vision model configured
-            - 3.5: Support configuring separate vision model
-        """
-        # Use vision model if requested and configured (Req 3.1, 3.2, 3.5)
-        if use_vision and self.config.vision_model_id:
-            if self.config.bedrock_api_key:
-                os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self.config.bedrock_api_key
-            return BedrockModel(
-                model_id=self.config.vision_model_id,
-                region_name=self.config.aws_region,
-            )
-
-        # Fall back to default model (Req 3.3)
-        match self.config.model_provider:
-            case ModelProvider.BEDROCK:
-                model_id = self.config.bedrock_model_id
-                if self.config.bedrock_api_key:
-                    os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self.config.bedrock_api_key
-                return BedrockModel(
-                    model_id=model_id,
-                    region_name=self.config.aws_region,
-                )
-            case ModelProvider.OPENAI:
-                if not self.config.openai_api_key:
-                    raise ValueError("OpenAI API key required")
-                # Strands' runtime supports this config, but some type stubs
-                # model OpenAIModel as a **model_config kwargs API. Cast to Any
-                # to avoid false-positive call-arg diagnostics.
-                return cast(Any, OpenAIModel)(
-                    model=self.config.openai_model_id,
-                    api_key=self.config.openai_api_key,
-                )
-            case ModelProvider.GOOGLE:
-                if not self.config.google_api_key:
-                    raise ValueError("Google API key required")
-                return GeminiModel(
-                    client_args={"api_key": self.config.google_api_key},
-                    model_id=self.config.google_model_id,
-                    params={"max_output_tokens": 4096},
-                )
-            case _:
-                raise ValueError(f"Unknown model provider: {self.config.model_provider}")
+        return self._model_factory.create(use_vision=use_vision)
 
     def set_agent_name(self, user_id: str, name: str) -> None:
         """Set the agent name for a user (cached, caller saves to DB).
@@ -867,442 +393,21 @@ class AgentService:
         work_dir.mkdir(parents=True, exist_ok=True)
         return work_dir
 
-    def _build_attachment_context(
-        self,
-        attachments: list[dict] | None,
-        user_id: str,
-    ) -> str:
-        """Build context string for file attachments.
-
-        Copies files from temp directory to user's workspace if needed,
-        so the agent works with files in the correct location.
-
-        Args:
-            attachments: List of attachment metadata dicts.
-            user_id: User ID for workspace directory.
-
-        Returns:
-            Formatted string with attachment information.
-
-        Requirements:
-            - 4.2: Provide agent with full path to downloaded files
-            - 4.3: Include file metadata in agent's context
-            - 4.5: Inform agent of file type and location
-        """
-        if not attachments:
-            return ""
-
-        # Get user's workspace directory
-        workspace_dir = self._get_user_working_dir(user_id)
-
-        lines = ["\n## Received Files\n"]
-        for att in attachments:
-            file_name = att.get("file_name", "unknown")
-            mime_type = att.get("mime_type", "unknown")
-            file_path = att.get("file_path", "")
-            file_size = att.get("file_size", 0)
-
-            # Copy file to workspace if it's in temp directory
-            if file_path:
-                src_path = Path(file_path)
-                if src_path.exists():
-                    dest_path = workspace_dir / file_name
-                    # Only copy if not already in workspace
-                    if src_path.parent != workspace_dir:
-                        import shutil
-
-                        shutil.copy2(src_path, dest_path)
-                        file_path = str(dest_path)
-                        logger.info("Copied attachment %s to workspace: %s", file_name, dest_path)
-
-            # Format size for readability
-            if file_size >= 1024 * 1024:
-                size_str = f"{file_size / (1024 * 1024):.1f}MB"
-            elif file_size >= 1024:
-                size_str = f"{file_size / 1024:.1f}KB"
-            else:
-                size_str = f"{file_size} bytes"
-
-            lines.append(f"- **{file_name}** ({mime_type}, {size_str})")
-            lines.append(f"  Path: `{file_path}`")
-
-        lines.append("")
-        return "\n".join(lines)
-
     def _build_system_prompt(
         self,
         user_id: str,
-        memory_context: dict | None = None,
-        attachments: list[dict] | None = None,
+        memory_context: MemoryContext | None = None,
+        attachments: list[AttachmentInfo] | None = None,
     ) -> str:
-        """Build the system prompt with agent name, memory, and working folder.
+        """Build the system prompt for the agent.
 
-        Args:
-            user_id: User's telegram ID.
-            memory_context: Retrieved memory context with facts, preferences.
-            attachments: List of file attachment metadata.
-
-        Returns:
-            System prompt string.
-
-        Requirements:
-            - 10.2: Agent has read/write access to working folder
-            - 10.3: Provide working folder path in system prompt
+        Kept as a wrapper because unit tests call this private method directly.
         """
-        memory_context = memory_context or {}
-        # Check cached name first, then fall back to memory context
-        agent_name = self._user_agent_names.get(user_id)
-        if not agent_name:
-            agent_name = memory_context.get("agent_name")
-            # Cache it for future use in this session
-            if agent_name:
-                self._user_agent_names[user_id] = agent_name
-                logger.info("Loaded agent name '%s' from memory for user %s", agent_name, user_id)
-        facts = memory_context.get("facts", [])
-        preferences = memory_context.get("preferences", [])
-
-        # Identity section
-        if agent_name:
-            identity = (
-                f"YOUR NAME IS {agent_name.upper()}.\n"
-                f"Always identify yourself as {agent_name}.\n"
-                f"When asked your name, say: 'I'm {agent_name}.'\n"
-                "NEVER say you are Claude, ChatGPT, or any generic AI.\n"
-            )
-        else:
-            # Check if memories mention a name - tell agent to look there
-            has_name_in_memory = any(
-                "assistant" in str(f).lower()
-                and any(word in str(f).lower() for word in ["call", "name", "mordecai", "jarvis"])
-                for f in facts + preferences
-            )
-            if has_name_in_memory:
-                identity = (
-                    "Check the Retrieved Memory section below - it may "
-                    "contain your name that the user previously gave you.\n"
-                    "If you find your name there, use it to identify "
-                    "yourself.\n"
-                    "NEVER say you are Claude, ChatGPT, or any generic AI.\n"
-                )
-            else:
-                identity = (
-                    "You do not have a name yet.\n"
-                    "When asked your name, respond:\n"
-                    "'I don't have a name yet. What would you like to "
-                    "call me?'\n"
-                    "NEVER say you are Claude, ChatGPT, or any generic AI.\n"
-                    "When a user gives you a name, use the set_agent_name "
-                    "tool to store it in memory so you remember it across "
-                    "sessions.\n"
-                    "IMPORTANT: If the set_agent_name tool returns an error, "
-                    "do NOT claim you will remember the name. Be honest that "
-                    "memory storage failed and you can only use the name for "
-                    "this session.\n"
-                )
-
-        # Get current date/time in configured timezone
-        try:
-            tz = ZoneInfo(self.config.timezone)
-        except Exception:
-            tz = ZoneInfo("UTC")
-        now = datetime.now(tz)
-        current_datetime = now.strftime("%A, %B %d, %Y at %I:%M %p %Z")
-
-        prompt = (
-            "You are a helpful AI assistant with access to tools.\n\n"
-            f"## Current Date and Time\n\n{current_datetime}\n\n"
-            f"## Identity\n\n{identity}\n"
+        return self._prompt_builder.build(
+            user_id=user_id,
+            memory_context=memory_context,
+            attachments=attachments,
         )
-
-        # External personality/identity injection (Obsidian vault)
-        prompt += self._build_personality_section(user_id)
-
-        # ------------------------------------------------------------------
-        # Obsidian vault access capabilities
-        # ------------------------------------------------------------------
-        # Important distinction:
-        # - Long-term memory is stored in AgentCore (network service)
-        # - Obsidian access is optional and depends on a configured/mounted vault root
-        try:
-            from pathlib import Path
-
-            vault_root_raw = getattr(self.config, "obsidian_vault_root", None)
-            vault_root_path = (
-                Path(str(vault_root_raw)).expanduser().resolve() if vault_root_raw else None
-            )
-            vault_accessible = bool(
-                vault_root_path and vault_root_path.exists() and vault_root_path.is_dir()
-            )
-            vault_root_display = f"`{vault_root_path}`" if vault_root_path else "(not configured)"
-        except Exception:
-            vault_root_raw = getattr(self.config, "obsidian_vault_root", None)
-            vault_accessible = False
-            vault_root_display = f"`{vault_root_raw}`" if vault_root_raw else "(not configured)"
-
-        prompt += "\n## Obsidian Vault Access\n\n"
-        if not vault_root_raw:
-            prompt += (
-                "Obsidian vault root is **not configured**. You do NOT have filesystem access to the user's Obsidian notes. "
-                "Do not claim you can read or write Obsidian. Ask the user to paste content or send files as attachments.\n\n"
-            )
-        elif not vault_accessible:
-            prompt += (
-                f"Obsidian vault root is configured as {vault_root_display}, but it is **not accessible in this runtime** (missing path / not mounted / no permissions). "
-                "Do not claim you can read the user's vault. Ask the user to paste the relevant note contents (or attach the file), or fix the deployment so the vault is mounted and readable.\n\n"
-            )
-        else:
-            prompt += (
-                f"Obsidian vault root is accessible at {vault_root_display}.\n\n"
-                "Constraints and best practices:\n"
-                "- You may safely read/write ONLY the per-user personality/identity files under `me/<USER_ID>/{soul.md,id.md}` via the personality tools.\n"
-                "- You may use the injected STM scratchpad (`me/<USER_ID>/stm.md`) as context when it appears in this prompt.\n"
-                "- If the user asks for content that likely exists in the vault but does not provide an exact path, you SHOULD perform a bounded search in the most relevant folder(s) (e.g. `family/` and/or `me/<USER_ID>/`).\n"
-                "  - Keep searches bounded: limit depth, limit results (e.g. first 20), avoid scanning the entire vault.\n"
-                "  - Prefer filename-based search first; if ambiguous, ask a clarifying question.\n"
-                "  - After finding candidate files, read them (file_read) until you find the requested content, or ask the user to confirm which file is correct.\n"
-                "  - Example bounded search commands (via shell):\n"
-                "    - `find <VAULT_ROOT>/family -maxdepth 4 -type f -iname '*.md' -print | head -n 50`\n"
-                "    - `find <VAULT_ROOT>/family -maxdepth 4 -type f \\( -iname '*<keyword>*' -o -iname '*<keyword2>*' \\) -print | head -n 20`\n"
-                '    - `rg -n --max-count 20 -S "<keyword>|<keyword2>" <VAULT_ROOT>/family 2>/dev/null || true`\n\n'
-            )
-
-        # Short-term memory injection (Obsidian STM scratchpad).
-        # This is intentionally independent from AgentCore LTM. We inject STM so the
-        # model has immediate access to the most recent session summary even if
-        # long-term memory retrieval is eventually consistent.
-        vault_root = getattr(self.config, "obsidian_vault_root", None)
-        if vault_root:
-            try:
-                from app.observability.redaction import redact_text
-                from app.tools.short_term_memory_vault import read_raw_text
-
-                stm_text = read_raw_text(
-                    vault_root,
-                    user_id,
-                    max_chars=getattr(self.config, "personality_max_chars", 20_000),
-                )
-
-                # If STM was cleared on session reset, fall back to the cached copy.
-                if not stm_text:
-                    stm_text = self._obsidian_stm_cache.get(user_id)
-                else:
-                    # Cache the latest on-disk STM for future prompts.
-                    self._obsidian_stm_cache[user_id] = stm_text
-
-                if stm_text:
-                    safe_stm = redact_text(
-                        stm_text,
-                        max_chars=getattr(self.config, "personality_max_chars", 20_000),
-                    )
-                    prompt += (
-                        "\n## Short-Term Memory (Obsidian)\n\n"
-                        "The following content comes from the user's Obsidian STM scratchpad. "
-                        "It may include recent session summaries and notes that are not yet reliably "
-                        "available via long-term memory retrieval.\n\n"
-                        "Use it as context for this session. If it conflicts with other info, "
-                        "prefer newer statements and ask clarifying questions.\n\n"
-                        f"{safe_stm.strip()}\n\n"
-                    )
-            except Exception:
-                # Never fail prompt construction due to vault IO.
-                pass
-
-        # Memory capabilities section (when memory is enabled)
-        if self.config.memory_enabled:
-            prompt += (
-                "## Memory Capabilities\n\n"
-                "You have two types of memory:\n\n"
-                "1. **Session Memory**: Conversation history within this "
-                "session (automatically managed).\n\n"
-                "2. **Long-Term Memory (persistent memory)**: Facts and preferences about the "
-                "user that persist across sessions.\n\n"
-                "**Tools:**\n"
-                "- `set_agent_name`: Store your name when the user gives "
-                "you one.\n"
-                "- `remember_fact`: Store an explicit fact the user asked you to remember.\n"
-                "- `remember_preference`: Store an explicit preference the user asked you to remember.\n"
-                "- `remember`: Convenience wrapper (fact vs preference).\n"
-                "- `search_memory`: Search your long-term memory when the "
-                "user asks about past conversations, their preferences, "
-                "or facts you've learned about them.\n\n"
-                "**Important:** When the user explicitly says 'remember ...' or 'please remember ...', "
-                "store it immediately using `remember_fact` or `remember_preference`.\n\n"
-                "Use `search_memory` when the user asks things like:\n"
-                "- 'What do you know about me?'\n"
-                "- 'What are my preferences?'\n"
-                "- 'Do you remember when I told you...?'\n"
-                "- 'What have we discussed before?'\n\n"
-            )
-
-        # Memory context section - show relevant memories retrieved for
-        # this conversation
-        if facts or preferences:
-            prompt += "## Retrieved Memory\n\n"
-            prompt += (
-                "The following information was retrieved from your "
-                "long-term memory based on the current conversation:\n\n"
-            )
-            if facts:
-                prompt += "**Facts about the user:**\n"
-                for fact in facts[:5]:
-                    prompt += f"- {fact}\n"
-                prompt += "\n"
-            if preferences:
-                prompt += "**User preferences:**\n"
-                for pref in preferences[:5]:
-                    prompt += f"- {pref}\n"
-                prompt += "\n"
-
-        # Commands from config
-        prompt += self._build_commands_section()
-
-        # Skills - instruction-based plugins
-        skills_info = self._discover_skills(user_id)
-        if skills_info:
-            prompt += "\n## Installed Skills\n\n"
-            prompt += (
-                "Skills contain instructions with bash commands to execute.\n\n"
-                "**Your available tools:**\n"
-                '- `shell(command="...")` - Run bash/shell commands\n'
-                '- `file_read(path="...", mode="view")` - Read files\n'
-                "- `file_write(...)` - Write files\n\n"
-                "**To use a skill:**\n"
-                "1. file_read the SKILL.md ONCE\n"
-                "2. Extract the bash commands from the instructions\n"
-                '3. Run them with shell(command="the bash command")\n\n'
-                "**CRITICAL:** After reading SKILL.md, your next tool call is usually shell(), not file_read. "
-                "However, if the skill has missing setup requirements (see 'Skill Setup Required'), you MUST ask the user and persist the values first (set_skill_env_vars / set_skill_config) before running shell commands for that skill.\n\n"
-            )
-            for skill in skills_info:
-                name = skill.get("name", "unknown")
-                desc = skill.get("description", "")
-                path = skill.get("path", "")
-                prompt += f"- **{name}**: {desc}\n"
-                prompt += (
-                    f'  → file_read(path="{path}/SKILL.md", mode="view") → shell(command="...")\n'
-                )
-
-            # Skill env setup (required vars)
-            missing = self._get_missing_skill_requirements(user_id)
-            if missing:
-                prompt += "\n## Skill Setup Required\n\n"
-                prompt += (
-                    "Some installed skills declare required setup values that are not set yet (env vars and/or config fields).\n"
-                    "If a required value is missing, ask the user for it and then persist it:\n"
-                    "- Env vars: `set_skill_env_vars(...)`\n"
-                    "- Config fields: `set_skill_config(...)` (stored in `skills/<user>/skills_secrets.yml`)\n\n"
-                    "IMPORTANT: If a skill has missing setup requirements, do NOT run its shell commands yet.\n\n"
-                    "Examples:\n"
-                    '- set_skill_env_vars(skill_name="himalaya", env_json=\'{"HIMALAYA_CONFIG":"/path/to/himalaya.toml"}\', apply_to="user")\n'
-                    '- set_skill_config(skill_name="himalaya", config_json=\'{"GMAIL":"user@gmail.com","PASSWORD":"app-password"}\', apply_to="user")\n\n'
-                    "Missing values (do NOT guess these):\n"
-                )
-                for skill_name, reqs in missing.items():
-                    prompt += f"- **{skill_name}**\n"
-                    env_reqs = reqs.get("env", []) if isinstance(reqs, dict) else []
-                    cfg_reqs = reqs.get("config", []) if isinstance(reqs, dict) else []
-                    if env_reqs:
-                        prompt += "  - env:\n"
-                        for r in env_reqs:
-                            n = r.get("name")
-                            if not n:
-                                continue
-                            line = f"    - {n}"
-                            if r.get("prompt"):
-                                line += f" — {r['prompt']}"
-                            if r.get("example"):
-                                line += f" (example: {r['example']})"
-                            prompt += line + "\n"
-                    if cfg_reqs:
-                        prompt += "  - config:\n"
-                        for r in cfg_reqs:
-                            n = r.get("name")
-                            if not n:
-                                continue
-                            line = f"    - {n}"
-                            if r.get("prompt"):
-                                line += f" — {r['prompt']}"
-                            if r.get("example"):
-                                line += f" (example: {r['example']})"
-                            prompt += line + "\n"
-
-        # Working folder section (Requirement 10.3)
-        working_dir = self._get_user_working_dir(user_id)
-        wd = working_dir  # Short alias for examples
-        prompt += "\n## Working Folder\n\n"
-        prompt += f"**Your working folder is: `{working_dir}`**\n\n"
-        prompt += (
-            "**CRITICAL: Use this folder for ALL file operations:**\n"
-            f"- When creating files, use full path: `{wd}/<filename>`\n"
-            f"- When saving output, save to: `{wd}/<filename>`\n"
-            "- NEVER create files in `.` or any other location\n"
-            "- NEVER use relative paths without the working folder prefix\n\n"
-            "**CRITICAL: For shell commands, ALWAYS set work_dir:**\n"
-            f'- shell(command="...", work_dir="{wd}")\n'
-            "- This ensures commands run in your working folder\n"
-            "- Output files will be saved in the correct location\n\n"
-            "Examples:\n"
-            f'- ✅ Correct: `file_write(path="{wd}/out.txt", ...)`\n'
-            f'- ✅ Correct: `file_write(path="{wd}/data.json", ...)`\n'
-            f'- ✅ Correct: `shell(command="uv run ...", '
-            f'work_dir="{wd}")`\n'
-            '- ❌ Wrong: `file_write(path="output.txt", ...)`\n'
-            '- ❌ Wrong: `file_write(path="./data.json", ...)`\n'
-            '- ❌ Wrong: `shell(command="...")` (missing work_dir)\n\n'
-            "You have read and write access to this directory.\n"
-        )
-
-        # Cron/Scheduling capabilities section
-        if self.cron_service is not None:
-            prompt += "\n## Scheduling Capabilities\n\n"
-            prompt += (
-                "You can create, list, and delete scheduled tasks using "
-                "the provided tools. These are YOUR tools - do NOT use "
-                "system crontab or shell commands for scheduling.\n\n"
-                "**CRITICAL: Use ONLY these tools for scheduling:**\n"
-                "- `create_cron_task(name, instructions, cron_expression)`: "
-                "Create a scheduled task\n"
-                "- `list_cron_tasks()`: Show all scheduled tasks\n"
-                "- `delete_cron_task(task_identifier)`: Remove a task\n\n"
-                "**How it works:**\n"
-                "When a scheduled task fires, YOU (the agent) will receive "
-                "the `instructions` as a message and respond to the user. "
-                "The instructions should describe what YOU should do, not "
-                "shell commands.\n\n"
-                "**Example - User wants a joke every 5 minutes:**\n"
-                "```\n"
-                "create_cron_task(\n"
-                '  name="joke-sender",\n'
-                '  instructions="Tell the user a funny joke",\n'
-                '  cron_expression="*/5 * * * *"\n'
-                ")\n"
-                "```\n"
-                "When this fires, you'll be asked to tell a joke and you'll "
-                "generate one naturally.\n\n"
-                "**Example - Daily weather update:**\n"
-                "```\n"
-                "create_cron_task(\n"
-                '  name="weather-update",\n'
-                '  instructions="Check the weather and send a summary",\n'
-                '  cron_expression="0 8 * * *"\n'
-                ")\n"
-                "```\n\n"
-                "**DO NOT:**\n"
-                "- Use shell() to run crontab commands\n"
-                "- Create files to store content for cron jobs\n"
-                "- Try to schedule shell scripts\n\n"
-                "**Cron Expression Format (5 fields):**\n"
-                "minute hour day month weekday\n"
-                "- `*/5 * * * *` = Every 5 minutes\n"
-                "- `0 6 * * *` = Daily at 6:00 AM\n"
-                "- `0 9 * * 1-5` = Weekdays at 9:00 AM\n"
-                "- `0 */2 * * *` = Every 2 hours\n\n"
-            )
-
-        # Attachment context (Requirements 4.2, 4.3, 4.5)
-        prompt += self._build_attachment_context(attachments, user_id)
-
-        return prompt
 
     def _discover_skills(self, user_id: str) -> list[dict]:
         """Discover installed instruction-based skills for a user.
@@ -1314,36 +419,7 @@ class AgentService:
         message. Therefore, the single source of truth for what the agent can
         load is the user's directory.
         """
-        skills_by_name: dict[str, dict] = {}
-
-        # Ensure shared skills are synced before discovery.
-        user_skills_dir = self._get_user_skills_dir(user_id)
-
-        if user_skills_dir.exists():
-            for item in user_skills_dir.iterdir():
-                if not item.is_dir() or item.name.startswith("__"):
-                    continue
-
-                if item.name in _RESERVED_SKILL_DIR_NAMES:
-                    continue
-
-                skill_md = item / "SKILL.md"
-                if not skill_md.exists():
-                    continue
-
-                try:
-                    content = skill_md.read_text(encoding="utf-8")
-                    frontmatter = _parse_skill_frontmatter(content)
-                    skill_name = frontmatter.get("name", item.name)
-                    skills_by_name[skill_name] = {
-                        "name": skill_name,
-                        "description": frontmatter.get("description", ""),
-                        "path": str(item.resolve()),
-                    }
-                except Exception as e:
-                    logger.warning("Failed to read skill %s: %s", item, e)
-
-        return list(skills_by_name.values())
+        return cast(list[dict], self._skill_repo.discover(user_id))
 
     def _get_or_create_conversation_manager(self, user_id: str) -> SlidingWindowConversationManager:
         """Get or create a conversation manager for a user.
@@ -1363,7 +439,7 @@ class AgentService:
             )
         return self._user_conversation_managers[user_id]
 
-    def _get_user_messages(self, user_id: str) -> list:
+    def _get_user_messages(self, user_id: str) -> list[Any]:
         """Get the cached messages for a user's session.
 
         Args:
@@ -1389,9 +465,9 @@ class AgentService:
     def _create_agent(
         self,
         user_id: str,
-        memory_context: dict | None = None,
-        attachments: list[dict] | None = None,
-        messages: list | None = None,
+        memory_context: MemoryContext | None = None,
+        attachments: list[AttachmentInfo] | None = None,
+        messages: list[Any] | None = None,
     ) -> Agent:
         """Create an agent instance.
 
@@ -1627,6 +703,7 @@ class AgentService:
             try:
                 # Get conversation history
                 history = self._get_conversation_history(user_id)
+                history_for_extraction = cast(list[dict[str, str]], history)
 
                 if self.memory_service is not None:
                     # Wait for extraction with timeout (Requirement 6.4)
@@ -1634,7 +711,7 @@ class AgentService:
                         self.extraction_service.extract_and_store(
                             user_id=user_id,
                             session_id=session_id,
-                            conversation_history=history,
+                            conversation_history=history_for_extraction,
                         ),
                         timeout=self.config.extraction_timeout_seconds,
                     )
@@ -1660,11 +737,11 @@ class AgentService:
                             self.extraction_service.summarize_and_store(
                                 user_id=user_id,
                                 session_id=session_id,
-                                conversation_history=history,
+                                conversation_history=history_for_extraction,
                             ),
                             timeout=self.config.extraction_timeout_seconds,
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         logger.warning(
                             "Summary generation timed out for user %s after %ds",
                             user_id,
@@ -1676,7 +753,7 @@ class AgentService:
                             user_id,
                             e,
                         )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Log warning and proceed (Requirement 6.4)
                 logger.warning(
                     "Extraction timed out for user %s after %ds, proceeding with session clearing",
@@ -1701,9 +778,11 @@ class AgentService:
             try:
                 from app.tools.short_term_memory_vault import (
                     append_session_summary,
-                    clear as clear_stm,
                     read_raw_text,
                     short_term_memory_path,
+                )
+                from app.tools.short_term_memory_vault import (
+                    clear as clear_stm,
                 )
 
                 # Make sure the session summary is appended to STM even if the
@@ -1835,11 +914,14 @@ class AgentService:
         self._add_to_conversation_history(user_id, "user", prompt_text)
 
         # Retrieve memory context
-        memory_context = None
+        memory_context: MemoryContext | None = None
         if self.config.memory_enabled and self.memory_service is not None:
             try:
-                memory_context = self.memory_service.retrieve_memory_context(
-                    user_id=user_id, query=message or "image analysis"
+                memory_context = cast(
+                    MemoryContext,
+                    self.memory_service.retrieve_memory_context(
+                        user_id=user_id, query=message or "image analysis"
+                    ),
                 )
             except Exception as e:
                 logger.warning("Failed to retrieve memory: %s", e)
@@ -1967,11 +1049,12 @@ class AgentService:
         self._maybe_store_explicit_memory_request(user_id=user_id, message=message)
 
         # Retrieve memory context based on user's message
-        memory_context = None
+        memory_context: MemoryContext | None = None
         if self.config.memory_enabled and self.memory_service is not None:
             try:
-                memory_context = self.memory_service.retrieve_memory_context(
-                    user_id=user_id, query=message
+                memory_context = cast(
+                    MemoryContext,
+                    self.memory_service.retrieve_memory_context(user_id=user_id, query=message),
                 )
                 logger.info(
                     "Memory context for %s: facts=%d, prefs=%d",
@@ -2129,137 +1212,13 @@ class AgentService:
         Returns a human-readable response if it executed a skill, otherwise None.
         """
 
-        msg_lower = (message or "").lower()
-        if not msg_lower:
-            return None
-
-        # Only trigger when the user is explicitly asking to use a skill.
-        trigger_phrases = ("use ", "please use ")
-        if not any(p in msg_lower for p in trigger_phrases):
-            return None
-
-        skills = self._discover_skills(user_id)
-        if not skills:
-            return None
-
-        # Find which skill names are referenced.
-        matches: list[dict] = []
-        for s in skills:
-            name = str(s.get("name") or "").strip()
-            if not name:
-                continue
-            if name.lower() in msg_lower:
-                matches.append(s)
-
-        if len(matches) != 1:
-            return None
-
-        skill = matches[0]
-        skill_path = str(skill.get("path") or "").strip()
-        if not skill_path:
-            return None
-
-        skill_md = Path(skill_path) / "SKILL.md"
-        if not skill_md.exists():
-            return None
-
-        try:
-            content = skill_md.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            return None
-
-        cmd = self._extract_single_echo_command_from_skill_md(content)
-        if not cmd:
-            return None
-
-        # Ensure shell wrapper context is set for this user.
-        shell_env_module.set_shell_env_context(
-            user_id=user_id,
-            secrets_path=getattr(self.config, "secrets_path", "secrets.yml"),
-        )
-
-        # Run in the working folder to align with system prompt expectations.
-        work_dir = str(self._get_user_working_dir(user_id))
-
-        try:
-            result = shell_env_module.shell(command=cmd, work_dir=work_dir)
-        except Exception as e:
-            logger.warning("Deterministic skill shell execution failed: %s", e)
-            return None
-
-        # Normalize common result shapes.
-        stdout = ""
-        if isinstance(result, dict):
-            stdout = str(result.get("stdout") or "")
-        elif isinstance(result, str):
-            stdout = result
-
-        # For echo "X", the marker is X.
-        marker = self._extract_echo_marker(cmd)
-        if marker and marker in stdout:
-            return f"✅ **Skill executed successfully!**\n\n**Output:** `{marker}`\n"
-
-        # Best-effort fallback: return whatever we captured.
-        if stdout.strip():
-            return f"✅ **Skill executed successfully!**\n\n**Output:**\n{stdout.strip()}\n"
-
-        return None
-
-    def _extract_single_echo_command_from_skill_md(self, content: str) -> str | None:
-        """Extract a single safe echo command from the first ```bash code block.
-
-        We intentionally keep this conservative: only accept single-line echo
-        with a quoted constant string.
-        """
-
-        if not content:
-            return None
-
-        # Grab the first bash code fence.
-        m = re.search(r"```bash\s*(.*?)\s*```", content, flags=re.DOTALL | re.IGNORECASE)
-        if not m:
-            return None
-
-        block = m.group(1)
-        if not block:
-            return None
-
-        # Take the first non-empty, non-comment line.
-        lines = [ln.strip() for ln in block.splitlines()]
-        lines = [ln for ln in lines if ln and not ln.startswith("#")]
-        if len(lines) != 1:
-            return None
-
-        cmd = lines[0]
-
-        # Only allow: echo "..."  OR  echo '...'
-        m_cmd = re.fullmatch(r"echo\s+(['\"])(.*?)\1", cmd)
-        if not m_cmd:
-            return None
-
-        marker = m_cmd.group(2)
-
-        # Keep it conservative: disallow common shell interpolation features.
-        # (Skills can still be executed by the full agent; this helper is only
-        # for deterministic pytest behavior.)
-        if any(ch in marker for ch in ("`", "$", "\\")):
-            return None
-
-        return cmd
-
-    def _extract_echo_marker(self, cmd: str) -> str | None:
-        """Extract marker string from a simple echo command."""
-
-        m = re.fullmatch(r"echo\s+(['\"])(.*)\1", cmd.strip())
-        if not m:
-            return None
-        return m.group(2)
+        return self._deterministic_skill_runner.maybe_run(user_id=user_id, message=message)
 
     async def process_message_with_attachments(
         self,
         user_id: str,
         message: str,
-        attachments: list[dict],
+        attachments: list[AttachmentInfo],
     ) -> str:
         """Process a message with file attachments.
 
@@ -2302,12 +1261,13 @@ class AgentService:
             )
 
         # Retrieve memory context
-        memory_context = None
+        memory_context: MemoryContext | None = None
         if self.config.memory_enabled and self.memory_service is not None:
             try:
                 query = message if message else "file attachment"
-                memory_context = self.memory_service.retrieve_memory_context(
-                    user_id=user_id, query=query
+                memory_context = cast(
+                    MemoryContext,
+                    self.memory_service.retrieve_memory_context(user_id=user_id, query=query),
                 )
                 logger.info(
                     "Memory context for %s: facts=%d, prefs=%d",
@@ -2363,184 +1323,17 @@ class AgentService:
         This is a deterministic fallback so explicit user requests persist even
         if the model fails to call the remember_* tools.
         """
-
-        if not message:
-            return
-        if not self.config.memory_enabled or self.memory_service is None:
-            return
-
-        extracted = self._extract_explicit_memory_text(message)
-        if not extracted:
-            return
-
-        kind, text = extracted
-        if not text:
-            return
-        if self._contains_sensitive_memory_text(text):
-            logger.info(
-                "Skipping explicit memory store for user %s: looks sensitive",
-                user_id,
-            )
-            return
-
-        session_id = self._get_session_id(user_id)
-        try:
-            if kind == "preference" and hasattr(self.memory_service, "store_preference"):
-                self.memory_service.store_preference(
-                    user_id=user_id,
-                    preference=text,
-                    session_id=session_id,
-                    write_to_short_term=True,
-                )
-            else:
-                self.memory_service.store_fact(
-                    user_id=user_id,
-                    fact=text,
-                    session_id=session_id,
-                    replace_similar=True,
-                    similarity_query=text,
-                    write_to_short_term=True,
-                    short_term_kind=kind,
-                )
-        except Exception as e:
-            logger.warning(
-                "Failed to store explicit memory for user %s: %s",
-                user_id,
-                e,
-            )
+        self._explicit_memory_writer.maybe_store(user_id=user_id, message=message)
 
     def _extract_explicit_memory_text(
         self,
         message: str,
     ) -> tuple[str, str] | None:
-        """Extract (kind, text) from messages like 'remember ...'.
-
-        Returns:
-            ("fact"|"preference", extracted_text) or None.
-        """
-
-        import re
-
-        raw = (message or "").strip()
-        if not raw:
-            return None
-
-        lower = raw.lower().strip()
-
-        # Avoid treating retrieval questions as storage requests.
-        # Examples:
-        # - "Do you remember when I told you ...?"
-        # - "Remember when we ...?"
-        retrieval_prefixes = (
-            "do you remember",
-            "did you remember",
-            "do u remember",
-            "did u remember",
-            "remember when ",
-            "remeber when ",
-        )
-        if lower.startswith(retrieval_prefixes):
-            return None
-
-        prefixes = [
-            "remember that ",
-            "remember ",
-            "please remember that ",
-            "please remember ",
-            "note that ",
-            "note ",
-            "save that ",
-            "save this ",
-        ]
-
-        extracted = None
-        for p in prefixes:
-            if lower.startswith(p):
-                extracted = raw[len(p) :].strip()
-                break
-
-        # Also support common punctuation patterns like "remember: ..."
-        if extracted is None and (lower.startswith("remember") or lower.startswith("remeber")):
-            # Strip leading "remember" and any following punctuation.
-            lead_len = len("remember") if lower.startswith("remember") else len("remeber")
-            extracted = raw[lead_len:].lstrip(" ,:-\t").strip()
-
-        # Support common request forms like:
-        # - "I need you to remember ..."
-        # - "Can you remember that ..."
-        # - "Please remember ..."
-        if extracted is None:
-            m = re.search(
-                r"\b(?:i\s+(?:need|meed|ned)\s+you\s+to|i\s+want\s+you\s+to|can\s+you|could\s+you|please|pls)\s+(?:to\s+)?(?P<verb>remember|remeber)\b\s*(?:that\s+)?(?P<text>.+)$",
-                raw,
-                flags=re.IGNORECASE,
-            )
-            if m:
-                extracted = (m.group("text") or "").strip()
-
-        if not extracted:
-            return None
-
-        # Heuristic: if it reads like a preference, store as preference.
-        pref_leads = (
-            "i prefer ",
-            "i like ",
-            "i dislike ",
-            "my preference ",
-            "my preferences ",
-            "prefer ",
-        )
-        extracted_lower = extracted.lower()
-        kind = "fact"
-        if extracted_lower.startswith(pref_leads):
-            kind = "preference"
-        # Treat "favorite" statements as preferences.
-        if "favorite" in extracted_lower or "favourite" in extracted_lower:
-            kind = "preference"
-        return kind, extracted
+        return extract_explicit_memory_text(message)
 
     def _contains_sensitive_memory_text(self, text: str) -> bool:
         """Reject likely secrets/PII from being stored via explicit remember."""
-
-        import re
-
-        text_lower = text.lower()
-        sensitive_keywords = [
-            "password",
-            "passwd",
-            "pwd",
-            "api_key",
-            "apikey",
-            "api-key",
-            "secret",
-            "token",
-            "bearer",
-            "private_key",
-            "private-key",
-            "access_key",
-            "access-key",
-            "credential",
-            "auth_token",
-        ]
-        if any(k in text_lower for k in sensitive_keywords):
-            return True
-
-        patterns = [
-            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
-            r"\b(?:password|passwd|pwd)\s*[:=]\s*\S+",
-            r"\b(?:api[_-]?key|apikey)\s*[:=]\s*\S+",
-            r"\b(?:token|bearer)\s*[:=]\s*\S+",
-            r"\b(?:secret|private[_-]?key)\s*[:=]\s*\S+",
-            r"\b(?:sk-|pk-)[A-Za-z0-9]{20,}",
-            r"\bAKIA[A-Z0-9]{16}\b",
-            r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b",
-            r"\b[0-9]{16}\b",
-        ]
-        for pattern in patterns:
-            if re.search(pattern, text, re.IGNORECASE):
-                return True
-
-        return False
+        return contains_sensitive_memory_text(text)
 
     async def _trigger_extraction_and_clear(self, user_id: str) -> None:
         """Trigger extraction and clear session (non-blocking).
@@ -2563,6 +1356,7 @@ class AgentService:
         try:
             session_id = self._get_session_id(user_id)
             conversation_history = self._get_conversation_history(user_id)
+            history_for_extraction = cast(list[dict[str, str]], conversation_history)
 
             # Always generate + store a session summary to Obsidian STM before clearing.
             # This is independent from AgentCore memory availability.
@@ -2574,11 +1368,11 @@ class AgentService:
                             self.extraction_service.summarize_and_store(
                                 user_id=user_id,
                                 session_id=session_id,
-                                conversation_history=conversation_history,
+                                conversation_history=history_for_extraction,
                             ),
                             timeout=self.config.extraction_timeout_seconds,
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         logger.warning(
                             "Summary generation timed out for user %s after %ds",
                             user_id,
@@ -2598,7 +1392,7 @@ class AgentService:
                         self.extraction_service.extract_and_store(
                             user_id=user_id,
                             session_id=session_id,
-                            conversation_history=conversation_history,
+                            conversation_history=history_for_extraction,
                         ),
                         timeout=self.config.extraction_timeout_seconds,
                     )
@@ -2616,7 +1410,7 @@ class AgentService:
                             len(result.facts),
                             len(result.commitments),
                         )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(
                         "Extraction timed out for user %s after %ds, proceeding with session clearing",
                         user_id,
@@ -2784,7 +1578,7 @@ class AgentService:
                     e,
                 )
 
-    def _get_conversation_history(self, user_id: str) -> list[dict]:
+    def _get_conversation_history(self, user_id: str) -> list[ConversationMessage]:
         """Get conversation history for a user.
 
         Args:
@@ -2906,7 +1700,7 @@ class AgentService:
 
         return content
 
-    def _extract_response_text(self, result) -> str:
+    def _extract_response_text(self, result: Any) -> str:
         """Extract text response from agent result.
 
         Extracts all text blocks from the agent result and concatenates them,
@@ -2918,27 +1712,7 @@ class AgentService:
         Returns:
             Concatenated text response without thinking blocks.
         """
-        import re
-
-        if hasattr(result, "message") and result.message:
-            content = result.message.get("content", [])
-            text_parts = []
-            for block in content:
-                if "text" in block:
-                    text = block["text"]
-                    # Remove thinking blocks (content between <thinking> tags)
-                    text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL)
-                    # Clean up any leftover whitespace from removed blocks
-                    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-                    if text:
-                        text_parts.append(text)
-
-            if text_parts:
-                # Return the last non-empty text part (final response)
-                # This avoids duplicates when agent outputs multiple versions
-                return text_parts[-1]
-
-        return str(result)
+        return extract_response_text(result)
 
     def get_model_provider(self) -> ModelProvider:
         """Get the currently configured model provider."""
