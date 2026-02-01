@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.models.agent import AttachmentInfo, MemoryContext
 from app.services.agent.skills import SkillRepository
-from app.services.agent.types import AttachmentInfo, MemoryContext
 
 logger = logging.getLogger(__name__)
 
@@ -30,18 +30,18 @@ class SystemPromptBuilder:
         memory_context: MemoryContext | None = None,
         attachments: list[AttachmentInfo] | None = None,
     ) -> str:
-        memory_context = memory_context or {}
+        memory_context = memory_context or MemoryContext()
 
         # Cached name first, then fallback to memory context
         agent_name = self.user_agent_names.get(user_id)
         if not agent_name:
-            agent_name = memory_context.get("agent_name")
+            agent_name = memory_context.agent_name
             if agent_name:
                 self.user_agent_names[user_id] = agent_name
                 logger.info("Loaded agent name '%s' from memory for user %s", agent_name, user_id)
 
-        facts = memory_context.get("facts", [])
-        preferences = memory_context.get("preferences", [])
+        facts = memory_context.facts or []
+        preferences = memory_context.preferences or []
 
         identity = self._identity_section(agent_name, facts=facts, preferences=preferences)
 
@@ -302,9 +302,9 @@ class SystemPromptBuilder:
         )
 
         for skill in skills_info:
-            name = skill.get("name", "unknown")
-            desc = skill.get("description", "")
-            path = skill.get("path", "")
+            name = skill.name or "unknown"
+            desc = skill.description or ""
+            path = skill.path or ""
             prompt += f"- **{name}**: {desc}\n"
             prompt += f'  → file_read(path="{path}/SKILL.md", mode="view") → shell(command="...")\n'
 
@@ -324,35 +324,31 @@ class SystemPromptBuilder:
             )
             for skill_name, reqs in missing.items():
                 prompt += f"- **{skill_name}**\n"
-                env_reqs = reqs.get("env", []) if isinstance(reqs, dict) else []
-                cfg_reqs = reqs.get("config", []) if isinstance(reqs, dict) else []
+                env_reqs = reqs.env or []
+                cfg_reqs = reqs.config or []
                 if env_reqs:
                     prompt += "  - env:\n"
                     for r in env_reqs:
-                        n = r.get("name")
+                        n = r.name
                         if not n:
                             continue
                         line = f"    - {n}"
-                        r_prompt = r.get("prompt")
-                        if r_prompt:
-                            line += f" — {r_prompt}"
-                        r_example = r.get("example")
-                        if r_example:
-                            line += f" (example: {r_example})"
+                        if r.prompt:
+                            line += f" — {r.prompt}"
+                        if r.example:
+                            line += f" (example: {r.example})"
                         prompt += line + "\n"
                 if cfg_reqs:
                     prompt += "  - config:\n"
                     for r in cfg_reqs:
-                        n = r.get("name")
+                        n = r.name
                         if not n:
                             continue
                         line = f"    - {n}"
-                        r_prompt = r.get("prompt")
-                        if r_prompt:
-                            line += f" — {r_prompt}"
-                        r_example = r.get("example")
-                        if r_example:
-                            line += f" (example: {r_example})"
+                        if r.prompt:
+                            line += f" — {r.prompt}"
+                        if r.example:
+                            line += f" (example: {r.example})"
                         prompt += line + "\n"
 
         return prompt
@@ -421,10 +417,10 @@ class SystemPromptBuilder:
 
         lines = ["\n## Received Files\n"]
         for att in attachments:
-            file_name = att.get("file_name", "unknown")
-            mime_type = att.get("mime_type", "unknown")
-            file_path = att.get("file_path", "")
-            file_size = int(att.get("file_size", 0) or 0)
+            file_name = att.file_name or "unknown"
+            mime_type = att.mime_type or "unknown"
+            file_path = att.file_path or ""
+            file_size = att.file_size or 0
 
             if file_path:
                 src_path = Path(file_path)

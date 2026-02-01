@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from app.services.agent.types import RequirementSpec, WhenClause
+from app.models.agent import RequirementSpec, WhenClause
 
 
 def _coerce_when_clause(value: Any) -> WhenClause | None:
@@ -16,7 +16,7 @@ def _coerce_when_clause(value: Any) -> WhenClause | None:
     if not isinstance(value, Mapping):
         return None
 
-    out: WhenClause = {}
+    out_dict: dict[str, str] = {}
 
     for key in ("config", "env", "equals"):
         raw = value.get(key)
@@ -31,9 +31,9 @@ def _coerce_when_clause(value: Any) -> WhenClause | None:
             continue
 
         if s:
-            out[key] = s
+            out_dict[key] = s
 
-    return out or None
+    return WhenClause(**out_dict) if out_dict else None
 
 
 def parse_skill_frontmatter(content: str) -> dict[str, Any]:
@@ -83,7 +83,7 @@ def _dedupe_requirements(reqs: list[RequirementSpec]) -> list[RequirementSpec]:
     seen: set[str] = set()
     out: list[RequirementSpec] = []
     for r in reqs:
-        n = (r.get("name") or "").strip()
+        n = (r.name or "").strip()
         if not n or n in seen:
             continue
         seen.add(n)
@@ -107,27 +107,28 @@ def extract_required_env(frontmatter: dict[str, Any]) -> list[RequirementSpec]:
         if isinstance(item, str):
             name = item.strip()
             if name:
-                out.append({"name": name})
+                out.append(RequirementSpec(name=name))
         elif isinstance(item, dict):
             name = str(item.get("name") or "").strip()
             if not name:
                 continue
 
-            rec: RequirementSpec = {"name": name}
-
             prompt = item.get("prompt")
-            if isinstance(prompt, str) and prompt.strip():
-                rec["prompt"] = prompt.strip()
+            prompt_str = (prompt.strip() if isinstance(prompt, str) and prompt.strip() else None)
 
             example = item.get("example")
-            if isinstance(example, str) and example.strip():
-                rec["example"] = example.strip()
+            example_str = (example.strip() if isinstance(example, str) and example.strip() else None)
 
             when = _coerce_when_clause(item.get("when"))
-            if when is not None:
-                rec["when"] = when
 
-            out.append(rec)
+            out.append(
+                RequirementSpec(
+                    name=name,
+                    prompt=prompt_str,
+                    example=example_str,
+                    when=when,
+                )
+            )
 
     return _dedupe_requirements(out)
 
@@ -148,26 +149,27 @@ def extract_required_config(frontmatter: dict[str, Any]) -> list[RequirementSpec
         if isinstance(item, str):
             name = item.strip()
             if name:
-                out.append({"name": name})
+                out.append(RequirementSpec(name=name))
         elif isinstance(item, dict):
             name = str(item.get("name") or "").strip()
             if not name:
                 continue
 
-            rec: RequirementSpec = {"name": name}
-
             prompt = item.get("prompt")
-            if isinstance(prompt, str) and prompt.strip():
-                rec["prompt"] = prompt.strip()
+            prompt_str = (prompt.strip() if isinstance(prompt, str) and prompt.strip() else None)
 
             example = item.get("example")
-            if isinstance(example, str) and example.strip():
-                rec["example"] = example.strip()
+            example_str = (example.strip() if isinstance(example, str) and example.strip() else None)
 
             when = _coerce_when_clause(item.get("when"))
-            if when is not None:
-                rec["when"] = when
 
-            out.append(rec)
+            out.append(
+                RequirementSpec(
+                    name=name,
+                    prompt=prompt_str,
+                    example=example_str,
+                    when=when,
+                )
+            )
 
     return _dedupe_requirements(out)

@@ -89,7 +89,7 @@ def test_pending_dirs_not_discovered_by_agent_service(temp_skills_root: Path):
     agent_service = AgentService(config)
 
     discovered = agent_service._discover_skills("user1")
-    names = {s["name"] for s in discovered}
+    names = {s.name for s in discovered}
 
     assert "active-skill" in names
     assert "p-skill" not in names

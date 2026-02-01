@@ -25,7 +25,6 @@ import datetime
 import re
 from pathlib import Path
 
-
 DEFAULT_MAX_CHARS = 20_000
 
 
