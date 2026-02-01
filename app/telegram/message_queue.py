@@ -38,6 +38,7 @@ class MessageQueueHandler:
         user_id: str,
         chat_id: int,
         message: str,
+        onboarding_context: dict[str, str | None] | None = None,
     ) -> str:
         """Enqueue a message to the user's SQS queue for processing.
 
@@ -45,6 +46,8 @@ class MessageQueueHandler:
             user_id: Telegram user ID.
             chat_id: Telegram chat ID for responses.
             message: Message text to process.
+            onboarding_context: Optional onboarding context (soul.md, id.md content)
+                if this is the user's first interaction.
 
         Returns:
             The queue URL used.
@@ -65,6 +68,14 @@ class MessageQueueHandler:
             "chat_id": chat_id,
             "timestamp": datetime.now(UTC).isoformat(),
         }
+
+        # Add onboarding context if present (first interaction)
+        if onboarding_context:
+            payload["onboarding"] = onboarding_context
+            logger.info(
+                "Message enqueued with onboarding context for user %s (first interaction)",
+                user_id,
+            )
 
         # Send to SQS queue
         self.sqs_client.send_message(

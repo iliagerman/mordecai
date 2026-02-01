@@ -6,15 +6,16 @@ This module handles execution of parsed commands for the Telegram bot.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from app.enums import CommandType, LogSeverity
 
 if TYPE_CHECKING:
-    from app.services.command_parser import ParsedCommand
-    from app.services.skill_service import SkillService
-    from app.services.logging_service import LoggingService
     from app.services.agent_service import AgentService
+    from app.services.command_parser import ParsedCommand
+    from app.services.logging_service import LoggingService
+    from app.services.skill_service import SkillService
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +33,8 @@ class CommandExecutor:
         skill_service: SkillService,
         logging_service: "LoggingService",
         command_parser: Any,
-        enqueue_callback: callable,
-        send_response_callback: callable,
+        enqueue_callback: Callable,
+        send_response_callback: Callable,
     ):
         """Initialize the command executor.
 
@@ -58,6 +59,7 @@ class CommandExecutor:
         user_id: str,
         chat_id: int,
         original_message: str,
+        onboarding_context: dict[str, str | None] | None = None,
     ) -> None:
         """Execute a parsed command.
 
@@ -68,6 +70,8 @@ class CommandExecutor:
             user_id: Telegram user ID.
             chat_id: Telegram chat ID for responses.
             original_message: Original message text.
+            onboarding_context: Optional onboarding context (soul.md, id.md content)
+                if this is the user's first interaction.
 
         Requirements:
             - 11.5: Support basic commands
@@ -103,8 +107,8 @@ class CommandExecutor:
                     )
 
             case CommandType.MESSAGE:
-                # Forward to agent via SQS queue
-                await self._enqueue_message(user_id, chat_id, original_message)
+                # Forward to agent via SQS queue (with onboarding context if first interaction)
+                await self._enqueue_message(user_id, chat_id, original_message, onboarding_context)
 
     async def execute_new_command(self, user_id: str, chat_id: int) -> None:
         """Execute the 'new' command to create a fresh session.

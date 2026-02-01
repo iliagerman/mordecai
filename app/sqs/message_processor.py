@@ -46,6 +46,7 @@ class QueueMessage:
     receipt_handle: str
     message_id: str
     attachments: list[dict] | None = None
+    onboarding: dict[str, str | None] | None = None
 
 
 class MessageProcessor:
@@ -290,6 +291,9 @@ class MessageProcessor:
             # Parse attachments if present (Requirement 6.3)
             attachments = body.get("attachments")
 
+            # Parse onboarding context if present (first interaction)
+            onboarding = body.get("onboarding")
+
             parsed = QueueMessage(
                 user_id=body["user_id"],
                 message=body["message"],
@@ -298,6 +302,7 @@ class MessageProcessor:
                 receipt_handle=receipt_handle,
                 message_id=message_id,
                 attachments=attachments,
+                onboarding=onboarding,
             )
 
             logger.info(
@@ -346,12 +351,14 @@ class MessageProcessor:
                         user_id=parsed.user_id,
                         message=parsed.message,
                         attachments=parsed.attachments,
+                        onboarding_context=parsed.onboarding,
                     )
             else:
-                # Process regular message
+                # Process regular message (with onboarding context if first interaction)
                 response = await self.agent_service.process_message(
                     user_id=parsed.user_id,
                     message=parsed.message,
+                    onboarding_context=parsed.onboarding,
                 )
 
             # Send response via callback if provided

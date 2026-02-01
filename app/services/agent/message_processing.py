@@ -91,7 +91,12 @@ class MessageProcessor:
         self._trigger_extraction_and_clear = trigger_extraction_and_clear
         self._deterministic_skill_runner = deterministic_skill_runner
 
-    async def process_message(self, user_id: str, message: str) -> str:
+    async def process_message(
+        self,
+        user_id: str,
+        message: str,
+        onboarding_context: dict[str, str | None] | None = None,
+    ) -> str:
         """Process a user message through the agent.
 
         Retrieves relevant memory context based on the message and
@@ -101,6 +106,8 @@ class MessageProcessor:
         Args:
             user_id: User's telegram ID.
             message: User's message to process.
+            onboarding_context: Optional onboarding context (soul.md, id.md content)
+                if this is the user's first interaction.
 
         Returns:
             Agent's response text.
@@ -236,7 +243,9 @@ class MessageProcessor:
         previous_messages = self._get_user_messages(user_id)
 
         try:
-            agent = self._create_agent(user_id, memory_context, messages=previous_messages)
+            agent = self._create_agent(
+                user_id, memory_context, onboarding_context=onboarding_context, messages=previous_messages
+            )
             result = agent(message)
             response = self._extract_response_text(result)
         except Exception as e:
@@ -323,6 +332,7 @@ class MessageProcessor:
         user_id: str,
         message: str,
         attachments: list[AttachmentInfo],
+        onboarding_context: dict[str, str | None] | None = None,
     ) -> str:
         """Process a message with file attachments.
 
@@ -339,6 +349,8 @@ class MessageProcessor:
                 - mime_type: MIME type if known
                 - file_size: Size in bytes
                 - is_image: Whether file is an image
+            onboarding_context: Optional onboarding context (soul.md, id.md content)
+                if this is the user's first interaction.
 
         Returns:
             Agent's response text.
@@ -389,7 +401,9 @@ class MessageProcessor:
         previous_messages = self._get_user_messages(user_id)
 
         # Create agent with attachment context
-        agent = self._create_agent(user_id, memory_context, attachments, messages=previous_messages)
+        agent = self._create_agent(
+            user_id, memory_context, attachments, onboarding_context=onboarding_context, messages=previous_messages
+        )
 
         # Build prompt with file info if no message provided
         if message:
