@@ -256,7 +256,7 @@ deploy:
         echo '📥 Pulling latest changes...'
         git pull
         echo '🚀 Starting Docker Compose...'
-        docker compose up -d
+        docker compose up -d --build 
         echo '⏳ Waiting for services to be healthy...'
         sleep 5
         docker compose ps
@@ -287,7 +287,7 @@ deploy-hard-reset:
         echo '📥 Pulling latest changes...'
         git pull
         echo '🚀 Starting Docker Compose...'
-        docker compose up -d
+        docker compose up -d --build 
         echo '⏳ Waiting for services to be healthy...'
         sleep 5
         docker compose ps
