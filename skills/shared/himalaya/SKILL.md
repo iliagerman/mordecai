@@ -130,6 +130,37 @@ Alternative (equivalent) approach: pass the config path directly using CLI flags
 
 Do NOT run plain `himalaya ...` without the explicit prefix.
 
+### HARD REQUIREMENT: verify the TOML exists (do NOT assume)
+
+Do **not** assume the per-user `himalaya.toml` exists just because memory/facts say it should.
+Before running **any** `himalaya ...` command:
+
+1) Compute the expected absolute config path and export it.
+
+- Container / production layout:
+  - `export HIMALAYA_CONFIG="${MORDECAI_SKILLS_BASE_DIR}/<USERNAME>/himalaya.toml"`
+
+2) Verify the file exists **and is readable**, explicitly.
+
+- Preflight (must pass):
+
+```bash
+test -n "${HIMALAYA_CONFIG:-}" \
+  && test -f "$HIMALAYA_CONFIG" \
+  && test -s "$HIMALAYA_CONFIG" \
+  && cat "$HIMALAYA_CONFIG" >/dev/null
+```
+
+Notes:
+- The `cat ... >/dev/null` is intentional: it proves the file is readable without leaking contents.
+- If preflight fails, **STOP**. Do not run `himalaya ...` anyway — himalaya will prompt for an interactive wizard
+  (which will hang/time out in non-interactive tool runs).
+
+If the file is missing:
+- Ask the user which provider they want (`gmail` or `outlook`) and for the required placeholders.
+- Persist them using `set_skill_config(skill_name="himalaya", ...)`.
+- Only after Mordecai renders `himalaya.toml`, re-run the preflight and proceed.
+
 ## Installation Check
 
 **IMPORTANT**: Always verify himalaya is installed and configured first:
@@ -144,6 +175,12 @@ Preflight (must pass):
 
 ```bash
 test -n "${HIMALAYA_CONFIG:-}" && test -f "$HIMALAYA_CONFIG"
+```
+
+Also verify the file is readable (without printing it):
+
+```bash
+cat "$HIMALAYA_CONFIG" >/dev/null
 ```
 
 Then verify the config is valid by listing accounts:
@@ -192,6 +229,8 @@ If the user wants to manage their own config outside Mordecai, they can use:
 ```bash
 himalaya account configure
 ```
+
+Avoid this wizard flow in Mordecai tool runs (non-interactive). If the wizard prompt appears, treat it as “config missing” and switch to the Mordecai-managed configuration flow.
 
 ## Common Operations
 
@@ -477,9 +516,11 @@ export HIMALAYA_CONFIG="${MORDECAI_SKILLS_BASE_DIR}/<USERNAME>/himalaya.toml" &&
 - Verify with `himalaya --version`
 
 **2. No configuration found**
-- Run `export HIMALAYA_CONFIG="${MORDECAI_SKILLS_BASE_DIR}/<USERNAME>/himalaya.toml" && himalaya account list` to verify configuration
-- If no accounts found, guide user through `himalaya account configure` wizard
-- Offer to help create config manually if wizard fails
+- First, run the hard preflight (file exists + readable). If it fails, do **not** run himalaya.
+- Ask the user for `EMAIL_PROVIDER` and the required placeholders (Gmail: `[GMAIL]`, `[PASSWORD]`; Outlook: `[OUTLOOK_EMAIL]`, `[OUTLOOK_DISPLAY_NAME]`, `[OUTLOOK_APP_PASSWORD]`).
+- Persist them using `set_skill_config(skill_name="himalaya", ...)`, then re-run:
+  - `export HIMALAYA_CONFIG="${MORDECAI_SKILLS_BASE_DIR}/<USERNAME>/himalaya.toml" && himalaya account list`
+- Do not try to complete the interactive `himalaya account configure` wizard inside tool runs.
 
 **3. Authentication errors**
 - Verify IMAP/SMTP credentials are correct

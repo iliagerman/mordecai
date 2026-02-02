@@ -438,61 +438,41 @@ class SkillService:
         Raises:
             SkillInstallError: If download or extraction fails.
         """
-        if self._parse_github_url(url):
-            return self._install_from_github(url, user_id)
+        # Unified pipeline:
+        # 1) download into pending/
+        # 2) onboard + promote into the active skills dir
+        from app.services.pending_skill_service import PendingSkillService
 
-        # Preserve legacy behavior: non-GitHub installs land in the user's root
-        # skills folder (not pending) and may extract files directly.
-        user_skills_dir = self._get_user_skills_dir(user_id)
+        res = self.download_skill_to_pending(url, user_id, scope="user")
+        metadata = res.get("metadata")
+        if metadata is None:
+            raise SkillInstallError("Skill download succeeded but no metadata was returned")
 
-        filename = url.split("/")[-1]
-        if filename.endswith(".zip"):
-            skill_name = filename.replace(".zip", "")
-            is_zip = True
-        elif filename.endswith(".py"):
-            skill_name = filename.replace(".py", "")
-            is_zip = False
-        else:
-            skill_name = filename
-            is_zip = True
-
-        if not skill_name or skill_name.startswith("__"):
-            raise SkillInstallError(f"Invalid skill name: {skill_name}")
-
-        download_path = user_skills_dir / (f"{skill_name}.zip" if is_zip else f"{skill_name}.py")
-
-        try:
-            urllib.request.urlretrieve(url, download_path)
-        except Exception as e:
-            raise SkillInstallError(f"Failed to download skill: {str(e)}") from e
-
-        if is_zip:
-            try:
-                with zipfile.ZipFile(download_path, "r") as zip_ref:
-                    extracted_files = []
-                    for file in zip_ref.namelist():
-                        if file.endswith(".py"):
-                            zip_ref.extract(file, user_skills_dir)
-                            extracted_files.append(file)
-
-                    if not extracted_files:
-                        raise SkillInstallError("No Python files found in skill archive")
-            except zipfile.BadZipFile as e:
-                download_path.unlink(missing_ok=True)
-                raise SkillInstallError("Invalid zip file") from e
-            except Exception as e:
-                download_path.unlink(missing_ok=True)
-                if isinstance(e, SkillInstallError):
-                    raise
-                raise SkillInstallError(f"Failed to extract skill: {str(e)}") from e
-            finally:
-                download_path.unlink(missing_ok=True)
-
-        return SkillMetadata(
-            name=skill_name,
-            source_url=url,
-            installed_at=datetime.utcnow(),
+        pending_service = PendingSkillService(self.config)
+        onboard = pending_service.onboard_pending(
+            user_id=user_id,
+            scope="user",
+            dry_run=False,
+            skill_names=[metadata.name],
+            # Keep install cheap and deterministic in tests; real onboarding can
+            # be run separately with deps + script smoke tests enabled.
+            install_deps=False,
+            run_scripts=False,
         )
+
+        if not onboard.get("ok"):
+            # Extract a concise error message.
+            results = onboard.get("results") or []
+            err = "Skill onboarding failed"
+            if results and isinstance(results, list):
+                first = results[0]
+                if isinstance(first, dict):
+                    report = first.get("report")
+                    if isinstance(report, dict) and report.get("error"):
+                        err = str(report.get("error"))
+            raise SkillInstallError(err)
+
+        return metadata
 
     def download_skill_to_pending(
         self,
