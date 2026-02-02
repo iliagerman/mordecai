@@ -280,8 +280,9 @@ class Application:
         )
         logger.info("Cron service and scheduler initialized")
 
-        # Wire cron service to agent service for cron tools
-        self.agent_service.cron_service = self.cron_service
+        # Wire cron service to agent service for cron tools + prompt injection.
+        if self.agent_service is not None:
+            self.agent_service.set_cron_service(self.cron_service)
         logger.info("Cron service wired to agent service")
 
         # Initialize file service and system scheduler for file cleanup
