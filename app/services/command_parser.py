@@ -37,6 +37,7 @@ class CommandParser:
     # Help text for available commands (Requirement 10.5)
     HELP_TEXT = """Available commands:
 - new: Start a new conversation session
+- cancel: Cancel the current running request (best-effort)
 - logs: View recent agent activity logs
 - install skill <url>: Install a skill from the provided URL
 - uninstall skill <name>: Uninstall the specified skill

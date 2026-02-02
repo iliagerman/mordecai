@@ -48,8 +48,10 @@ from app.telegram.response_formatter import TelegramResponseFormatter
 try:
     from mypy_boto3_sqs import SQSClient  # type: ignore[reportMissingImports]
 except Exception:  # pragma: no cover
+
     class SQSClient(Protocol):
         def send_message(self, **kwargs: Any) -> Any: ...
+
 
 if TYPE_CHECKING:
     from app.services.agent_service import AgentService
@@ -162,24 +164,13 @@ class TelegramBotInterface:
             - 6.2: Add message handlers for document and photo filters
         """
         # Command handlers for Telegram-style commands
-        self.application.add_handler(
-            CommandHandler("start", self._handle_start_command)
-        )
-        self.application.add_handler(
-            CommandHandler("help", self._handle_help_command)
-        )
-        self.application.add_handler(
-            CommandHandler("new", self._handle_new_command)
-        )
-        self.application.add_handler(
-            CommandHandler("logs", self._handle_logs_command)
-        )
-        self.application.add_handler(
-            CommandHandler("skills", self._handle_skills_command)
-        )
-        self.application.add_handler(
-            CommandHandler("add_skill", self._handle_add_skill_command)
-        )
+        self.application.add_handler(CommandHandler("start", self._handle_start_command))
+        self.application.add_handler(CommandHandler("help", self._handle_help_command))
+        self.application.add_handler(CommandHandler("new", self._handle_new_command))
+        self.application.add_handler(CommandHandler("cancel", self._handle_cancel_command))
+        self.application.add_handler(CommandHandler("logs", self._handle_logs_command))
+        self.application.add_handler(CommandHandler("skills", self._handle_skills_command))
+        self.application.add_handler(CommandHandler("add_skill", self._handle_add_skill_command))
         self.application.add_handler(
             CommandHandler("delete_skill", self._handle_delete_skill_command)
         )
@@ -189,9 +180,7 @@ class TelegramBotInterface:
             self.application.add_handler(
                 MessageHandler(filters.Document.ALL, self._handle_document)
             )
-            self.application.add_handler(
-                MessageHandler(filters.PHOTO, self._handle_photo)
-            )
+            self.application.add_handler(MessageHandler(filters.PHOTO, self._handle_photo))
 
         # General message handler for all text messages
         self.application.add_handler(
@@ -204,10 +193,14 @@ class TelegramBotInterface:
     # Handler Wrappers (delegate to message_handlers module)
     # ========================================================================
 
-    async def _handle_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _handle_start_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
         await self._message_handlers.handle_start_command(update, context)
 
-    async def _handle_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _handle_help_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
         await self._message_handlers.handle_help_command(update, context)
 
     async def _handle_new_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -215,20 +208,35 @@ class TelegramBotInterface:
             update, context, execute_new=self._command_executor.execute_new_command
         )
 
-    async def _handle_logs_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _handle_cancel_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        await self._message_handlers.handle_cancel_command(
+            update, context, execute_cancel=self._command_executor.execute_cancel_command
+        )
+
+    async def _handle_logs_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
         await self._message_handlers.handle_logs_command(
             update, context, execute_logs=self._command_executor.execute_logs_command
         )
 
-    async def _handle_skills_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _handle_skills_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
         await self._message_handlers.handle_skills_command(update, context)
 
-    async def _handle_add_skill_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _handle_add_skill_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
         await self._message_handlers.handle_add_skill_command(
             update, context, execute_install=self._command_executor.execute_install_skill
         )
 
-    async def _handle_delete_skill_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _handle_delete_skill_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
         await self._message_handlers.handle_delete_skill_command(
             update, context, execute_uninstall=self._command_executor.execute_uninstall_skill
         )
@@ -289,9 +297,7 @@ class TelegramBotInterface:
         attachments: list[Any],
     ) -> None:
         """Enqueue a message with file attachments to SQS queue."""
-        self._queue_handler.enqueue_message_with_attachments(
-            user_id, chat_id, message, attachments
-        )
+        self._queue_handler.enqueue_message_with_attachments(user_id, chat_id, message, attachments)
 
         # Log the action
         try:

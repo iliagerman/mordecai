@@ -276,6 +276,7 @@ class TestCommandExecutor:
         """Create mock agent service."""
         service = MagicMock()
         service.new_session = AsyncMock(return_value=(MagicMock(), "✨ New session started!"))
+        service.cancel_current_work = AsyncMock(return_value="✅ Cancellation requested.")
 
         # Long-term memory is accessed via agent_service.memory_service
         memory_service = MagicMock()
@@ -354,6 +355,15 @@ class TestCommandExecutor:
         # Verify help text contains command info
         help_text = executor._send_response.call_args[0][1]
         assert "new" in help_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_execute_cancel_command_calls_agent_service_and_replies(
+        self, executor, mock_agent_service
+    ):
+        await executor.execute_cancel_command("user-1", 123)
+
+        mock_agent_service.cancel_current_work.assert_called_once_with("user-1")
+        executor._send_response.assert_called_once_with(123, "✅ Cancellation requested.")
 
     @pytest.mark.asyncio
     async def test_execute_command_forget_dry_run_sends_response(

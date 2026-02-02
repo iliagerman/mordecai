@@ -216,6 +216,30 @@ class CommandExecutor:
         except Exception:
             logger.exception("Failed to log new session action")
 
+    async def execute_cancel_command(self, user_id: str, chat_id: int) -> None:
+        """Execute the 'cancel' command.
+
+        Best-effort: attempts to cancel any currently running tool/process for the user.
+        """
+
+        try:
+            msg = await self.agent_service.cancel_current_work(user_id)
+        except Exception as e:
+            logger.exception("Cancel failed for user %s", user_id)
+            await self._send_response(chat_id, f"Failed to cancel current work: {e}")
+            return
+
+        await self._send_response(chat_id, msg)
+
+        try:
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action="Requested cancellation",
+                severity=LogSeverity.INFO,
+            )
+        except Exception:
+            logger.exception("Failed to log cancel action")
+
     async def execute_logs_command(self, user_id: str, chat_id: int) -> None:
         """Execute the 'logs' command to show recent activity.
 
