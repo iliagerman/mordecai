@@ -129,6 +129,9 @@ class MessageProcessor:
             "I queued this one and will reply as soon as I’m done."
         )
 
+        # Diagnostics: log background polling mode once per queue.
+        self._logged_background_queues: set[str] = set()
+
     async def start(self) -> None:
         """Start processing messages from all user queues.
 
@@ -140,6 +143,11 @@ class MessageProcessor:
             - 12.6: Process messages in order for each user
         """
         logger.info("Starting message processor")
+        logger.info(
+            "Message processor mode: background_polling=true max_prefetch_per_queue=%s max_inflight_total=%s",
+            self._max_prefetch_per_queue,
+            getattr(self._inflight_total_semaphore, "_value", "?"),
+        )
         self.running = True
 
         while self.running:
@@ -236,6 +244,14 @@ class MessageProcessor:
         # - Limits prefetch (number of reserved/invisible SQS messages) per queue.
         queue_lock = self._get_queue_lock(queue_url)
         queue_prefetch_sem = self._get_queue_prefetch_semaphore(queue_url)
+
+        if queue_url not in self._logged_background_queues:
+            self._logged_background_queues.add(queue_url)
+            logger.info(
+                "Queue poller active (background=true) queue=%s max_prefetch_per_queue=%s",
+                queue_url,
+                self._max_prefetch_per_queue,
+            )
 
         # Avoid reserving more messages than we can safely heartbeat.
         if queue_prefetch_sem.locked() or self._inflight_total_semaphore.locked():
