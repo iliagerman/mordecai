@@ -1,0 +1,21 @@
+{
+  "details": {
+    "failures": [
+      {
+        "missing_module": null,
+        "returncode": 2,
+        "script": "scripts/get_transcript.py",
+        "stderr": "usage: get_transcript.py [-h] url\nget_transcript.py: error: the following arguments are required: url\n",
+        "stdout": ""
+      }
+    ],
+    "missing_modules": []
+  },
+  "error": "script smoke test failed",
+  "scope": "shared",
+  "skill_name": "youtube-watcher",
+  "stage": "run_scripts_smoke_test",
+  "status": "failed",
+  "timestamp": "2026-02-02T11:53:10.132967+00:00",
+  "user_id": null
+}

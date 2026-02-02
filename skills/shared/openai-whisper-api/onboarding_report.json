@@ -1,0 +1,55 @@
+{
+  "ok": true,
+  "scope": "shared",
+  "skill": "openai-whisper-api",
+  "steps": {
+    "generate_requirements": {
+      "generated": false,
+      "ok": true,
+      "reason": "no third-party imports detected",
+      "warnings": []
+    },
+    "install_dependencies": {
+      "installed": false,
+      "ok": true,
+      "reason": "no requirements.txt"
+    },
+    "normalize_skill_md": {
+      "actions": [],
+      "ok": true,
+      "skill_md": "/app/skills/shared/pending/openai-whisper-api/SKILL.md"
+    },
+    "run_scripts_smoke_test": {
+      "ok": true,
+      "ran": 0,
+      "reason": "no scripts to run",
+      "skipped": true
+    },
+    "sync_requires_pip": {
+      "ok": true,
+      "reason": "no requirements.txt",
+      "updated": false
+    },
+    "validate_python_syntax": {
+      "checked": 0,
+      "ok": true
+    },
+    "validate_required_bins": {
+      "checked": 0,
+      "ok": true,
+      "reason": "no required bins declared"
+    },
+    "validate_required_config_files": {
+      "checked": 0,
+      "ok": true,
+      "reason": "no config templates found"
+    },
+    "validate_required_env": {
+      "checked": 0,
+      "ok": true,
+      "reason": "no required env declared"
+    }
+  },
+  "timestamp": "2026-02-02T14:40:04.494404+00:00",
+  "user_id": null
+}
