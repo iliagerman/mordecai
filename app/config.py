@@ -1114,7 +1114,7 @@ class AgentConfig(BaseSettings):
 
     # Runtime safety / watchdog
     shell_default_timeout_seconds: int = Field(
-        default=180,
+        default=300,
         description=(
             "Default hard timeout applied to shell tool commands when the caller does not specify one. "
             "This prevents hung commands from wedging the agent indefinitely."
@@ -1140,6 +1140,14 @@ class AgentConfig(BaseSettings):
             "If true, the shell tool uses an internal subprocess runner with a hard kill-on-timeout "
             "instead of delegating to strands_tools.shell. This can help avoid hangs in some environments, "
             "at the cost of reduced feature parity with the upstream tool."
+        ),
+    )
+    shell_stream_output_enabled: bool = Field(
+        default=False,
+        description=(
+            "If true, stream shell stdout/stderr to trace logs while the command runs (best-effort). "
+            "This helps long-running commands look 'alive' instead of hung. "
+            "Streaming is implemented by the internal safe runner; enabling this will force the safe runner."
         ),
     )
     health_stall_seconds: int = Field(
@@ -1350,7 +1358,10 @@ class AgentConfig(BaseSettings):
 
     # Working folder settings
     temp_files_base_dir: str = Field(default="./temp_files")
-    working_folder_base_dir: str = Field(default="./workspaces")
+    # NOTE: This is the user-visible “workspace” folder where the agent writes files.
+    # We keep it singular (`./workspace/<USER_ID>/`) to match prompts/docs and to
+    # avoid confusion with other pluralized directories.
+    working_folder_base_dir: str = Field(default="./workspace")
 
     # Obsidian vault (external to repo) + personality files
     obsidian_vault_root: str | None = Field(

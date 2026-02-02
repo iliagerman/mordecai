@@ -63,6 +63,132 @@ _secrets_path_var: ContextVar[Path] = ContextVar(
 _config_var: ContextVar[object | None] = ContextVar("shell_env_config", default=None)
 
 
+def _derive_skills_base_dir_from_template(template: str) -> str | None:
+    """Derive the *base* skills directory from a template.
+
+    Examples:
+      - "/app/skills/{username}" -> "/app/skills"
+      - "/app/skills" -> "/app/skills"
+      - "./skills/{user_id}" -> "./skills"
+    """
+
+    raw = (template or "").strip()
+    if not raw:
+        return None
+
+    # Keep placeholder normalization consistent with config.
+    # (We duplicate the minimal behavior here so shell wrapper can work even
+    # without a fully-constructed config object in context.)
+    raw = raw.replace("[USERNAME]", "{username}").replace("[USER_ID]", "{user_id}")
+
+    try:
+        parts = list(Path(raw).parts)
+    except Exception:
+        return None
+
+    # Find the first path segment containing a placeholder and truncate before it.
+    for i, part in enumerate(parts):
+        if "{username}" in part or "{user_id}" in part:
+            if i <= 0:
+                return None
+            try:
+                return str(Path(*parts[:i]))
+            except Exception:
+                return None
+
+    # No placeholders -> treat as an already-base directory.
+    return raw
+
+
+def _ensure_mordecai_skills_base_dir_env() -> str | None:
+    """Ensure MORDECAI_SKILLS_BASE_DIR is available for shell commands.
+
+    Why this exists:
+    - Some tool runners do not propagate the current process env to the
+      subprocess environment (or sanitize it).
+    - Some call sites may forget to call set_shell_env_context.
+    - Skills often reference ${MORDECAI_SKILLS_BASE_DIR} in documented snippets.
+
+    Returns the effective base dir if it could be determined.
+    """
+
+    existing = (os.environ.get("MORDECAI_SKILLS_BASE_DIR") or "").strip()
+    if existing:
+        return existing
+
+    cfg = _config_var.get()
+    uid = _current_user_id_var.get()
+
+    # Best path: config + user id -> resolve per-user dir, then take its parent.
+    if cfg is not None and uid:
+        try:
+            user_dir = resolve_user_skills_dir(cfg, str(uid), create=True)
+            base_dir = str(user_dir.parent)
+            if base_dir.strip():
+                os.environ["MORDECAI_SKILLS_BASE_DIR"] = base_dir
+                return base_dir
+        except Exception:
+            pass
+
+    # Next best: config template (even without user id).
+    if cfg is not None:
+        try:
+            raw_template = getattr(cfg, "user_skills_dir_template", None)
+            derived = _derive_skills_base_dir_from_template(str(raw_template or ""))
+            if derived:
+                os.environ["MORDECAI_SKILLS_BASE_DIR"] = derived
+                return derived
+        except Exception:
+            pass
+
+    # Fallback: env template (common in container/docker setups).
+    try:
+        derived = _derive_skills_base_dir_from_template(
+            os.environ.get("MORDECAI_SKILLS_BASE_DIR", "")
+        )
+        if derived:
+            os.environ["MORDECAI_SKILLS_BASE_DIR"] = derived
+            return derived
+    except Exception:
+        pass
+
+    # Last resort: AGENT_SKILLS_BASE_DIR if present.
+    try:
+        raw = (os.environ.get("AGENT_SKILLS_BASE_DIR") or "").strip()
+        if raw:
+            os.environ["MORDECAI_SKILLS_BASE_DIR"] = raw
+            return raw
+    except Exception:
+        pass
+
+    return None
+
+
+def _materialize_mordecai_skills_base_dir_in_command(command: str) -> str:
+    """Inline ${MORDECAI_SKILLS_BASE_DIR} references in the command string.
+
+    Some shell tool backends do not pass through env vars. When a command
+    contains ${MORDECAI_SKILLS_BASE_DIR} (or $MORDECAI_SKILLS_BASE_DIR), inlining
+    avoids reliance on the subprocess environment.
+    """
+
+    if not isinstance(command, str) or not command:
+        return command
+
+    if ("MORDECAI_SKILLS_BASE_DIR" not in command) and ("${" not in command):
+        return command
+
+    base_dir = _ensure_mordecai_skills_base_dir_env()
+    if not base_dir:
+        return command
+
+    # Replace both ${VAR} and $VAR forms (conservative: only for this variable).
+    cmd = command
+    cmd = cmd.replace("${MORDECAI_SKILLS_BASE_DIR}", base_dir)
+    cmd = re.sub(r"\$MORDECAI_SKILLS_BASE_DIR(?![A-Za-z0-9_])", base_dir, cmd)
+    return cmd
+
+
 def _stdin_is_tty() -> bool:
     """Best-effort check for an interactive TTY.
 
@@ -108,10 +234,10 @@ def _default_shell_timeout_seconds() -> int:
     try:
         v = getattr(cfg, "shell_default_timeout_seconds", None)
         if v is None:
-            return 180
+            return 300
         return max(1, int(v))
     except Exception:
-        return 180
+        return 300
 
 
 def _choose_shell_executable() -> str | None:
@@ -183,6 +309,7 @@ def _safe_shell_run(
     work_dir: str | None,
     timeout_seconds: int,
     heartbeat_seconds: int = 15,
+    stream_output: bool = True,
 ) -> dict[str, Any]:
     """Run a shell command safely with a hard timeout.
 
@@ -208,6 +335,60 @@ def _safe_shell_run(
     returncode: int | None = None
 
     proc: subprocess.Popen[str] | None = None
+
+    # IMPORTANT: trace context does not automatically propagate into new threads.
+    # Capture it here so output streaming can log under the correct trace.
+    trace_id = get_trace_id()
+    from app.observability.trace_context import get_actor_id, set_trace
+
+    actor_id = get_actor_id()
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    stdout_len = 0
+    stderr_len = 0
+    chunk_limit = 60_000  # keep only tail; consistent with _truncate
+
+    def _append_tail(*, chunks: list[str], cur_len: int, text: str) -> int:
+        if not text:
+            return cur_len
+        chunks.append(text)
+        cur_len += len(text)
+        # Drop from the front until we're within the limit.
+        while chunks and cur_len > chunk_limit:
+            removed = chunks.pop(0)
+            cur_len -= len(removed)
+        return cur_len
+
+    def _stream_reader(*, which: str, stream) -> None:
+        # Ensure logs correlate to the originating tool call.
+        set_trace(trace_id=trace_id, actor_id=actor_id)
+        try:
+            for line in iter(stream.readline, ""):
+                if not line:
+                    break
+
+                nonlocal stdout_len, stderr_len
+                if which == "stdout":
+                    stdout_len = _append_tail(chunks=stdout_chunks, cur_len=stdout_len, text=line)
+                else:
+                    stderr_len = _append_tail(chunks=stderr_chunks, cur_len=stderr_len, text=line)
+
+                # Mark progress on actual output as well; helps stall detection.
+                mark_progress("tool.shell.output")
+
+                # Best-effort live logging. Keep it bounded and sanitized.
+                if trace_id is not None:
+                    trace_event(
+                        "tool.shell.output",
+                        stream=which,
+                        text=line,
+                        max_chars=400,
+                    )
+        except Exception:
+            # Never let streaming break command execution.
+            return
+
     try:
         proc = subprocess.Popen(
             command,
@@ -219,28 +400,49 @@ def _safe_shell_run(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            bufsize=1,
             start_new_session=True,  # allows killing the whole process group
         )
         deadline = time.monotonic() + float(max(1, int(timeout_seconds)))
         hb = float(max(1, int(heartbeat_seconds)))
 
+        t_out: threading.Thread | None = None
+        t_err: threading.Thread | None = None
+        if stream_output and proc.stdout is not None and proc.stderr is not None:
+            t_out = threading.Thread(
+                target=_stream_reader,
+                kwargs={"which": "stdout", "stream": proc.stdout},
+                name="tool-shell-stdout",
+                daemon=True,
+            )
+            t_err = threading.Thread(
+                target=_stream_reader,
+                kwargs={"which": "stderr", "stream": proc.stderr},
+                name="tool-shell-stderr",
+                daemon=True,
+            )
+            t_out.start()
+            t_err.start()
+
+        last_hb = time.monotonic()
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
                 break
 
-            step = min(hb, remaining)
-            try:
-                out, err = proc.communicate(timeout=step)
-                stdout = out or ""
-                stderr = err or ""
-                returncode = int(proc.returncode or 0)
+            rc = proc.poll()
+            if rc is not None:
+                returncode = int(rc)
                 break
-            except subprocess.TimeoutExpired:
-                # Still running. Emit a heartbeat so stall detection doesn't fire.
+
+            # Still running.
+            now = time.monotonic()
+            if (now - last_hb) >= hb:
                 mark_progress("tool.shell.heartbeat")
-                continue
+                last_hb = now
+
+            time.sleep(min(0.2, remaining))
 
         if timed_out:
             # Kill the full process group to avoid orphaned children.
@@ -254,9 +456,7 @@ def _safe_shell_run(
 
             # Give it a brief grace period, then SIGKILL.
             try:
-                out, err = proc.communicate(timeout=2)
-                stdout = out or ""
-                stderr = err or ""
+                proc.wait(timeout=2)
             except Exception:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
@@ -266,13 +466,37 @@ def _safe_shell_run(
                     except Exception:
                         pass
                 try:
-                    out, err = proc.communicate(timeout=2)
-                    stdout = out or ""
-                    stderr = err or ""
+                    proc.wait(timeout=2)
                 except Exception:
                     pass
 
-            returncode = 124  # common timeout exit code
+            # Use a standard timeout exit code regardless of actual return.
+            returncode = 124
+
+        # Ensure reader threads drain remaining output.
+        if stream_output:
+            try:
+                if t_out is not None:
+                    t_out.join(timeout=1)
+                if t_err is not None:
+                    t_err.join(timeout=1)
+            except Exception:
+                pass
+
+        # If streaming is disabled, fall back to a final communicate() to collect output.
+        if not stream_output:
+            try:
+                out, err = proc.communicate(timeout=1)
+                stdout = out or ""
+                stderr = err or ""
+            except Exception:
+                pass
+
+        # Combine streamed output buffers into strings.
+        if stdout_chunks:
+            stdout = "".join(stdout_chunks)
+        if stderr_chunks:
+            stderr = "".join(stderr_chunks)
 
     finally:
         # Best-effort: ensure returncode is populated.
@@ -404,12 +628,7 @@ def shell(
     # - hot-reload paths can reinitialize env state
     # - it must work even if the agent context setter failed silently
     try:
-        if not (os.environ.get("MORDECAI_SKILLS_BASE_DIR") or "").strip():
-            cfg = _config_var.get()
-            uid = _current_user_id_var.get()
-            if cfg is not None and uid:
-                user_dir = resolve_user_skills_dir(cfg, str(uid), create=True)
-                os.environ["MORDECAI_SKILLS_BASE_DIR"] = str(user_dir.parent)
+        _ensure_mordecai_skills_base_dir_env()
     except Exception:
         pass
 
@@ -477,11 +696,16 @@ def shell(
 
     try:
         effective_command = _maybe_prefix_himalaya_config(command)
+        effective_command = _materialize_mordecai_skills_base_dir_in_command(effective_command)
 
         # Default to delegating to the upstream strands_tools shell implementation.
         # This preserves compatibility with skills and allows tests to monkeypatch
         # the base call.
-        use_safe_runner = bool(getattr(cfg, "shell_use_safe_runner", False))
+        stream_output = bool(getattr(cfg, "shell_stream_output_enabled", False))
+
+        # Streaming is only supported by the internal safe runner.
+        # If streaming is enabled, force the safe runner even if shell_use_safe_runner=False.
+        use_safe_runner = bool(getattr(cfg, "shell_use_safe_runner", False)) or stream_output
 
         # Start the heartbeat only while the underlying runner executes.
         hb_thread.start()
@@ -492,6 +716,7 @@ def shell(
                 work_dir=work_dir,
                 timeout_seconds=effective_timeout,
                 heartbeat_seconds=heartbeat_s,
+                stream_output=stream_output,
             )
         else:
             forwarded["command"] = effective_command

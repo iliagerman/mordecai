@@ -39,6 +39,8 @@ _SENSITIVE_VALUE_RES: list[re.Pattern[str]] = [
     re.compile(r"\b(?:AKIA|ASIA|AGPA|AIDA|ANPA|ANVA|AROA|AIPA)[A-Z0-9]{12,32}\b"),
     # Bearer tokens in headers / logs
     re.compile(r"\bBearer\s+[A-Za-z0-9._\-]+\b", flags=re.IGNORECASE),
+    # Google API keys (e.g. Gemini) commonly start with "AIza".
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{20,}\b"),
     # Generic 'key=value' patterns
     re.compile(r"\b(?:password|passwd|pwd)\s*[:=]\s*\S+", flags=re.IGNORECASE),
     re.compile(r"\b(?:api[_-]?key|apikey)\s*[:=]\s*\S+", flags=re.IGNORECASE),

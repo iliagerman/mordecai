@@ -27,6 +27,42 @@ def test_shell_env_context_sets_skills_base_dir_env(tmp_path: Path, monkeypatch)
     assert os.environ.get("MORDECAI_SKILLS_BASE_DIR") == str(tmp_path / "skills")
 
 
+def test_shell_inlines_mordecai_skills_base_dir_from_env_template(tmp_path: Path, monkeypatch):
+    """If the command references ${MORDECAI_SKILLS_BASE_DIR}, inline it.
+
+    Some shell backends sanitize env and won't pass MORDECAI_SKILLS_BASE_DIR through.
+    Inlining avoids failures like trying to read '/<user>/himalaya.toml'.
+
+    This test also covers the fallback where MORDECAI_SKILLS_BASE_DIR exists
+    but the shell tool context vars were never set.
+    """
+
+    # Ensure this test is not affected by ContextVars set in earlier tests.
+    shell_env_module._current_user_id_var.set(None)
+    shell_env_module._config_var.set(None)
+
+    monkeypatch.delenv("MORDECAI_SKILLS_BASE_DIR", raising=False)
+    monkeypatch.setenv("MORDECAI_SKILLS_BASE_DIR", str(tmp_path / "skills"))
+
+    captured: dict[str, object] = {}
+
+    def _fake_base_shell(**kwargs):
+        captured.update(kwargs)
+        return {"stdout": "ok", "returncode": 0}
+
+    monkeypatch.setattr(shell_env_module, "_call_base_shell", _fake_base_shell)
+
+    out = shell_env_module.shell(
+        command='export HIMALAYA_CONFIG="${MORDECAI_SKILLS_BASE_DIR}/u1/himalaya.toml" && himalaya account list',
+        timeout_seconds=1,
+    )
+
+    assert out.get("stdout") == "ok"
+    # Ensure the variable reference was materialized into an absolute path.
+    assert str(tmp_path / "skills") in str(captured.get("command"))
+    assert "${MORDECAI_SKILLS_BASE_DIR}" not in str(captured.get("command"))
+
+
 def test_shell_sees_new_secret_without_restart(tmp_path: Path, monkeypatch):
     """Validate hot-reload: after saving secrets, next shell call sees new env without restart."""
 
@@ -334,3 +370,38 @@ def test_shell_emits_progress_heartbeats_during_long_runs(tmp_path: Path, monkey
     assert "tool.shell.start" in events
     assert "tool.shell.end" in events
     assert "tool.shell.heartbeat" in events
+
+
+def test_shell_stream_output_forces_safe_runner(tmp_path: Path, monkeypatch):
+    secrets_path = tmp_path / "secrets.yml"
+    secrets_path.write_text("skills: {}\n", encoding="utf-8")
+
+    user_id = "u_stream"
+    monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
+
+    cfg = AgentConfig(
+        skills_base_dir=str(tmp_path / "skills"),
+        shell_use_safe_runner=False,
+        shell_stream_output_enabled=True,
+    )
+    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    called: dict[str, object] = {"safe": False, "base": False}
+
+    def _fake_safe_shell_run(**kwargs):
+        called["safe"] = True
+        # Ensure the wrapper passes the stream flag through.
+        assert kwargs.get("stream_output") is True
+        return {"stdout": "ok", "returncode": 0}
+
+    def _fake_base_shell(**_kwargs):
+        called["base"] = True
+        return {"stdout": "nope", "returncode": 0}
+
+    monkeypatch.setattr(shell_env_module, "_safe_shell_run", _fake_safe_shell_run)
+    monkeypatch.setattr(shell_env_module, "_call_base_shell", _fake_base_shell)
+
+    out = shell_env_module.shell(command="echo noop", timeout_seconds=5)
+    assert out.get("stdout") == "ok"
+    assert called["safe"] is True
+    assert called["base"] is False

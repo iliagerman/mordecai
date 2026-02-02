@@ -221,8 +221,7 @@ class OnboardingService:
             f"💡 Want to change how I behave or what I call myself? Just ask.\n"
             f"Tell me what you want to change (tone, verbosity, boundaries, identity metadata, etc.) and I can update:\n"
             f"- `me/{user_id}/soul.md` (personality)\n"
-            f"- `me/{user_id}/id.md` (identity)\n\n"
-            f"How can I help you today?"
+            f"- `me/{user_id}/id.md` (identity)\n"
         )
 
         return message
