@@ -11,6 +11,26 @@
 
 set -e
 
+# Ensure we use the prebuilt virtual environment created at image build time.
+# When running the container as a non-root host UID (via docker-compose `user:`),
+# `uv run` may attempt to re-sync or install the project in editable mode,
+# which writes to `/app` (e.g., `mordecai.egg-info`) and fails if `/app` is
+# owned by root. Using the venv directly avoids that class of permission issues.
+VENV_BIN="/app/.venv/bin"
+
+# Ensure we use the uv-managed virtual environment created at image build time.
+# This avoids runtime editable builds that try to write `*.egg-info` into /app.
+if [ -x "/app/.venv/bin/python" ]; then
+    export PATH="/app/.venv/bin:$PATH"
+fi
+
+if [ ! -x "$VENV_BIN/python" ]; then
+    echo "ERROR: Expected virtualenv python at $VENV_BIN/python but it was not found or not executable"
+    exit 1
+fi
+
+export PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE:-1}
+
 # -----------------------------------------------------------------------------
 # Configuration File Checks
 # -----------------------------------------------------------------------------
@@ -41,7 +61,7 @@ if [ "$SKIP_MIGRATIONS" != "true" ]; then
 
     echo "Running database migrations..."
 
-    if ! uv run alembic upgrade head; then
+    if ! python -m alembic upgrade head; then
         echo "ERROR: Database migration failed"
         exit 1
     fi
@@ -55,4 +75,4 @@ fi
 # -----------------------------------------------------------------------------
 
 echo "Starting Mordecai..."
-exec uv run python -m app.main
+exec python -m app.main
