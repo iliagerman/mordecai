@@ -44,6 +44,9 @@ from app.tools import (
     file_write_env as file_write_env_module,
 )
 from app.tools import (
+    forget_memory as forget_memory_module,
+)
+from app.tools import (
     onboard_pending_skills as onboard_pending_skills_module,
 )
 from app.tools import (
@@ -325,6 +328,8 @@ class AgentCreator:
                 user_id,
                 session_id,
             )
+            # Set up forget_memory tool context
+            forget_memory_module.set_memory_context(self.memory_service, user_id)
 
         # Set up cron tools with cron service context
         if self.cron_service is not None:
@@ -402,6 +407,7 @@ class AgentCreator:
                     remember_memory_module.remember,
                 ]
             )
+            builtin_tools.append(forget_memory_module.forget_memory)
 
         # Add cron tools if cron service is available
         if self.cron_service is not None:
