@@ -59,7 +59,12 @@ Any other input will be processed as a regular message to the agent."""
             return ParsedCommand(CommandType.MESSAGE, [])
 
         message = message.strip()
-        lower_message = message.lower()
+
+        # Telegram users often type slash-commands even when we don't register
+        # a dedicated handler (e.g. "/forget ..."). Normalize that here so the
+        # same parser works for both "forget ..." and "/forget ...".
+        normalized = message[1:].strip() if message.startswith("/") else message
+        lower_message = normalized.lower()
 
         # Check for "new" command (Requirement 10.1)
         if lower_message == "new":
@@ -77,19 +82,19 @@ Any other input will be processed as a regular message to the agent."""
         # - "forget <query>" => dry-run
         # - "forget! <query>" or "forget delete <query>" => delete
         if lower_message.startswith("forget!"):
-            query = message[len("forget!") :].strip()
+            query = normalized[len("forget!") :].strip()
             if query:
                 return ParsedCommand(CommandType.FORGET_DELETE, [query])
             return ParsedCommand(CommandType.MESSAGE, [message])
 
         if lower_message.startswith("forget delete "):
-            query = message[len("forget delete ") :].strip()
+            query = normalized[len("forget delete ") :].strip()
             if query:
                 return ParsedCommand(CommandType.FORGET_DELETE, [query])
             return ParsedCommand(CommandType.MESSAGE, [message])
 
         if lower_message.startswith("forget "):
-            query = message[len("forget ") :].strip()
+            query = normalized[len("forget ") :].strip()
             if query:
                 return ParsedCommand(CommandType.FORGET, [query])
             return ParsedCommand(CommandType.MESSAGE, [message])
@@ -97,7 +102,7 @@ Any other input will be processed as a regular message to the agent."""
         # Check for "install skill <url>" command (Requirement 10.3)
         if lower_message.startswith("install skill "):
             # Extract URL preserving case
-            url = message[14:].strip()
+            url = normalized[14:].strip()
             if url:
                 return ParsedCommand(CommandType.INSTALL_SKILL, [url])
             # Empty URL treated as regular message
@@ -106,7 +111,7 @@ Any other input will be processed as a regular message to the agent."""
         # Check for "uninstall skill <name>" command (Requirement 10.4)
         if lower_message.startswith("uninstall skill "):
             # Extract skill name preserving case
-            skill_name = message[16:].strip()
+            skill_name = normalized[16:].strip()
             if skill_name:
                 return ParsedCommand(CommandType.UNINSTALL_SKILL, [skill_name])
             # Empty skill name treated as regular message

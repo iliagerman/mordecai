@@ -92,13 +92,31 @@ class TestCommandType:
         """HELP should have string value 'help'."""
         assert CommandType.HELP == "help"
 
+    def test_forget_value(self):
+        """FORGET should have string value 'forget'."""
+        assert CommandType.FORGET == "forget"
+
+    def test_forget_delete_value(self):
+        """FORGET_DELETE should have string value 'forget_delete'."""
+        assert CommandType.FORGET_DELETE == "forget_delete"
+
     def test_message_value(self):
         """MESSAGE should have string value 'message'."""
         assert CommandType.MESSAGE == "message"
 
     def test_all_members(self):
-        """CommandType should have exactly 6 members."""
-        assert len(CommandType) == 6
+        """CommandType should have exactly 8 members."""
+        assert len(CommandType) == 8
+        assert set(CommandType) == {
+            CommandType.NEW,
+            CommandType.LOGS,
+            CommandType.INSTALL_SKILL,
+            CommandType.UNINSTALL_SKILL,
+            CommandType.FORGET,
+            CommandType.FORGET_DELETE,
+            CommandType.HELP,
+            CommandType.MESSAGE,
+        }
 
 
 class TestLogSeverity:
