@@ -7,11 +7,20 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Protocol
 
+from telegram import InputFile
 from telegram.error import TelegramError
 
 logger = logging.getLogger(__name__)
+
+
+class TelegramBotProtocol(Protocol):
+    async def send_message(self, *args: object, **kwargs: object) -> object: ...
+
+    async def send_document(self, *args: object, **kwargs: object) -> object: ...
+
+    async def send_photo(self, *args: object, **kwargs: object) -> object: ...
 
 
 class TelegramMessageSender:
@@ -21,7 +30,7 @@ class TelegramMessageSender:
     with proper formatting and error handling.
     """
 
-    def __init__(self, bot: Any):
+    def __init__(self, bot: TelegramBotProtocol):
         """Initialize the message sender.
 
         Args:
@@ -164,16 +173,16 @@ class TelegramMessageSender:
         for attempt in range(max_retries):
             try:
                 with open(file_path, "rb") as f:
+                    document = InputFile(f, filename=file_path.name)
                     await self.bot.send_document(
                         chat_id=chat_id,
-                        document=f,
-                        filename=file_path.name,
+                        document=document,
                         caption=caption,
                     )
                 logger.info("File sent to chat %s: %s", chat_id, file_path)
                 return True
 
-            except TelegramError as e:
+            except (TelegramError, OSError, ValueError, TypeError) as e:
                 logger.warning(
                     "File send attempt %d failed: %s",
                     attempt + 1,
@@ -227,15 +236,16 @@ class TelegramMessageSender:
         for attempt in range(max_retries):
             try:
                 with open(photo_path, "rb") as f:
+                    photo = InputFile(f, filename=photo_path.name)
                     await self.bot.send_photo(
                         chat_id=chat_id,
-                        photo=f,
+                        photo=photo,
                         caption=caption,
                     )
                 logger.info("Photo sent to chat %s: %s", chat_id, photo_path)
                 return True
 
-            except TelegramError as e:
+            except (TelegramError, OSError, ValueError, TypeError) as e:
                 logger.warning(
                     "Photo send attempt %d failed: %s",
                     attempt + 1,
