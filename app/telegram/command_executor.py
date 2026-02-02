@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from app.enums import CommandType, LogSeverity
+from app.models.agent import ForgetMemoryResult
 
 if TYPE_CHECKING:
     from app.services.agent_service import AgentService
@@ -29,9 +30,9 @@ class CommandExecutor:
 
     def __init__(
         self,
-        agent_service: "AgentService",
+        agent_service: AgentService,
         skill_service: SkillService,
-        logging_service: "LoggingService",
+        logging_service: LoggingService,
         command_parser: Any,
         enqueue_callback: Callable,
         send_response_callback: Callable,
@@ -55,7 +56,7 @@ class CommandExecutor:
 
     async def execute_command(
         self,
-        parsed: "ParsedCommand",
+        parsed: ParsedCommand,
         user_id: str,
         chat_id: int,
         original_message: str,
@@ -106,9 +107,82 @@ class CommandExecutor:
                         "Please provide a skill name: uninstall skill <name>",
                     )
 
+            case CommandType.FORGET:
+                query = parsed.args[0] if parsed.args else ""
+                await self.execute_forget_command(user_id, chat_id, query=query, delete=False)
+
+            case CommandType.FORGET_DELETE:
+                query = parsed.args[0] if parsed.args else ""
+                await self.execute_forget_command(user_id, chat_id, query=query, delete=True)
+
             case CommandType.MESSAGE:
                 # Forward to agent via SQS queue (with onboarding context if first interaction)
                 await self._enqueue_message(user_id, chat_id, original_message, onboarding_context)
+
+    async def execute_forget_command(
+        self,
+        user_id: str,
+        chat_id: int,
+        *,
+        query: str,
+        delete: bool,
+    ) -> None:
+        """Deterministically forget (delete) long-term memories.
+
+        This intentionally avoids relying on the LLM to call tools correctly.
+
+        Usage:
+        - forget <query> => dry-run preview
+        - forget! <query> => delete
+        """
+
+        q = (query or "").strip()
+        if not q:
+            await self._send_response(
+                chat_id, "Usage: forget <query> (or forget! <query> to delete)"
+            )
+            return
+
+        memory_service = getattr(self.agent_service, "memory_service", None)
+        if memory_service is None:
+            await self._send_response(
+                chat_id,
+                "Long-term memory is not available right now (memory service not initialized).",
+            )
+            return
+
+        try:
+            res: ForgetMemoryResult = memory_service.delete_similar_records(
+                user_id=user_id,
+                query=q,
+                memory_type="all",
+                similarity_threshold=0.7,
+                dry_run=not delete,
+                max_matches=10,
+            )
+        except Exception as e:
+            await self._send_response(chat_id, f"Failed to forget memory: {e}")
+            return
+
+        if res.matched == 0:
+            await self._send_response(chat_id, f"No matching memories found for '{q}'.")
+            return
+
+        lines: list[str] = []
+        if res.dry_run:
+            lines.append(f"Matches: {res.matched}. Dry-run (no deletions).")
+        else:
+            lines.append(f"Matches: {res.matched}. Deleted: {res.deleted}.")
+        lines.append("")
+        for m in res.matches:
+            lines.append(
+                f"- [{m.namespace}] {m.text_preview} (score={m.score:.2f}, id={m.memory_record_id})"
+            )
+        if res.dry_run:
+            lines.append("")
+            lines.append("To actually delete these, send: forget! " + q)
+
+        await self._send_response(chat_id, "\n".join(lines))
 
     async def execute_new_command(self, user_id: str, chat_id: int) -> None:
         """Execute the 'new' command to create a fresh session.

@@ -133,8 +133,18 @@ def _ensure_mordecai_skills_base_dir_env() -> str | None:
     # Next best: config template (even without user id).
     if cfg is not None:
         try:
-            raw_template = getattr(cfg, "user_skills_dir_template", None)
-            derived = _derive_skills_base_dir_from_template(str(raw_template or ""))
+            raw_template_obj = getattr(cfg, "user_skills_dir_template", None)
+            raw_template = ""
+            if raw_template_obj:
+                if isinstance(raw_template_obj, str):
+                    raw_template = raw_template_obj
+                else:
+                    try:
+                        raw_template = os.fspath(raw_template_obj)
+                    except (TypeError, ValueError):
+                        raw_template = ""
+
+            derived = _derive_skills_base_dir_from_template(raw_template)
             if derived:
                 os.environ["MORDECAI_SKILLS_BASE_DIR"] = derived
                 return derived

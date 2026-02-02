@@ -26,6 +26,8 @@ class CommandType(StrEnum):
     LOGS = "logs"
     INSTALL_SKILL = "install_skill"
     UNINSTALL_SKILL = "uninstall_skill"
+    FORGET = "forget"
+    FORGET_DELETE = "forget_delete"
     HELP = "help"
     MESSAGE = "message"
 

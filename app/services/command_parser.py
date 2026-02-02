@@ -40,6 +40,8 @@ class CommandParser:
 - logs: View recent agent activity logs
 - install skill <url>: Install a skill from the provided URL
 - uninstall skill <name>: Uninstall the specified skill
+- forget <query>: Preview (dry-run) which long-term memories would be deleted
+- forget! <query>: Delete matching long-term memories (use dry-run first)
 - help: Show this help message
 
 Any other input will be processed as a regular message to the agent."""
@@ -70,6 +72,27 @@ Any other input will be processed as a regular message to the agent."""
         # Check for "help" command (Requirement 10.5)
         if lower_message == "help":
             return ParsedCommand(CommandType.HELP)
+
+        # Deterministic long-term memory deletion (best-effort, avoids LLM tool-call flakiness)
+        # - "forget <query>" => dry-run
+        # - "forget! <query>" or "forget delete <query>" => delete
+        if lower_message.startswith("forget!"):
+            query = message[len("forget!") :].strip()
+            if query:
+                return ParsedCommand(CommandType.FORGET_DELETE, [query])
+            return ParsedCommand(CommandType.MESSAGE, [message])
+
+        if lower_message.startswith("forget delete "):
+            query = message[len("forget delete ") :].strip()
+            if query:
+                return ParsedCommand(CommandType.FORGET_DELETE, [query])
+            return ParsedCommand(CommandType.MESSAGE, [message])
+
+        if lower_message.startswith("forget "):
+            query = message[len("forget ") :].strip()
+            if query:
+                return ParsedCommand(CommandType.FORGET, [query])
+            return ParsedCommand(CommandType.MESSAGE, [message])
 
         # Check for "install skill <url>" command (Requirement 10.3)
         if lower_message.startswith("install skill "):

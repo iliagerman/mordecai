@@ -276,6 +276,10 @@ class TestCommandExecutor:
         """Create mock agent service."""
         service = MagicMock()
         service.new_session = AsyncMock(return_value=(MagicMock(), "✨ New session started!"))
+
+        # Long-term memory is accessed via agent_service.memory_service
+        memory_service = MagicMock()
+        service.memory_service = memory_service
         return service
 
     @pytest.fixture
@@ -350,6 +354,64 @@ class TestCommandExecutor:
         # Verify help text contains command info
         help_text = executor._send_response.call_args[0][1]
         assert "new" in help_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_execute_command_forget_dry_run_sends_response(
+        self, executor, mock_agent_service
+    ):
+        from app.models.agent import ForgetMemoryResult, MemoryRecordMatch
+
+        mock_agent_service.memory_service.delete_similar_records.return_value = ForgetMemoryResult(
+            user_id="user-1",
+            query="himalaya",
+            memory_type="all",
+            similarity_threshold=0.7,
+            dry_run=True,
+            matched=1,
+            deleted=0,
+            matches=[
+                MemoryRecordMatch(
+                    memory_record_id="rec-1",
+                    namespace="/facts/user-1",
+                    score=0.9,
+                    text_preview="Bad himalaya memory",
+                )
+            ],
+        )
+
+        parsed = ParsedCommand(CommandType.FORGET, ["himalaya"])
+        await executor.execute_command(parsed, "user-1", 123, "forget himalaya")
+
+        executor._send_response.assert_called_once()
+        mock_agent_service.memory_service.delete_similar_records.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_command_forget_delete_sends_response(self, executor, mock_agent_service):
+        from app.models.agent import ForgetMemoryResult, MemoryRecordMatch
+
+        mock_agent_service.memory_service.delete_similar_records.return_value = ForgetMemoryResult(
+            user_id="user-1",
+            query="himalaya",
+            memory_type="all",
+            similarity_threshold=0.7,
+            dry_run=False,
+            matched=1,
+            deleted=1,
+            matches=[
+                MemoryRecordMatch(
+                    memory_record_id="rec-1",
+                    namespace="/facts/user-1",
+                    score=0.9,
+                    text_preview="Bad himalaya memory",
+                )
+            ],
+        )
+
+        parsed = ParsedCommand(CommandType.FORGET_DELETE, ["himalaya"])
+        await executor.execute_command(parsed, "user-1", 123, "forget! himalaya")
+
+        executor._send_response.assert_called_once()
+        mock_agent_service.memory_service.delete_similar_records.assert_called_once()
 
 
 class TestTelegramMessageHandlers:
