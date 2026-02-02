@@ -304,8 +304,14 @@ class SystemPromptBuilder:
             "1. file_read the SKILL.md ONCE\n"
             "2. Extract the bash commands from the instructions\n"
             '3. Run them with shell(command="the bash command")\n\n'
+            "IMPORTANT: Do NOT claim that a file/config exists or is correctly configured unless you have verified it.\n"
+            "- Verification options: successful file_read that returns content, or shell preflight like `test -f <path>` / `command -v <bin>`.\n"
+            "- If a file_read tool call returns empty content / no content, treat it as NOT verified.\n\n"
             "IMPORTANT: If a command depends on an env var you set earlier, inline it explicitly in the command you run "
             '(example: `FOO="$FOO" some-cli ...`). Do not assume env propagation will work automatically.\n\n'
+            "IMPORTANT: When passing commands to shell(), write shell quoting literally.\n"
+            '- ✅ Use `export VAR="/abs/path"` (quotes included, no backslashes).\n'
+            '- ❌ Do NOT write `export VAR=\\"/abs/path\\"` (this sets the env var to a value that includes quote characters).\n\n'
             "**CRITICAL:** After reading SKILL.md, your next tool call is usually shell(), not file_read. "
             "However, if the skill has missing setup requirements (see 'Skill Setup Required'), you MUST ask the user and persist the values first (set_skill_env_vars / set_skill_config) before running shell commands for that skill.\n\n"
         )
@@ -331,7 +337,7 @@ class SystemPromptBuilder:
                 "Examples:\n"
                 '- set_skill_env_vars(skill_name="himalaya", env_json=\'{"HIMALAYA_CONFIG":"/path/to/himalaya.toml"}\', apply_to="user")\n'
                 '- set_skill_config(skill_name="himalaya", config_json=\'{"GMAIL":"user@gmail.com","PASSWORD":"app-password"}\', apply_to="user")\n'
-                '- onboard_pending_skills() to re-run onboarding and generate config files\n\n'
+                "- onboard_pending_skills() to re-run onboarding and generate config files\n\n"
                 "Missing values (do NOT guess these):\n"
             )
             for skill_name, reqs in missing.items():
