@@ -222,6 +222,17 @@ class TestAgentCoreMemoryPersistence:
         tool_names = [t.tool_name for t in agent.tool_registry.registry.values()]
         assert "mem0_memory" not in tool_names
 
+    def test_forget_memory_tool_available(self, memory_config, mock_memory_service):
+        """Verify forget_memory tool IS available when memory is enabled.
+
+        This ensures runtime supports deleting incorrect/outdated memories.
+        """
+        service = AgentService(memory_config, mock_memory_service)
+        agent = service.get_or_create_agent("test_user_forget_tool")
+
+        tool_names = [t.tool_name for t in agent.tool_registry.registry.values()]
+        assert "forget_memory" in tool_names
+
     def test_system_prompt_includes_memory_section(self, memory_config, mock_memory_service):
         """Verify system prompt includes memory capabilities when enabled."""
         service = AgentService(memory_config, mock_memory_service)

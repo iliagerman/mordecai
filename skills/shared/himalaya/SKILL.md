@@ -434,11 +434,11 @@ export HIMALAYA_CONFIG="${MORDECAI_SKILLS_BASE_DIR}/<USERNAME>/himalaya.toml" &&
 
 # 1) Fetch a bounded page (no server-side sort):
 export HIMALAYA_CONFIG="${MORDECAI_SKILLS_BASE_DIR}/<USERNAME>/himalaya.toml" && himalaya envelope list --output json --page 1 --page-size 50 \
-  | uv run python {baseDir}/sort_envelopes.py --desc
+  | uv run python ${MORDECAI_SKILLS_BASE_DIR}/<USERNAME>/himalaya/sort_envelopes.py --desc
 
 # 2) If you're already filtering, keep it server-side, but still sort client-side:
 export HIMALAYA_CONFIG="${MORDECAI_SKILLS_BASE_DIR}/<USERNAME>/himalaya.toml" && himalaya envelope list --output json after $WEEK_AGO --page 1 --page-size 50 \
-  | uv run python {baseDir}/sort_envelopes.py --desc
+  | uv run python ${MORDECAI_SKILLS_BASE_DIR}/<USERNAME>/himalaya/sort_envelopes.py --desc
 
 # NOTE: Avoid `order by date desc` in automated runs. Some providers can stall/hang and emit repeated IMAP warnings.
 ```

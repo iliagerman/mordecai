@@ -446,6 +446,19 @@ class AgentCreator:
             ),
         )
 
+        # Helpful diagnostics: log the registered tool names so we can
+        # confirm runtime has the expected capabilities (e.g., forget_memory).
+        try:
+            tool_names = sorted({t.tool_name for t in agent.tool_registry.registry.values()})
+            logger.info(
+                "User %s: Agent registered %d tools: %s",
+                user_id,
+                len(tool_names),
+                ", ".join(tool_names),
+            )
+        except Exception as e:
+            logger.debug("User %s: Unable to list agent tools: %s", user_id, e)
+
         # Log loaded skills for this user
         logger.info(
             "User %s: Skills dir=%s, shared_dir=%s",

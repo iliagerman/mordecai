@@ -118,7 +118,7 @@ class TestPerUserSkillInstallation:
     def test_user_skills_directory_template_base_dir_only(self, temp_skills_dir, temp_shared_dir):
         """If user_skills_dir_template is set to a base dir, append /<user_id>.
 
-        This matches common docker-compose env usage where AGENT_USER_SKILLS_DIR_TEMPLATE
+        This matches common docker-compose env usage where MORDECAI_SKILLS_BASE_DIR
         is set to something like /app/skills (without placeholders).
         """
         config = AgentConfig(

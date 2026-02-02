@@ -20,10 +20,10 @@ AI-optimized web search using Tavily API. Designed for AI agents - returns clean
 ## Search
 
 ```bash
-node {baseDir}/scripts/search.mjs "query"
-node {baseDir}/scripts/search.mjs "query" -n 10
-node {baseDir}/scripts/search.mjs "query" --deep
-node {baseDir}/scripts/search.mjs "query" --topic news
+node ${MORDECAI_SKILLS_BASE_DIR}/[USER_NAME]/tavily-search/scripts/search.mjs "query"
+node ${MORDECAI_SKILLS_BASE_DIR}/[USER_NAME]/tavily-search/scripts/search.mjs "query" -n 10
+node ${MORDECAI_SKILLS_BASE_DIR}/[USER_NAME]/tavily-search/scripts/search.mjs "query" --deep
+node ${MORDECAI_SKILLS_BASE_DIR}/[USER_NAME]/tavily-search/scripts/search.mjs "query" --topic news
 ```
 
 ### Options
@@ -36,8 +36,8 @@ node {baseDir}/scripts/search.mjs "query" --topic news
 ## Extract Content from URL
 
 ```bash
-node {baseDir}/scripts/extract.mjs "https://example.com/article"
-node {baseDir}/scripts/extract.mjs "url1" "url2" "url3"
+node ${MORDECAI_SKILLS_BASE_DIR}/[USER_NAME]/tavily-search/scripts/extract.mjs "https://example.com/article"
+node ${MORDECAI_SKILLS_BASE_DIR}/[USER_NAME]/tavily-search/scripts/extract.mjs "url1" "url2" "url3"
 ```
 
 Extracts raw content from one or more URLs for processing.

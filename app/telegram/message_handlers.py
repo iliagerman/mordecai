@@ -235,8 +235,7 @@ class TelegramMessageHandlers:
             "- Use 'logs' to see recent activity\n"
             "- Use 'install skill <url>' to add capabilities\n"
             "- Use 'uninstall skill <name>' to remove skills\n"
-            "- Use 'help' for more information\n\n"
-            "How can I help you today?"
+            "- Use 'help' for more information\n"
         )
 
         await self._send_response(chat_id, welcome_message)
@@ -463,6 +462,17 @@ class TelegramMessageHandlers:
             return
 
         self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+
+        # Materialize the user's workspace folder as early as possible.
+        #
+        # Why: the very first user message may not include attachments, but we still
+        # want `workspace/<USER_NAME>/` to exist for the agent and any tools that
+        # write files during first-turn handling.
+        try:
+            self.file_service.get_user_working_dir(user_id)
+        except Exception:
+            # Best-effort: never block message handling due to filesystem issues.
+            logger.exception("Failed to create working dir for user %s", user_id)
 
         # Check if user needs onboarding (returns context if this is first interaction)
         onboarding_context = await self._check_and_handle_onboarding(user_id, chat_id)

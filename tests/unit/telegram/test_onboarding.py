@@ -256,11 +256,14 @@ async def test_handle_message_sends_onboarding_message_first(user_dao: UserDAO) 
     parsed = MagicMock()
     command_parser.parse.return_value = parsed
 
+    file_service = MagicMock()
+    file_service.get_user_working_dir = MagicMock()
+
     handler = TelegramMessageHandlers(
         config=MagicMock(),
         logging_service=logging_service,
         skill_service=MagicMock(),
-        file_service=MagicMock(),
+        file_service=file_service,
         command_parser=command_parser,
         bot_application=MagicMock(),
         get_allowed_users=lambda: set(),
@@ -290,6 +293,9 @@ async def test_handle_message_sends_onboarding_message_first(user_dao: UserDAO) 
     update.message.text = "hi"
 
     await handler.handle_message(update, MagicMock(), execute_command)
+
+    # Workspace should be materialized early (best-effort) for first-turn operations.
+    file_service.get_user_working_dir.assert_called_once_with("testuser")
 
     # We should have sent an onboarding message.
     assert sent, "Expected an onboarding message to be sent"
