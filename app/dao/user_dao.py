@@ -77,7 +77,11 @@ class UserDAO(BaseDAO[User]):
         if existing_by_tg:
             # If the existing user has a numeric ID (legacy) and the new user_id is a username,
             # migrate the user to use the username as their primary identifier.
-            if existing_by_tg.id != user_id and self._is_string_identifier(user_id):
+            if (
+                existing_by_tg.id != user_id
+                and self._is_numeric_identifier(existing_by_tg.id)
+                and self._is_string_identifier(user_id)
+            ):
                 await self._migrate_user_id(existing_by_tg.id, user_id)
                 return await self.get_by_id(user_id)
             return existing_by_tg
@@ -92,7 +96,11 @@ class UserDAO(BaseDAO[User]):
                 return existing
             existing_by_tg = await self.get_by_telegram_id(telegram_id)
             if existing_by_tg:
-                if existing_by_tg.id != user_id and self._is_string_identifier(user_id):
+                if (
+                    existing_by_tg.id != user_id
+                    and self._is_numeric_identifier(existing_by_tg.id)
+                    and self._is_string_identifier(user_id)
+                ):
                     await self._migrate_user_id(existing_by_tg.id, user_id)
                     return await self.get_by_id(user_id)
                 return existing_by_tg
@@ -106,6 +114,16 @@ class UserDAO(BaseDAO[User]):
         or starts with @ (Telegram usernames may have @ prefix in some contexts).
         """
         return any(c.isalpha() for c in user_id) or user_id.startswith("@")
+
+    @staticmethod
+    def _is_numeric_identifier(user_id: str) -> bool:
+        """Check if user_id is a legacy numeric identifier.
+
+        Historically, some deployments used the Telegram numeric user/chat id as the
+        primary user id. We only want to migrate those numeric ids to a string id
+        (e.g., username). UUIDs and other non-numeric ids should NOT be migrated.
+        """
+        return bool(user_id) and user_id.isdigit()
 
     async def _migrate_user_id(self, old_id: str, new_id: str) -> None:
         """Migrate a user from old_id (numeric) to new_id (username).

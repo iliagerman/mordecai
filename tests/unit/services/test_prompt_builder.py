@@ -58,7 +58,9 @@ def test_onboarding_section_with_full_content(builder: SystemPromptBuilder) -> N
 
     assert "Welcome - First Interaction" in result
     assert "This is the user's first interaction with you!" in result
-    assert "IMPORTANT: Tell the user that you've set up their personalized personality files" in result
+    assert (
+        "IMPORTANT: Tell the user that you've set up their personalized personality files" in result
+    )
     assert "SHOW them the content of these files" in result
     assert "### Your Personality (soul.md)" in result
     assert soul in result
@@ -95,7 +97,9 @@ def test_onboarding_section_with_empty_context(builder: SystemPromptBuilder) -> 
 
     # Should still have the header and instruction
     assert "Welcome - First Interaction" in result
-    assert "IMPORTANT: Tell the user that you've set up their personalized personality files" in result
+    assert (
+        "IMPORTANT: Tell the user that you've set up their personalized personality files" in result
+    )
     # But no file sections
     assert "### Your Personality (soul.md)" not in result
     assert "### Your Identity (id.md)" not in result
@@ -124,4 +128,33 @@ def test_build_without_onboarding_context(builder: SystemPromptBuilder) -> None:
 
     # Should NOT include onboarding section
     assert "Welcome - First Interaction" not in result
-    assert "IMPORTANT: Tell the user that you've set up their personalized personality files" not in result
+    assert (
+        "IMPORTANT: Tell the user that you've set up their personalized personality files"
+        not in result
+    )
+
+
+def test_prompt_includes_skill_shell_quoting_and_verification_guardrails(
+    builder: SystemPromptBuilder,
+    mock_skill_repo: SkillRepository,
+) -> None:
+    """Ensure the prompt warns against unverified claims and bad shell escaping.
+
+    This is a regression guard for a common failure mode:
+    the model emits `\"...\"` sequences and then tools see literal quote chars.
+    """
+
+    skill = MagicMock()
+    skill.name = "himalaya"
+    skill.description = "email"
+    skill.path = "/skills/shared/himalaya"
+
+    mock_skill_repo.discover.return_value = [skill]
+    mock_skill_repo.get_missing_skill_requirements.return_value = {}
+
+    result = builder.build(user_id="u1")
+
+    assert "Do NOT claim that a file/config exists" in result
+    assert "When passing commands to shell()" in result
+    # The prompt should explicitly warn against JSON-style escaping with backslashes.
+    assert 'export VAR=\\"/abs/path\\"' in result

@@ -188,6 +188,43 @@ def test_shell_applies_default_timeout_for_himalaya_commands(tmp_path: Path, mon
     assert captured.get("timeout") == 45
 
 
+def test_shell_normalizes_backslash_escaped_quotes_for_himalaya(tmp_path: Path, monkeypatch):
+    """Models sometimes emit JSON-style escaping (\") in shell strings.
+
+    In bash, `export HIMALAYA_CONFIG=\"/path\"` sets the value to include literal quote
+    characters, which then breaks himalaya config discovery.
+
+    Our wrapper should defensively normalize this for himalaya commands.
+    """
+
+    secrets_path = tmp_path / "secrets.yml"
+    secrets_path.write_text("skills: {}\n", encoding="utf-8")
+
+    user_id = "u_himalaya_quote"
+    monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    captured: dict[str, object] = {}
+
+    def _fake_base_shell(**kwargs):
+        captured.update(kwargs)
+        return {"stdout": "ok", "returncode": 0}
+
+    monkeypatch.setattr(shell_env_module, "_call_base_shell", _fake_base_shell)
+
+    out = shell_env_module.shell(
+        command='export HIMALAYA_CONFIG=\\"/tmp/himalaya.toml\\" && himalaya account list',
+        timeout_seconds=1,
+    )
+
+    assert out.get("stdout") == "ok"
+    assert (
+        captured.get("command")
+        == 'export HIMALAYA_CONFIG="/tmp/himalaya.toml" && himalaya account list'
+    )
+
+
 def test_shell_forces_non_interactive_when_stdin_not_tty(tmp_path: Path, monkeypatch):
     """Prevent hangs: in headless tool execution, force non_interactive=True.
 

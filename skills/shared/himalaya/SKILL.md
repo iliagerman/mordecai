@@ -104,6 +104,17 @@ Therefore, **EVERY** himalaya CLI command MUST be executed with an explicit `exp
 - ✅ `export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya account list`
 - ✅ `export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json not flag seen`
 
+### IMPORTANT: shell quoting (do NOT backslash-escape quotes)
+
+When invoking `shell(command="...")`, write quotes literally.
+
+- ✅ Correct (sets value to `/app/skills/<USERNAME>/himalaya.toml`):
+  - `export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya account list`
+- ❌ Wrong (sets value to `"/app/skills/<USERNAME>/himalaya.toml"` including quote characters):
+  - `export HIMALAYA_CONFIG=\"/app/skills/<USERNAME>/himalaya.toml\" && himalaya account list`
+
+If you see errors like `Cannot find configuration at "/app/skills/.../himalaya.toml"` or the CLI tries to launch a wizard in a non-interactive tool run, suspect this exact quoting bug.
+
 Where `<USERNAME>` is the actual username (e.g., `splintermaster`, `ilia`, etc.).
 
 In this repo's container layout, the per-user config file is:
@@ -418,8 +429,30 @@ export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelo
 
 ### "Get recent emails sorted by date"
 ```bash
-export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json --page-size 20 order by date desc
+# Recommended (automation-safe): fetch a bounded page of results, then sort client-side.
+# This avoids a class of hangs seen with some IMAP servers/providers when using `order by ...`.
+
+# 1) Fetch a bounded page (no server-side sort):
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json --page 1 --page-size 50 \
+  | python3 skills/shared/himalaya/sort_envelopes.py --desc
+
+# 2) If you're already filtering, keep it server-side, but still sort client-side:
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json after $WEEK_AGO --page 1 --page-size 50 \
+  | python3 skills/shared/himalaya/sort_envelopes.py --desc
+
+# NOTE: Avoid `order by date desc` in automated runs. Some providers can stall/hang and emit repeated IMAP warnings.
 ```
+
+#### If `order by ...` hangs
+
+If you see the command stall (often with repeated IMAP warnings) when using `order by date desc`, treat it as a provider/backend issue.
+
+Mitigations:
+
+- Prefer the **recommended** approach above (bounded fetch + client-side sort)
+- Reduce scope: add `--page 1` and a smaller `--page-size`
+- Add a filter to reduce server work (e.g. `after <date>` or `not flag seen`) instead of sorting
+- In Mordecai tool runs, rely on the shell tool timeout (it applies one automatically for himalaya) and then retry with the narrower query
 
 ### "Get emails from a date range"
 ```bash

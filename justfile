@@ -242,7 +242,7 @@ deploy:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    HOST="homeserver"
+    HOST="mordecai"
     USER="ilia"
     REMOTE_DIR="~/codebase/personal/mordecai"
 
@@ -269,7 +269,7 @@ deploy-hard-reset:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    HOST="homeserver"
+    HOST="mordecai"
     USER="ilia"
     REMOTE_DIR="~/codebase/personal/mordecai"
     SPLINTERMASTER_PATH="/home/ilia/codebase/personal/mordecai/skills/splintermaster"

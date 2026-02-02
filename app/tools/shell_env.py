@@ -11,6 +11,7 @@ We keep the public tool name as `shell` so skills continue to work.
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -117,14 +118,46 @@ def _truncate(s: str | None, limit: int = 60_000) -> str | None:
 
 
 def _maybe_prefix_himalaya_config(command: str) -> str:
-    """No-op: Himalaya config prefixing is now documented in skill instructions.
+    """Normalize common Himalaya command footguns.
 
-    The himalaya skill SKILL.md documents the required pattern:
-    `export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya ...`
+    Historical note: this function used to prefix `export HIMALAYA_CONFIG=...`.
+    Prefixing is now documented in the himalaya skill's SKILL.md, so we do not
+    synthesize exports here.
 
-    This function is kept for API compatibility but no longer modifies commands.
+    However, models sometimes emit shell strings with backslash-escaped quotes
+    (e.g. `export HIMALAYA_CONFIG=\"/app/skills/u/himalaya.toml\"`). In bash,
+    that sets the env var to a value that *includes* quote characters, which
+    causes Himalaya to report the config file as missing and then prompt.
+
+    We defensively normalize this mistake for commands that appear to invoke
+    `himalaya`.
     """
-    return command
+
+    if not isinstance(command, str) or not command:
+        return command
+
+    cmd = command
+    # Only touch commands that likely invoke himalaya.
+    if not (cmd.startswith("himalaya ") or " himalaya " in f" {cmd} "):
+        return cmd
+
+    # If the model used JSON-style escaping, those backslashes can leak into the
+    # actual shell command string.
+    if '\\"' in cmd:
+        cmd = cmd.replace('\\"', '"')
+
+    # Also fix the common pattern where HIMALAYA_CONFIG export is escaped.
+    # Example input:
+    #   export HIMALAYA_CONFIG=\"/app/skills/u/himalaya.toml\" && himalaya ...
+    # Desired:
+    #   export HIMALAYA_CONFIG="/app/skills/u/himalaya.toml" && himalaya ...
+    cmd = re.sub(
+        r"\bexport\s+HIMALAYA_CONFIG=\\\"([^\"]+)\\\"",
+        r"export HIMALAYA_CONFIG=\"\1\"",
+        cmd,
+    )
+
+    return cmd
 
 
 def _safe_shell_run(
