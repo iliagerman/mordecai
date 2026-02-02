@@ -503,6 +503,21 @@ class SystemPromptBuilder:
         Returns:
             Onboarding section string for the prompt.
         """
+        # Telegram can send a deterministic onboarding message (including file
+        # contents) *before* the user's first message is forwarded to the agent.
+        #
+        # In that case we pass a sentinel so the agent does not re-send a welcome
+        # or repeat the onboarding content.
+        if onboarding_context.get("_onboarding_deterministic_sent"):
+            return (
+                "## Onboarding (Already Sent)\n\n"
+                "The system already sent the user the onboarding/personality file contents "
+                "as a separate message. Do NOT repeat that content. Do NOT re-introduce yourself.\n\n"
+                "Respond directly to the user's message.\n\n"
+                "IMPORTANT: Do not end your message with a question. If you need clarification, "
+                "ask at most one concise question earlier, and end with a concrete next step.\n\n"
+            )
+
         soul = onboarding_context.get("soul", "")
         id_content = onboarding_context.get("id", "")
 
@@ -511,6 +526,8 @@ class SystemPromptBuilder:
             "This is the user's first interaction with you! Please send a warm, "
             "friendly welcome message. Introduce yourself and mention that you're here "
             "to help.\n\n"
+            "IMPORTANT: Do not end your message with a question. End with a short statement "
+            "inviting the user to describe what they want to do next.\n\n"
             "IMPORTANT: Tell the user that you've set up their personalized personality files "
             "(soul.md and id.md) and SHOW them the content of these files below. "
             "This helps them understand your personality and how you'll behave.\n\n"

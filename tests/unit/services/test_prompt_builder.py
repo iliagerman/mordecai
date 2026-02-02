@@ -134,6 +134,18 @@ def test_build_without_onboarding_context(builder: SystemPromptBuilder) -> None:
     )
 
 
+def test_onboarding_section_when_deterministic_onboarding_already_sent(
+    builder: SystemPromptBuilder,
+) -> None:
+    """If the transport already sent onboarding content, do not repeat it in the prompt."""
+    context = {"_onboarding_deterministic_sent": "true"}
+    result = builder._onboarding_section(context)
+
+    assert "Onboarding (Already Sent)" in result
+    assert "Do NOT repeat" in result
+    assert "Do not end your message with a question" in result
+
+
 def test_prompt_includes_skill_shell_quoting_and_verification_guardrails(
     builder: SystemPromptBuilder,
     mock_skill_repo: SkillRepository,

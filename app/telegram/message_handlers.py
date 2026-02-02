@@ -489,9 +489,13 @@ class TelegramMessageHandlers:
                     chat_id,
                     self.onboarding_service.get_onboarding_message(user_id),
                 )
-                # Avoid duplicating the onboarding content in the model-generated
-                # response; we already delivered it as the first message.
-                onboarding_context = None
+                # Avoid duplicating onboarding content in the model-generated response.
+                #
+                # However, we *do* pass a sentinel through to the agent so it knows
+                # onboarding was already delivered deterministically and it should not
+                # send another "welcome" message (or end with a question like
+                # "What do you need?").
+                onboarding_context = {"_onboarding_deterministic_sent": "true"}
             except Exception:
                 logger.exception("Failed to send onboarding message for user %s", user_id)
 
