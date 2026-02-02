@@ -669,13 +669,20 @@ class MessageProcessor:
                     )
                     # Handle async callbacks
                     if asyncio.iscoroutine(callback_result):
-                        await callback_result
+                        callback_result = await callback_result
 
-                    logger.info(
-                        "Sent generated file to user %s: %s",
-                        user_id,
-                        file_path.name,
-                    )
+                    if callback_result:
+                        logger.info(
+                            "Sent generated file to user %s: %s",
+                            user_id,
+                            file_path.name,
+                        )
+                    else:
+                        logger.warning(
+                            "Failed to send generated file to user %s: %s",
+                            user_id,
+                            file_path.name,
+                        )
                 except Exception as e:
                     logger.error(
                         "Failed to send file %s to user %s: %s",
@@ -724,9 +731,12 @@ class MessageProcessor:
                     caption,
                 )
                 if asyncio.iscoroutine(callback_result):
-                    await callback_result
+                    callback_result = await callback_result
 
-                logger.info("Sent pending file: %s", file_path.name)
+                if callback_result:
+                    logger.info("Sent pending file: %s", file_path.name)
+                else:
+                    logger.warning("Failed to send pending file: %s", file_path.name)
 
             except Exception as e:
                 logger.error(
