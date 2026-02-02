@@ -306,6 +306,30 @@ class TelegramMessageHandlers:
             return
         await execute_new(user_id, chat_id)
 
+    async def handle_cancel_command(
+        self, update: Update, context: Any, execute_cancel: callable
+    ) -> None:
+        """Handle /cancel command.
+
+        Attempts to cancel the currently-running request/tool for this user.
+        """
+
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /cancel")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+        await execute_cancel(user_id, chat_id)
+
     async def handle_logs_command(
         self, update: Update, context: Any, execute_logs: callable
     ) -> None:

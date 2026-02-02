@@ -63,6 +63,57 @@ _secrets_path_var: ContextVar[Path] = ContextVar(
 _config_var: ContextVar[object | None] = ContextVar("shell_env_config", default=None)
 
 
+# Best-effort cancellation support (used by Telegram /cancel).
+#
+# We only track the *current* running shell process per user because:
+# - per-user SQS queue processing is serialized
+# - cancelling "the current thing" is the common UX
+_RUNNING_SHELL_LOCK = threading.Lock()
+_RUNNING_SHELL_PGID_BY_USER: dict[str, int] = {}
+
+
+def cancel_running_shell(*, user_id: str) -> bool:
+    """Attempt to cancel a currently-running shell command for a user.
+
+    Returns True if a running shell process was found and a kill signal was sent.
+    """
+
+    uid = (user_id or "").strip()
+    if not uid:
+        return False
+
+    with _RUNNING_SHELL_LOCK:
+        pgid = _RUNNING_SHELL_PGID_BY_USER.get(uid)
+
+    if pgid is None:
+        return False
+
+    # Best-effort: send SIGTERM, then SIGKILL if the process group survives.
+    try:
+        os.killpg(int(pgid), signal.SIGTERM)
+    except Exception:
+        # If we can't signal, treat as not cancelled.
+        return False
+
+    # Give it a short grace period.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(int(pgid), 0)
+            # Still alive.
+            time.sleep(0.05)
+        except Exception:
+            # Process group is gone.
+            return True
+
+    # Escalate.
+    try:
+        os.killpg(int(pgid), signal.SIGKILL)
+    except Exception:
+        pass
+    return True
+
+
 def _derive_skills_base_dir_from_template(template: str) -> str | None:
     """Derive the *base* skills directory from a template.
 
@@ -413,6 +464,13 @@ def _safe_shell_run(
             bufsize=1,
             start_new_session=True,  # allows killing the whole process group
         )
+
+        # Register the process group for user-initiated cancellation.
+        uid = _current_user_id_var.get()
+        if uid:
+            with _RUNNING_SHELL_LOCK:
+                _RUNNING_SHELL_PGID_BY_USER[str(uid)] = int(proc.pid)
+
         deadline = time.monotonic() + float(max(1, int(timeout_seconds)))
         hb = float(max(1, int(heartbeat_seconds)))
 
@@ -509,6 +567,16 @@ def _safe_shell_run(
             stderr = "".join(stderr_chunks)
 
     finally:
+        # Always unregister on exit.
+        try:
+            uid = _current_user_id_var.get()
+            if uid and proc is not None:
+                with _RUNNING_SHELL_LOCK:
+                    if _RUNNING_SHELL_PGID_BY_USER.get(str(uid)) == int(proc.pid):
+                        _RUNNING_SHELL_PGID_BY_USER.pop(str(uid), None)
+        except Exception:
+            pass
+
         # Best-effort: ensure returncode is populated.
         if proc is not None and returncode is None:
             try:
@@ -715,7 +783,13 @@ def shell(
 
         # Streaming is only supported by the internal safe runner.
         # If streaming is enabled, force the safe runner even if shell_use_safe_runner=False.
-        use_safe_runner = bool(getattr(cfg, "shell_use_safe_runner", False)) or stream_output
+        # Also force the safe runner in non-interactive/headless mode because the
+        # upstream tool can hang when stdin is not a real TTY.
+        use_safe_runner = (
+            effective_non_interactive
+            or bool(getattr(cfg, "shell_use_safe_runner", False))
+            or stream_output
+        )
 
         # Start the heartbeat only while the underlying runner executes.
         hb_thread.start()

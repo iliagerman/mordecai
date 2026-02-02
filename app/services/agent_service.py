@@ -388,9 +388,7 @@ class AgentService:
             onboarding_context: Optional onboarding context (soul.md, id.md content)
                 if this is the user's first interaction.
         """
-        return await self._message_processor.process_message(
-            user_id, message, onboarding_context
-        )
+        return await self._message_processor.process_message(user_id, message, onboarding_context)
 
     async def process_message_with_attachments(
         self,
@@ -528,6 +526,20 @@ class AgentService:
     def get_session_id(self, user_id: str) -> str | None:
         """Get the current session ID for a user."""
         return self._session_manager.get(user_id)
+
+    async def cancel_current_work(self, user_id: str) -> str:
+        """Best-effort cancellation of in-flight work for a user.
+
+        Today this focuses on cancelling a currently-running shell tool command,
+        since those are the most common source of "wedged" requests.
+        """
+
+        from app.tools.shell_env import cancel_running_shell
+
+        cancelled = cancel_running_shell(user_id=user_id)
+        if cancelled:
+            return "✅ Cancellation requested. If something was running, it should stop shortly."
+        return "Nothing to cancel right now (no running shell command detected)."
 
     # ========================================================================
     # Personality/Prompt Building (kept for direct access)
