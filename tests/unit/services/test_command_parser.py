@@ -140,4 +140,20 @@ class TestCommandParser:
         assert "logs" in help_text
         assert "install skill" in help_text
         assert "uninstall skill" in help_text
+        assert "forget" in help_text
         assert "help" in help_text
+
+    def test_parse_forget_dry_run_command(self, parser: CommandParser):
+        result = parser.parse("forget himalaya config")
+        assert result.command_type == CommandType.FORGET
+        assert result.args == ["himalaya config"]
+
+    def test_parse_forget_delete_command_exclamation(self, parser: CommandParser):
+        result = parser.parse("forget! himalaya config")
+        assert result.command_type == CommandType.FORGET_DELETE
+        assert result.args == ["himalaya config"]
+
+    def test_parse_forget_delete_command_words(self, parser: CommandParser):
+        result = parser.parse("forget delete himalaya config")
+        assert result.command_type == CommandType.FORGET_DELETE
+        assert result.args == ["himalaya config"]

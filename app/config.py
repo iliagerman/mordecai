@@ -82,8 +82,27 @@ def resolve_user_skills_dir(config: Any, user_id: str, *, create: bool = True) -
     """
 
     u = _validate_user_identifier_for_path(user_id)
-    raw_template = getattr(config, "user_skills_dir_template", None)
-    template = _normalize_user_skills_dir_template(str(raw_template)) if raw_template else ""
+    raw_template_obj = getattr(config, "user_skills_dir_template", None)
+
+    # IMPORTANT:
+    # In unit tests we frequently pass MagicMock(spec=AgentConfig). Accessing an
+    # attribute that wasn't explicitly set returns another MagicMock, which is
+    # truthy and stringifies to "<MagicMock name='...'>".
+    #
+    # Treat non-pathlike values as "unset" to avoid creating directories like:
+    #   <MagicMock name='mock.user_skills_dir_template' id='...'>/u1
+    template = ""
+    if raw_template_obj:
+        try:
+            raw_template_str = (
+                raw_template_obj
+                if isinstance(raw_template_obj, str)
+                else os.fspath(raw_template_obj)
+            )
+            if isinstance(raw_template_str, str):
+                template = _normalize_user_skills_dir_template(raw_template_str)
+        except (TypeError, ValueError):
+            template = ""
 
     if template:
         # Support two common configurations:
