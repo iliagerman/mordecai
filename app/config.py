@@ -1355,6 +1355,12 @@ class AgentConfig(BaseSettings):
             ".md",
             ".yaml",
             ".yml",
+            # Audio
+            ".ogg",
+            ".oga",
+            ".mp3",
+            ".m4a",
+            ".wav",
             # Code files
             ".py",
             ".js",

@@ -181,6 +181,9 @@ class TelegramBotInterface:
                 MessageHandler(filters.Document.ALL, self._handle_document)
             )
             self.application.add_handler(MessageHandler(filters.PHOTO, self._handle_photo))
+            # Voice notes and audio files are separate message types in Telegram.
+            self.application.add_handler(MessageHandler(filters.VOICE, self._handle_voice))
+            self.application.add_handler(MessageHandler(filters.AUDIO, self._handle_audio))
 
         # General message handler for all text messages
         self.application.add_handler(
@@ -253,6 +256,16 @@ class TelegramBotInterface:
 
     async def _handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._message_handlers.handle_photo(
+            update, context, enqueue_with_attachments=self._enqueue_message_with_attachments
+        )
+
+    async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._message_handlers.handle_voice(
+            update, context, enqueue_with_attachments=self._enqueue_message_with_attachments
+        )
+
+    async def _handle_audio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await self._message_handlers.handle_audio(
             update, context, enqueue_with_attachments=self._enqueue_message_with_attachments
         )
 
