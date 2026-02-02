@@ -1,0 +1,13 @@
+{
+  "details": {
+    "stderr": "  \u00d7 No solution found when resolving dependencies:\n  \u2570\u2500\u25b6 Because local-places was not found in the package registry and you\n      require local-places, we can conclude that your requirements are\n      unsatisfiable.\n",
+    "stdout": ""
+  },
+  "error": "pip install failed",
+  "scope": "user",
+  "skill_name": "local-places",
+  "stage": "install_dependencies",
+  "status": "failed",
+  "timestamp": "2026-02-02T15:53:10.639500+00:00",
+  "user_id": "splintermaster"
+}

@@ -89,7 +89,11 @@ FROM base AS application
 WORKDIR /app
 
 # Create directories for volumes
-RUN mkdir -p /app/data /app/sessions /app/skills /app/skills/shared /app/tools
+RUN mkdir -p /app/data /app/sessions /app/skills /app/skills/shared /app/tools \
+    # When these paths are backed by *named volumes*, Docker initializes the
+    # volume from the image directory ownership/permissions. Make them writable
+    # so the container can run as your host UID/GID without permission issues.
+    && chmod 0777 /app/data /app/sessions
 
 # Copy dependency files first (for better caching)
 COPY pyproject.toml ./

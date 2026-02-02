@@ -1,0 +1,65 @@
+{
+  "ok": false,
+  "scope": "shared",
+  "skill": "youtube-watcher",
+  "steps": {
+    "generate_requirements": {
+      "generated": false,
+      "ok": true,
+      "reason": "no third-party imports detected",
+      "warnings": []
+    },
+    "install_dependencies": {
+      "installed": false,
+      "ok": true,
+      "reason": "no requirements.txt"
+    },
+    "normalize_skill_md": {
+      "actions": [],
+      "ok": true,
+      "skill_md": "/app/skills/shared/pending/youtube-watcher/SKILL.md"
+    },
+    "run_scripts_smoke_test": {
+      "failures": [
+        {
+          "missing_module": null,
+          "returncode": 2,
+          "script": "scripts/get_transcript.py",
+          "stderr": "usage: get_transcript.py [-h] url\nget_transcript.py: error: the following arguments are required: url\n",
+          "stdout": ""
+        }
+      ],
+      "missing_modules": [],
+      "ok": false,
+      "python": "/app/.venv/bin/python3",
+      "ran": 1,
+      "timeout_seconds": 20
+    },
+    "sync_requires_pip": {
+      "ok": true,
+      "reason": "no requirements.txt",
+      "updated": false
+    },
+    "validate_python_syntax": {
+      "checked": 1,
+      "ok": true
+    },
+    "validate_required_bins": {
+      "checked": 0,
+      "ok": true,
+      "reason": "no required bins declared"
+    },
+    "validate_required_config_files": {
+      "checked": 0,
+      "ok": true,
+      "reason": "no config templates found"
+    },
+    "validate_required_env": {
+      "checked": 0,
+      "ok": true,
+      "reason": "no required env declared"
+    }
+  },
+  "timestamp": "2026-02-02T11:53:10.062048+00:00",
+  "user_id": null
+}
