@@ -131,7 +131,7 @@ class AgentService:
         # Important: cron scheduling is optional and is wired during startup.
         # Use the setter method later (after helper components are created) so
         # internal references stay consistent.
-        self._cron_service: "CronService | None" = cron_service
+        self._cron_service: CronService | None = cron_service
         self.extraction_service = extraction_service
         self.file_service = file_service
         self.pending_skill_service = pending_skill_service
