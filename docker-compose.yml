@@ -47,9 +47,10 @@ services:
       - ./secrets.yml:/app/secrets.yml:ro
       - ./config.json:/app/config.json:ro
       # Himalaya email config
-      - ./skills/shared/himalaya/himalaya.toml:/root/.config/himalaya/config.toml:ro
+      # - ./skills/shared/himalaya/himalaya.toml:/root/.config/himalaya/config.toml:ro
       # Skills directory (read-write for plugin persistence)
       - ./skills:/app/skills:rw
+      - ./workspace:/app/workspace:rw
       # Named volumes for persistent data
       - agent-db:/app/data
       - agent-sessions:/app/sessions

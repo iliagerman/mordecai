@@ -83,6 +83,22 @@ def set_send_callbacks(
     _send_file_callback.set(send_file)
     _send_photo_callback.set(send_photo)
 
+    # IMPORTANT:
+    # The agent is invoked via asyncio.to_thread() (see message_processing.py).
+    # asyncio.to_thread propagates ContextVars *into* the background thread by
+    # copying the current context, but changes made to ContextVars inside that
+    # thread do NOT propagate back to the parent task.
+    #
+    # To allow tools executed in the thread to queue files for the parent task
+    # to send, we store a *mutable list* in this ContextVar up-front. The copied
+    # context will reference the same list object, so appends in the thread are
+    # visible here.
+    existing = _pending_files.get()
+    if existing is None:
+        _pending_files.set([])
+    else:
+        existing.clear()
+
 
 def clear_send_callbacks() -> None:
     """Clear the send callbacks after processing."""
