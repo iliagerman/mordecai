@@ -128,7 +128,10 @@ class AgentService:
         """
         self.config = config
         self.memory_service = memory_service
-        self.cron_service = cron_service
+        # Important: cron scheduling is optional and is wired during startup.
+        # Use the setter method later (after helper components are created) so
+        # internal references stay consistent.
+        self._cron_service: "CronService | None" = cron_service
         self.extraction_service = extraction_service
         self.file_service = file_service
         self.pending_skill_service = pending_skill_service
@@ -241,6 +244,52 @@ class AgentService:
             create_model=self._agent_creator.create_model,
             build_system_prompt=self._build_system_prompt,
         )
+
+        # Ensure helper components are consistent with the configured cron service.
+        # This is a no-op for None.
+        self.set_cron_service(cron_service)
+
+    @property
+    def cron_service(self) -> "CronService | None":
+        """Cron service for scheduled task management (optional).
+
+        IMPORTANT: Do not mutate internal wiring by directly setting attributes.
+        Assigning to this property triggers internal rewiring via set_cron_service().
+        """
+
+        return self._cron_service
+
+    @cron_service.setter
+    def cron_service(self, cron_service: "CronService | None") -> None:
+        self.set_cron_service(cron_service)
+
+    def set_cron_service(self, cron_service: "CronService | None") -> None:
+        """Wire (or unwire) CronService into this AgentService.
+
+        Cron scheduling is optional at runtime. When enabled after AgentService
+        construction (e.g., due to startup dependency wiring), we must update:
+        - the prompt builder flag so the system prompt advertises scheduling
+        - the AgentCreator reference so newly created agents register cron tools
+
+        Note: Existing cached agent instances are not automatically reloaded.
+        This method is intended to be called during startup *before* any user
+        messages are processed.
+        """
+
+        self._cron_service = cron_service
+
+        # Keep the system prompt in sync with runtime capabilities.
+        try:
+            self._prompt_builder.has_cron = cron_service is not None
+        except Exception:
+            # Be conservative: failure to update prompt should not break startup.
+            pass
+
+        # Ensure AgentCreator registers cron tools on agent creation.
+        try:
+            self._agent_creator.cron_service = cron_service
+        except Exception:
+            pass
 
     # ========================================================================
     # Session Management Methods (delegated to SessionLifecycleManager)
