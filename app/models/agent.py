@@ -67,6 +67,32 @@ class MemoryContext(JsonModel):
     preferences: list[str] = []
 
 
+class MemoryRecordMatch(JsonModel):
+    """A single matched AgentCore memory record.
+
+    This is used for safe inspection/deletion flows ("forget" functionality).
+    """
+
+    memory_record_id: str
+    namespace: str
+    score: float = 0.0
+    text_preview: str = ""
+
+
+class ForgetMemoryResult(JsonModel):
+    """Result of a forget/delete operation against AgentCore memory."""
+
+    user_id: str
+    query: str
+    memory_type: str = "all"
+    similarity_threshold: float = 0.7
+    dry_run: bool = True
+
+    matched: int = 0
+    deleted: int = 0
+    matches: list[MemoryRecordMatch] = []
+
+
 class AttachmentInfo(JsonModel):
     """Metadata about a file attachment from a user."""
 

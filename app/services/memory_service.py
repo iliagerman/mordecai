@@ -28,6 +28,8 @@ from bedrock_agentcore.memory.integrations.strands.session_manager import (
     AgentCoreMemorySessionManager,
 )
 
+from app.models.agent import ForgetMemoryResult, MemoryRecordMatch
+
 from app.services.runtime_env_service import RuntimeEnvService
 
 if TYPE_CHECKING:
@@ -989,6 +991,96 @@ class MemoryService:
             logger.info("Deleted %d memory records", deleted)
 
         return deleted
+
+    def delete_similar_records(
+        self,
+        *,
+        user_id: str,
+        query: str,
+        memory_type: str = "all",
+        similarity_threshold: float = 0.7,
+        dry_run: bool = True,
+        max_matches: int = 25,
+    ) -> ForgetMemoryResult:
+        """Delete AgentCore memory records similar to a query.
+
+        This is intended for "forget" flows when a stored fact/preference is
+        wrong or outdated.
+
+        Safety:
+        - Default is dry-run (no deletes).
+        - Matches are limited to max_matches.
+
+        Args:
+            user_id: Actor ID (namespacing).
+            query: Search query to find records to delete.
+            memory_type: 'facts', 'preferences', or 'all'.
+            similarity_threshold: Minimum relevance score (0-1).
+            dry_run: If True, do not delete; only report matches.
+            max_matches: Cap number of records considered for deletion.
+
+        Returns:
+            ForgetMemoryResult with match previews and deleted count.
+        """
+
+        q = (query or "").strip()
+        mt = (memory_type or "all").strip().lower()
+        if mt not in ("all", "facts", "preferences"):
+            mt = "all"
+
+        result = ForgetMemoryResult(
+            user_id=user_id,
+            query=q,
+            memory_type=mt,
+            similarity_threshold=float(similarity_threshold),
+            dry_run=bool(dry_run),
+        )
+
+        if not q:
+            return result
+
+        # Find similar records using AgentCore search.
+        matches = self._find_similar_records(
+            user_id=user_id,
+            query=q,
+            similarity_threshold=float(similarity_threshold),
+        )
+
+        # Filter by requested memory_type.
+        if mt == "facts":
+            matches = [m for m in matches if str(m.get("namespace", "")).startswith("/facts/")]
+        elif mt == "preferences":
+            matches = [
+                m for m in matches if str(m.get("namespace", "")).startswith("/preferences/")
+            ]
+
+        if max_matches > 0:
+            matches = matches[: int(max_matches)]
+
+        # Build typed previews (avoid leaking full text by default).
+        typed: list[MemoryRecordMatch] = []
+        for m in matches:
+            rec_id = str(m.get("memoryRecordId") or "").strip()
+            ns = str(m.get("namespace") or "").strip()
+            text = str(m.get("text") or "")
+            typed.append(
+                MemoryRecordMatch(
+                    memory_record_id=rec_id,
+                    namespace=ns,
+                    score=float(m.get("score") or 0.0),
+                    text_preview=(text[:200] + ("…" if len(text) > 200 else "")),
+                )
+            )
+
+        result.matches = typed
+        result.matched = len(typed)
+
+        if result.dry_run or not typed:
+            return result
+
+        deleted = self._delete_records([t.memory_record_id for t in typed if t.memory_record_id])
+        result.deleted = int(deleted)
+        return result
 
     def store_fact(
         self,

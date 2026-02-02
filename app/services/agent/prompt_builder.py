@@ -252,6 +252,7 @@ class SystemPromptBuilder:
             "- `remember_preference`: Store an explicit preference the user asked you to remember.\n"
             "- `remember`: Convenience wrapper (fact vs preference).\n"
             "- `search_memory`: Search your long-term memory when the user asks about past conversations, their preferences, or facts you've learned about them.\n\n"
+            "- `forget_memory`: Remove incorrect/outdated long-term memories (use dry-run first; then delete if confirmed).\n\n"
             "**Important:** When the user explicitly says 'remember ...' or 'please remember ...', store it immediately using `remember_fact` or `remember_preference`.\n\n"
             "Use `search_memory` when the user asks things like:\n"
             "- 'What do you know about me?'\n"
