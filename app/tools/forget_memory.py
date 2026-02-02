@@ -94,10 +94,10 @@ def forget_memory(
             return f"No matching memories found for '{q}'. Nothing to delete."
 
         lines: list[str] = []
-        header = f"Matches: {res.matched}. " + (
-            "Dry-run (no deletions)." if res.dry_run else f"Deleted: {res.deleted}."
-        )
-        lines.append(header)
+        if res.dry_run:
+            lines.append(f"Dry-run: found {res.matched} matching memories. NO DELETIONS PERFORMED.")
+        else:
+            lines.append(f"DELETE RUN: matched {res.matched} memories. Deleted: {res.deleted}.")
         lines.append("")
         for m in res.matches:
             lines.append(
@@ -107,6 +107,11 @@ def forget_memory(
         if res.dry_run:
             lines.append("")
             lines.append("If you want me to delete these, rerun with dry_run=false (same query).")
+        else:
+            lines.append("")
+            lines.append(
+                "To verify, ask me to `search_memory` for the same topic (memory retrieval may be eventually consistent)."
+            )
 
         return "\n".join(lines)
     except Exception as e:

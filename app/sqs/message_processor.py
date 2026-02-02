@@ -81,12 +81,12 @@ class MessageProcessor:
         agent_service: "AgentService",
         user_dao: "UserDAO | None" = None,
         response_callback: Callable[[int, str], Any] | None = None,
-        file_send_callback: (
-            Callable[[int, str | Path, str | None], Any] | None
-        ) = None,
+        file_send_callback: (Callable[[int, str | Path, str | None], Any] | None) = None,
         file_service: "FileService | None" = None,
         polling_interval: float = 1.0,
         max_workers: int = 10,
+        max_prefetch_per_queue: int = 2,
+        max_inflight_total: int = 50,
     ) -> None:
         """Initialize the message processor.
 
@@ -116,6 +116,18 @@ class MessageProcessor:
         self.running = False
         self._processing_task: asyncio.Task | None = None
         self._heartbeat_tasks: dict[str, asyncio.Task] = {}
+        self._queue_locks: dict[str, asyncio.Lock] = {}
+        self._queue_prefetch_semaphores: dict[str, asyncio.Semaphore] = {}
+        self._inflight_total_semaphore = asyncio.Semaphore(max_inflight_total)
+        self._max_prefetch_per_queue = max_prefetch_per_queue
+        self._message_tasks: set[asyncio.Task] = set()
+
+        # A short, user-friendly ack for when messages arrive while a previous
+        # message from the same queue is still being processed.
+        self._busy_ack_text = (
+            "I’m still working on your previous request. "
+            "I queued this one and will reply as soon as I’m done."
+        )
 
     async def start(self) -> None:
         """Start processing messages from all user queues.
@@ -135,9 +147,7 @@ class MessageProcessor:
 
             if queue_urls:
                 # Process all queues concurrently
-                tasks = [
-                    self._process_queue(url) for url in queue_urls
-                ]
+                tasks = [self._process_queue(url, background=True) for url in queue_urls]
                 await asyncio.gather(*tasks, return_exceptions=True)
 
             await asyncio.sleep(self.polling_interval)
@@ -156,7 +166,35 @@ class MessageProcessor:
             except asyncio.CancelledError:
                 pass
 
-    async def _process_queue(self, queue_url: str) -> None:
+        # Cancel any in-flight message tasks.
+        tasks = list(self._message_tasks)
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Cancel any orphaned heartbeat tasks (normally cleaned up by message tasks).
+        for heartbeat in list(self._heartbeat_tasks.values()):
+            heartbeat.cancel()
+        if self._heartbeat_tasks:
+            await asyncio.gather(*self._heartbeat_tasks.values(), return_exceptions=True)
+        self._heartbeat_tasks.clear()
+
+    def _get_queue_lock(self, queue_url: str) -> asyncio.Lock:
+        lock = self._queue_locks.get(queue_url)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._queue_locks[queue_url] = lock
+        return lock
+
+    def _get_queue_prefetch_semaphore(self, queue_url: str) -> asyncio.Semaphore:
+        sem = self._queue_prefetch_semaphores.get(queue_url)
+        if sem is None:
+            sem = asyncio.Semaphore(self._max_prefetch_per_queue)
+            self._queue_prefetch_semaphores[queue_url] = sem
+        return sem
+
+    async def _process_queue(self, queue_url: str, *, background: bool = False) -> None:
         """Process messages from a single queue.
 
         Receives up to 1 message at a time to maintain order.
@@ -169,32 +207,156 @@ class MessageProcessor:
             - 12.3: Consume messages from each user's SQS_Queue
             - 12.6: Process messages in order for each user
         """
+        if not background:
+            # Legacy / test-friendly behavior: receive and fully process a single message.
+            try:
+                loop = asyncio.get_running_loop()
+                response = await loop.run_in_executor(
+                    self.executor,
+                    lambda: self.sqs_client.receive_message(
+                        QueueUrl=queue_url,
+                        MaxNumberOfMessages=1,
+                        WaitTimeSeconds=5,
+                        AttributeNames=["All"],
+                        MessageAttributeNames=["All"],
+                    ),
+                )
+
+                messages = response.get("Messages", [])
+                for message in messages:
+                    await self._handle_message_ordered(queue_url, message)
+
+            except Exception as e:
+                logger.error("Error processing queue %s: %s", queue_url, e)
+            return
+
+        # Background polling behavior (used by start()):
+        # - Keeps polling responsive even when a long-running agent call is in progress.
+        # - Preserves in-queue ordering by serializing per-queue handling with a lock.
+        # - Limits prefetch (number of reserved/invisible SQS messages) per queue.
+        queue_lock = self._get_queue_lock(queue_url)
+        queue_prefetch_sem = self._get_queue_prefetch_semaphore(queue_url)
+
+        # Avoid reserving more messages than we can safely heartbeat.
+        if queue_prefetch_sem.locked() or self._inflight_total_semaphore.locked():
+            return
+
+        acquired_total = False
+        acquired_queue = False
         try:
-            # Run SQS receive in thread pool (boto3 is sync)
-            loop = asyncio.get_event_loop()
+            await self._inflight_total_semaphore.acquire()
+            acquired_total = True
+            await queue_prefetch_sem.acquire()
+            acquired_queue = True
+
+            loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 self.executor,
                 lambda: self.sqs_client.receive_message(
                     QueueUrl=queue_url,
-                    MaxNumberOfMessages=1,  # Process one at a time for order
-                    WaitTimeSeconds=5,  # Long polling
+                    MaxNumberOfMessages=1,
+                    WaitTimeSeconds=5,
                     AttributeNames=["All"],
                     MessageAttributeNames=["All"],
                 ),
             )
-
             messages = response.get("Messages", [])
-            for message in messages:
-                await self._handle_message(queue_url, message)
+            if not messages:
+                return
+
+            # We reserved capacity for exactly one message above.
+            message = messages[0]
+
+            async def runner() -> None:
+                try:
+                    await self._handle_message_ordered(queue_url, message, queue_lock=queue_lock)
+                finally:
+                    # Release prefetch capacity after the message is fully processed.
+                    queue_prefetch_sem.release()
+                    self._inflight_total_semaphore.release()
+
+            task = asyncio.create_task(runner())
+            self._message_tasks.add(task)
+
+            def _cleanup(t: asyncio.Task) -> None:
+                self._message_tasks.discard(t)
+
+            task.add_done_callback(_cleanup)
+
+            # Important: do NOT await the task here. This is what keeps polling responsive.
+            acquired_total = False
+            acquired_queue = False
 
         except Exception as e:
-            logger.error(
-                "Error processing queue %s: %s", queue_url, e
-            )
+            logger.error("Error processing queue %s: %s", queue_url, e)
+        finally:
+            # If we acquired capacity but didn't schedule a runner, release it.
+            if acquired_queue:
+                queue_prefetch_sem.release()
+            if acquired_total:
+                self._inflight_total_semaphore.release()
 
-    async def _start_heartbeat(
-        self, queue_url: str, receipt_handle: str, message_id: str
-    ) -> None:
+    async def _maybe_send_busy_ack(self, body: dict[str, Any], *, queue_lock: asyncio.Lock) -> None:
+        if not self.response_callback:
+            return
+
+        if not queue_lock.locked():
+            return
+
+        try:
+            chat_id = int(body.get("chat_id"))
+        except Exception:
+            return
+
+        try:
+            res = self.response_callback(chat_id, self._busy_ack_text)
+            if asyncio.iscoroutine(res):
+                await res
+        except Exception:
+            logger.exception("Failed sending busy ack")
+
+    async def _handle_message_ordered(
+        self,
+        queue_url: str,
+        message: dict,
+        *,
+        queue_lock: asyncio.Lock | None = None,
+    ) -> str | None:
+        """Handle a message with heartbeat + per-queue ordering.
+
+        Heartbeat starts immediately upon receipt (before waiting on the per-queue lock),
+        so prefetched messages won't reappear while waiting behind a long-running task.
+        """
+        if queue_lock is None:
+            queue_lock = self._get_queue_lock(queue_url)
+
+        message_id = message.get("MessageId", "unknown")
+        receipt_handle = message["ReceiptHandle"]
+
+        # Parse body early so we can potentially send a "queued" ack while busy.
+        body: dict[str, Any] | None = None
+        try:
+            body = json.loads(message.get("Body", "{}"))
+        except Exception:
+            body = None
+
+        heartbeat_task = asyncio.create_task(
+            self._start_heartbeat(queue_url, receipt_handle, message_id)
+        )
+        self._heartbeat_tasks[message_id] = heartbeat_task
+
+        try:
+            if body is not None:
+                await self._maybe_send_busy_ack(body, queue_lock=queue_lock)
+
+            async with queue_lock:
+                return await self._handle_message(queue_url, message, body=body)
+        finally:
+            self._stop_heartbeat(message_id)
+            # Clear per-task tool callbacks and pending file queue.
+            send_file_module.clear_send_callbacks()
+
+    async def _start_heartbeat(self, queue_url: str, receipt_handle: str, message_id: str) -> None:
         """Start a heartbeat task to extend visibility timeout.
 
         Periodically extends the message visibility timeout to prevent
@@ -246,7 +408,7 @@ class MessageProcessor:
             task.cancel()
 
     async def _handle_message(
-        self, queue_url: str, message: dict
+        self, queue_url: str, message: dict, *, body: dict[str, Any] | None = None
     ) -> str | None:
         """Route message to agent and handle response.
 
@@ -278,15 +440,10 @@ class MessageProcessor:
         message_id = message.get("MessageId", "unknown")
         receipt_handle = message["ReceiptHandle"]
 
-        # Start heartbeat to keep message invisible during processing
-        heartbeat_task = asyncio.create_task(
-            self._start_heartbeat(queue_url, receipt_handle, message_id)
-        )
-        self._heartbeat_tasks[message_id] = heartbeat_task
-
         try:
             # Parse message body
-            body = json.loads(message["Body"])
+            if body is None:
+                body = json.loads(message["Body"])
 
             # Parse attachments if present (Requirement 6.3)
             attachments = body.get("attachments")
@@ -324,19 +481,16 @@ class MessageProcessor:
 
             # Set up send_file tool callbacks before agent runs
             if self.file_send_callback is not None:
+
                 async def send_file_cb(path: str, caption: str | None) -> bool:
-                    result = self.file_send_callback(
-                        parsed.chat_id, path, caption
-                    )
+                    result = self.file_send_callback(parsed.chat_id, path, caption)
                     if asyncio.iscoroutine(result):
                         return await result
                     return bool(result)
 
                 async def send_photo_cb(path: str, caption: str | None) -> bool:
                     # Use same callback - TelegramBot handles photo vs doc
-                    result = self.file_send_callback(
-                        parsed.chat_id, path, caption
-                    )
+                    result = self.file_send_callback(parsed.chat_id, path, caption)
                     if asyncio.iscoroutine(result):
                         return await result
                     return bool(result)
@@ -346,13 +500,12 @@ class MessageProcessor:
             # Route to agent for processing
             if parsed.attachments:
                 # Process with attachments (Requirement 6.3)
-                response = await self.agent_service \
-                    .process_message_with_attachments(
-                        user_id=parsed.user_id,
-                        message=parsed.message,
-                        attachments=parsed.attachments,
-                        onboarding_context=parsed.onboarding,
-                    )
+                response = await self.agent_service.process_message_with_attachments(
+                    user_id=parsed.user_id,
+                    message=parsed.message,
+                    attachments=parsed.attachments,
+                    onboarding_context=parsed.onboarding,
+                )
             else:
                 # Process regular message (with onboarding context if first interaction)
                 response = await self.agent_service.process_message(
@@ -364,9 +517,7 @@ class MessageProcessor:
             # Send response via callback if provided
             if self.response_callback and response:
                 try:
-                    callback_result = self.response_callback(
-                        parsed.chat_id, response
-                    )
+                    callback_result = self.response_callback(parsed.chat_id, response)
                     # Handle async callbacks
                     if asyncio.iscoroutine(callback_result):
                         await callback_result
@@ -390,16 +541,12 @@ class MessageProcessor:
             # Delete message on successful processing
             await self._delete_message(queue_url, receipt_handle)
 
-            logger.info(
-                "Successfully processed message %s", message_id
-            )
+            logger.info("Successfully processed message %s", message_id)
 
             return response
 
         except json.JSONDecodeError as e:
-            logger.error(
-                "Invalid JSON in message %s: %s", message_id, e
-            )
+            logger.error("Invalid JSON in message %s: %s", message_id, e)
             # Delete malformed messages (can't be retried)
             await self._delete_message(queue_url, receipt_handle)
             return None
@@ -417,18 +564,15 @@ class MessageProcessor:
         except Exception as e:
             # Leave message in queue for retry (SQS retry policy)
             logger.error(
-                "Failed to process message %s: %s. "
-                "Message will be retried per SQS policy.",
+                "Failed to process message %s: %s. Message will be retried per SQS policy.",
                 message_id,
                 e,
             )
             return None
 
         finally:
-            # Always stop heartbeat when done processing
-            self._stop_heartbeat(message_id)
-            # Clear send_file callbacks
-            send_file_module.clear_send_callbacks()
+            # Heartbeat and per-task tool state are cleared by _handle_message_ordered().
+            pass
 
     def _get_working_folder_files(self, user_id: str) -> set[Path]:
         """Get current files in user's working folder.
@@ -575,9 +719,7 @@ class MessageProcessor:
                     e,
                 )
 
-    async def _delete_message(
-        self, queue_url: str, receipt_handle: str
-    ) -> None:
+    async def _delete_message(self, queue_url: str, receipt_handle: str) -> None:
         """Delete a message from the queue.
 
         Args:
@@ -594,9 +736,7 @@ class MessageProcessor:
                 ),
             )
         except Exception as e:
-            logger.error(
-                "Failed to delete message from %s: %s", queue_url, e
-            )
+            logger.error("Failed to delete message from %s: %s", queue_url, e)
 
     def start_background(self) -> asyncio.Task:
         """Start the processor as a background task.
