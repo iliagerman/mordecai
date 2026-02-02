@@ -18,11 +18,26 @@ logger = logging.getLogger(__name__)
 class TelegramBotProtocol(Protocol):
     # NOTE: Protocol parameter types must not be *wider* than the real bot's
     # signature, otherwise structural typing fails (ExtBot is stricter than `object`).
-    async def send_message(self, chat_id: int | str, text: str, **kwargs: Any) -> Any: ...
+    async def send_message(
+        self,
+        chat_id: int | str,
+        text: str,
+        parse_mode: Any | None = None,
+    ) -> Any: ...
 
-    async def send_document(self, chat_id: int | str, document: Any, **kwargs: Any) -> Any: ...
+    async def send_document(
+        self,
+        chat_id: int | str,
+        document: Any,
+        caption: str | None = None,
+    ) -> Any: ...
 
-    async def send_photo(self, chat_id: int | str, photo: Any, **kwargs: Any) -> Any: ...
+    async def send_photo(
+        self,
+        chat_id: int | str,
+        photo: Any,
+        caption: str | None = None,
+    ) -> Any: ...
 
 
 class TelegramMessageSender:
