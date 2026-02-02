@@ -12,6 +12,7 @@ from typing import Any
 from app.config import refresh_runtime_env_from_secrets, resolve_user_skills_dir
 from app.models.agent import MissingSkillRequirements, RequirementSpec, SkillInfo, WhenClause
 from app.services.agent.frontmatter import (
+    extract_required_bins,
     extract_required_config,
     extract_required_env,
     parse_skill_frontmatter,
@@ -294,7 +295,7 @@ class SkillRepository:
         return merged
 
     def get_missing_skill_requirements(self, user_id: str) -> dict[str, MissingSkillRequirements]:
-        """Return missing required env/config values for installed skills."""
+        """Return missing required env/config/bins values and config files for installed skills."""
 
         try:
             refresh_runtime_env_from_secrets(
@@ -333,6 +334,54 @@ class SkillRepository:
 
             return True
 
+        def check_bin_exists(bin_name: str, skill_dir: Path) -> bool:
+            """Check if a binary exists in PATH or skill venv."""
+            # Check skill venv first
+            venv_bin = skill_dir / ".venv" / "bin" / bin_name
+            if venv_bin.exists():
+                return True
+            # Fallback to PATH
+            return shutil.which(bin_name) is not None
+
+        def get_rendered_config_files(skill_name: str, skill_dir: Path, user_root: Path) -> list[Path]:
+            """Get list of config files that should be rendered from *_example templates.
+
+            Returns the destination paths where rendered config files should exist.
+            """
+            config_files: list[Path] = []
+
+            # Look for *_example and *.example templates in the skill directory
+            try:
+                for tpl in skill_dir.rglob("*_example"):
+                    if tpl.is_file():
+                        # Determine the destination name
+                        if tpl.name.endswith("_example"):
+                            dest_name = tpl.name[: -len("_example")]
+                        else:
+                            continue
+                        # Apply naming convention (skill prefix if not already present)
+                        if dest_name.startswith(f"{skill_name}.") or dest_name == skill_name:
+                            out_name = dest_name
+                        else:
+                            out_name = f"{skill_name}__{dest_name}"
+                        config_files.append(user_root / out_name)
+
+                for tpl in skill_dir.rglob("*.example"):
+                    if tpl.is_file():
+                        if tpl.name.endswith(".example"):
+                            dest_name = tpl.name[: -len(".example")]
+                        else:
+                            continue
+                        if dest_name.startswith(f"{skill_name}.") or dest_name == skill_name:
+                            out_name = dest_name
+                        else:
+                            out_name = f"{skill_name}__{dest_name}"
+                        config_files.append(user_root / out_name)
+            except Exception:
+                pass
+
+            return config_files
+
         missing_by_skill: dict[str, MissingSkillRequirements] = {}
 
         for info in self.discover(user_id):
@@ -353,7 +402,8 @@ class SkillRepository:
             frontmatter = parse_skill_frontmatter(content)
             env_reqs = extract_required_env(frontmatter)
             cfg_reqs = extract_required_config(frontmatter)
-            if not env_reqs and not cfg_reqs:
+            bins_reqs = extract_required_bins(frontmatter)
+            if not env_reqs and not cfg_reqs and not bins_reqs:
                 continue
 
             # Per-skill config block from merged secrets.
@@ -394,10 +444,42 @@ class SkillRepository:
                     if v is None or str(v).strip() == "":
                         missing_cfg.append(r)
 
-            if missing_env or missing_cfg:
+            missing_bins: list[RequirementSpec] = []
+            if bins_reqs:
+                skill_dir_obj = Path(skill_path)
+                for r in bins_reqs:
+                    if not is_active_req(r, skill_cfg=skill_cfg):
+                        continue
+                    n = (r.name or "").strip()
+                    if not n:
+                        continue
+                    if not check_bin_exists(n, skill_dir_obj):
+                        missing_bins.append(r)
+
+            missing_config_files: list[RequirementSpec] = []
+            # Check if rendered config files exist
+            try:
+                user_root = resolve_user_skills_dir(self.config, user_id, create=True)
+                skill_dir_obj = Path(skill_path)
+                expected_configs = get_rendered_config_files(skill_name, skill_dir_obj, user_root)
+                for config_path in expected_configs:
+                    if not config_path.exists() or not config_path.is_file():
+                        missing_config_files.append(
+                            RequirementSpec(
+                                name=config_path.name,
+                                prompt=f"Config file {config_path.name} not found. Run skill onboarding to generate it.",
+                                example=str(config_path),
+                            )
+                        )
+            except Exception:
+                pass
+
+            if missing_env or missing_cfg or missing_bins or missing_config_files:
                 missing_by_skill[skill_name] = MissingSkillRequirements(
                     env=missing_env,
                     config=missing_cfg,
+                    bins=missing_bins,
+                    config_files=missing_config_files,
                 )
 
         return missing_by_skill

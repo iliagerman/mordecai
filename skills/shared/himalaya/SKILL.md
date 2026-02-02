@@ -99,28 +99,23 @@ When the placeholders are provided and persisted, Mordecai will:
 - Example:
   - `/app/skills/splintermaster/himalaya.toml`
 
-Even if `HIMALAYA_CONFIG` is set in the process environment, the shell tool runner may not always propagate env vars to child processes.
+Therefore, **EVERY** himalaya CLI command MUST be executed with an explicit `export` prefix chained with `&&`:
 
-Therefore, **EVERY** himalaya CLI command MUST be executed with an explicit `HIMALAYA_CONFIG=...` prefix:
+- ✅ `export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya account list`
+- ✅ `export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json not flag seen`
 
-- ✅ `HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya account list`
-- ✅ `HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json not flag seen`
-
-If you need to inline the path explicitly:
-
-- ✅ `HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" himalaya ...`
-- ✅ `HIMALAYA_CONFIG="/absolute/path/to/himalaya.toml" himalaya ...`
+Where `<USERNAME>` is the actual username (e.g., `splintermaster`, `ilia`, etc.).
 
 In this repo's container layout, the per-user config file is:
 
-- `/app/skills/<user>/himalaya.toml` (absolute; preferred)
+- `/app/skills/<user>/himalaya.toml` (absolute; required)
 
 If you are running locally outside the container, it may instead be an absolute path under your workspace or a test temp directory.
 
 Alternative (equivalent) approach: pass the config path directly using CLI flags:
 
-- ✅ `himalaya -c "$HIMALAYA_CONFIG" account list`
-- ✅ `himalaya --config "$HIMALAYA_CONFIG" envelope list --output json not flag seen`
+- ✅ `himalaya -c "/app/skills/<USERNAME>/himalaya.toml" account list`
+- ✅ `himalaya --config "/app/skills/<USERNAME>/himalaya.toml" envelope list --output json not flag seen`
 
 Do NOT run plain `himalaya ...` without the explicit prefix.
 
@@ -143,7 +138,7 @@ test -n "${HIMALAYA_CONFIG:-}" && test -f "$HIMALAYA_CONFIG"
 Then verify the config is valid by listing accounts:
 
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya account list
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya account list
 ```
 
 If this command succeeds and shows accounts, the configuration is valid. Do NOT use file read tools to check `~/.config/himalaya/config.toml` as the `~` may not expand correctly.
@@ -177,7 +172,7 @@ Mordecai uses a template-based approach (recommended for multi-user isolation).
 
 After that, Mordecai will render the per-user config file and set `HIMALAYA_CONFIG` automatically.
 
-**CRITICAL:** Even when `HIMALAYA_CONFIG` is set automatically, you MUST still prefix each CLI call with `HIMALAYA_CONFIG="$HIMALAYA_CONFIG"`.
+**CRITICAL:** Even when `HIMALAYA_CONFIG` is set automatically, you MUST still prefix each CLI call with `export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" &&`.
 
 ### Manual (outside Mordecai)
 
@@ -192,24 +187,24 @@ himalaya account configure
 ### List Folders
 
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya folder list
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya folder list
 ```
 
 ### List Emails
 
 List emails in INBOX (default):
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list
 ```
 
 List emails in a specific folder:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --folder "Sent"
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --folder "Sent"
 ```
 
 List with pagination:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --page 1 --page-size 20
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --page 1 --page-size 20
 ```
 
 ### Search Emails
@@ -241,67 +236,67 @@ Himalaya uses a query language with operators and conditions:
 
 ```bash
 # Emails from today
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list date 2026-01-29
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list date 2026-01-29
 
 # Emails from a specific sender
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list from john@example.com
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list from john@example.com
 
 # Emails with subject containing "meeting"
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list subject meeting
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list subject meeting
 
 # Combined: from john with "meeting" in subject
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list from john@example.com and subject meeting
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list from john@example.com and subject meeting
 
 # Emails from last week, sorted newest first
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list after 2026-01-22 and before 2026-01-30 order by date desc
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list after 2026-01-22 and before 2026-01-30 order by date desc
 
 # Unread emails only
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list not flag seen
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list not flag seen
 
 # Flagged/starred emails
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list flag flagged
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list flag flagged
 ```
 
 ### Read an Email
 
 Read email by ID (shows plain text):
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message read 42
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya message read 42
 ```
 
 Export raw MIME:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message export 42 --full
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya message export 42 --full
 ```
 
 ### Reply to an Email
 
 Interactive reply (opens $EDITOR):
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message reply 42
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya message reply 42
 ```
 
 Reply-all:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message reply 42 --all
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya message reply 42 --all
 ```
 
 ### Forward an Email
 
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message forward 42
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya message forward 42
 ```
 
 ### Write a New Email
 
 Interactive compose (opens $EDITOR):
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message write
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya message write
 ```
 
 Send directly using template:
 ```bash
-cat << 'EOF' | HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya template send
+cat << 'EOF' | export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya template send
 From: you@example.com
 To: recipient@example.com
 Subject: Test Message
@@ -312,81 +307,81 @@ EOF
 
 Or with headers flag:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message write -H "To:recipient@example.com" -H "Subject:Test" "Message body here"
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya message write -H "To:recipient@example.com" -H "Subject:Test" "Message body here"
 ```
 
 ### Move/Copy Emails
 
 Move to folder:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message move 42 "Archive"
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya message move 42 "Archive"
 ```
 
 Copy to folder:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message copy 42 "Important"
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya message copy 42 "Important"
 ```
 
 ### Delete an Email
 
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya message delete 42
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya message delete 42
 ```
 
 ### Manage Flags
 
 Add flag:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya flag add 42 --flag seen
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya flag add 42 --flag seen
 ```
 
 Remove flag:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya flag remove 42 --flag seen
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya flag remove 42 --flag seen
 ```
 
 ## Multiple Accounts
 
 List accounts:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya account list
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya account list
 ```
 
 Use a specific account:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya --account work envelope list
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya --account work envelope list
 ```
 
 ## Attachments
 
 Save attachments from a message:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya attachment download 42
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya attachment download 42
 ```
 
 Save to specific directory:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya attachment download 42 --dir ~/Downloads
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya attachment download 42 --dir ~/Downloads
 ```
 
 ## Output Formats
 
 Most commands support `--output` for structured output:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output plain
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output plain
 ```
 
 ## Debugging
 
 Enable debug logging:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" RUST_LOG=debug himalaya envelope list
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && RUST_LOG=debug himalaya envelope list
 ```
 
 Full trace with backtrace:
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && RUST_LOG=trace RUST_BACKTRACE=1 himalaya envelope list
 ```
 
 ## Common Use Cases
@@ -397,39 +392,39 @@ HIMALAYA_CONFIG="$HIMALAYA_CONFIG" RUST_LOG=trace RUST_BACKTRACE=1 himalaya enve
 ```bash
 # Get current date and filter
 TODAY=$(date +%Y-%m-%d)
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json date $TODAY
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json date $TODAY
 ```
 
 ### "Get emails from the last 7 days"
 ```bash
 # GNU date (Linux/Docker containers)
 WEEK_AGO=$(date -d '7 days ago' +%Y-%m-%d)
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json after $WEEK_AGO order by date desc
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json after $WEEK_AGO order by date desc
 
 # macOS date alternative
 WEEK_AGO=$(date -v-7d +%Y-%m-%d)
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json after $WEEK_AGO order by date desc
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json after $WEEK_AGO order by date desc
 ```
 
 ### "Find unread emails"
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json not flag seen
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json not flag seen
 ```
 
 ### "Search for emails about a topic"
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json subject "project update" or body "project update"
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json subject "project update" or body "project update"
 ```
 
 ### "Get recent emails sorted by date"
 ```bash
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json --page-size 20 order by date desc
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json --page-size 20 order by date desc
 ```
 
 ### "Get emails from a date range"
 ```bash
 # Emails between Jan 20-29, 2026
-HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json after 2026-01-19 and before 2026-01-30 order by date desc
+export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya envelope list --output json after 2026-01-19 and before 2026-01-30 order by date desc
 ```
 
 ## Tips
@@ -449,7 +444,7 @@ HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya envelope list --output json after 20
 - Verify with `himalaya --version`
 
 **2. No configuration found**
-- Run `HIMALAYA_CONFIG="$HIMALAYA_CONFIG" himalaya account list` to verify configuration
+- Run `export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya account list` to verify configuration
 - If no accounts found, guide user through `himalaya account configure` wizard
 - Offer to help create config manually if wizard fails
 

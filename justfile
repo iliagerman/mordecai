@@ -244,11 +244,11 @@ deploy:
 
     HOST="homeserver"
     USER="ilia"
-    REMOTE_DIR="~/c/personal/mordecai"
+    REMOTE_DIR="~/codebase/personal/mordecai"
 
     echo "🚀 Deploying to ${HOST}..."
 
-    ssh ${USER}@${HOST} "
+    ssh -S none ${USER}@${HOST} "
         set -euo pipefail
         cd ${REMOTE_DIR}
         echo '🛑 Stopping Docker Compose...'
@@ -271,19 +271,19 @@ deploy-hard-reset:
 
     HOST="homeserver"
     USER="ilia"
-    REMOTE_DIR="~/c/personal/mordecai"
+    REMOTE_DIR="~/codebase/personal/mordecai"
     SPLINTERMASTER_PATH="/home/ilia/codebase/personal/mordecai/skills/splintermaster"
 
     echo "🚀 Deploying to ${HOST} with HARD RESET..."
     echo "⚠️  This will remove all Docker volumes and the splintermaster skill!"
 
-    ssh ${USER}@${HOST} "
+    ssh -S none -t ${USER}@${HOST} "
         set -euo pipefail
         cd ${REMOTE_DIR}
         echo '🛑 Stopping Docker Compose and removing volumes...'
         docker compose down -v
         echo '🗑️  Removing splintermaster skill directory...'
-        sudo rm -rf ${SPLINTERMASTER_PATH}
+        rm -rf ${SPLINTERMASTER_PATH} || sudo rm -rf ${SPLINTERMASTER_PATH}
         echo '📥 Pulling latest changes...'
         git pull
         echo '🚀 Starting Docker Compose...'

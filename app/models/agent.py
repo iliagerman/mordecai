@@ -32,6 +32,8 @@ class MissingSkillRequirements(JsonModel):
 
     env: list[RequirementSpec] = []
     config: list[RequirementSpec] = []
+    bins: list[RequirementSpec] = []
+    config_files: list[RequirementSpec] = []
 
 
 class SkillInfo(JsonModel):

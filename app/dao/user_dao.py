@@ -75,6 +75,11 @@ class UserDAO(BaseDAO[User]):
         # unique constraint.
         existing_by_tg = await self.get_by_telegram_id(telegram_id)
         if existing_by_tg:
+            # If the existing user has a numeric ID (legacy) and the new user_id is a username,
+            # migrate the user to use the username as their primary identifier.
+            if existing_by_tg.id != user_id and self._is_string_identifier(user_id):
+                await self._migrate_user_id(existing_by_tg.id, user_id)
+                return await self.get_by_id(user_id)
             return existing_by_tg
 
         try:
@@ -87,8 +92,36 @@ class UserDAO(BaseDAO[User]):
                 return existing
             existing_by_tg = await self.get_by_telegram_id(telegram_id)
             if existing_by_tg:
+                if existing_by_tg.id != user_id and self._is_string_identifier(user_id):
+                    await self._migrate_user_id(existing_by_tg.id, user_id)
+                    return await self.get_by_id(user_id)
                 return existing_by_tg
             raise
+
+    @staticmethod
+    def _is_string_identifier(user_id: str) -> bool:
+        """Check if user_id is a string identifier (username) rather than numeric.
+
+        A username is considered a string identifier if it contains letters
+        or starts with @ (Telegram usernames may have @ prefix in some contexts).
+        """
+        return any(c.isalpha() for c in user_id) or user_id.startswith("@")
+
+    async def _migrate_user_id(self, old_id: str, new_id: str) -> None:
+        """Migrate a user from old_id (numeric) to new_id (username).
+
+        This is used when a user was initially created with a numeric Telegram ID
+        and we now have their username.
+
+        Args:
+            old_id: The old numeric user ID.
+            new_id: The new username-based ID.
+        """
+        async with self._db.session() as session:
+            result = await session.execute(select(UserModel).where(UserModel.id == old_id))
+            user_model = result.scalar_one_or_none()
+            if user_model:
+                user_model.id = new_id
 
     async def _update_telegram_id(
         self,

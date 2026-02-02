@@ -173,3 +173,45 @@ def extract_required_config(frontmatter: dict[str, Any]) -> list[RequirementSpec
             )
 
     return _dedupe_requirements(out)
+
+
+def extract_required_bins(frontmatter: dict[str, Any]) -> list[RequirementSpec]:
+    """Extract requires.bins entries (string or dict) from frontmatter."""
+
+    requires = frontmatter.get("requires")
+    if not isinstance(requires, dict):
+        return []
+
+    bins_list = requires.get("bins")
+    if not isinstance(bins_list, list):
+        return []
+
+    out: list[RequirementSpec] = []
+    for item in bins_list:
+        if isinstance(item, str):
+            name = item.strip()
+            if name:
+                out.append(RequirementSpec(name=name))
+        elif isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+
+            prompt = item.get("prompt")
+            prompt_str = (prompt.strip() if isinstance(prompt, str) and prompt.strip() else None)
+
+            example = item.get("example")
+            example_str = (example.strip() if isinstance(example, str) and example.strip() else None)
+
+            when = _coerce_when_clause(item.get("when"))
+
+            out.append(
+                RequirementSpec(
+                    name=name,
+                    prompt=prompt_str,
+                    example=example_str,
+                    when=when,
+                )
+            )
+
+    return _dedupe_requirements(out)

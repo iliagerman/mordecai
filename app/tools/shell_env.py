@@ -11,7 +11,6 @@ We keep the public tool name as `shell` so skills continue to work.
 from __future__ import annotations
 
 import os
-import shlex
 import signal
 import subprocess
 import sys
@@ -118,40 +117,14 @@ def _truncate(s: str | None, limit: int = 60_000) -> str | None:
 
 
 def _maybe_prefix_himalaya_config(command: str) -> str:
-    """Best-effort safety: ensure Himalaya sees its config.
+    """No-op: Himalaya config prefixing is now documented in skill instructions.
 
-    Rationale:
-    - Himalaya commands can appear to "hang" (long network waits) or fail if it
-      cannot find the expected config.
-    - LLMs sometimes omit the required `HIMALAYA_CONFIG=...` prefix even when
-      documented.
+    The himalaya skill SKILL.md documents the required pattern:
+    `export HIMALAYA_CONFIG="/app/skills/<USERNAME>/himalaya.toml" && himalaya ...`
 
-    If `HIMALAYA_CONFIG` is already explicitly provided (prefix or flags), we do nothing.
-    Otherwise, if the current process environment has `HIMALAYA_CONFIG`, we prefix it.
-
-    This is intentionally conservative and only kicks in when the command contains
-    the `himalaya` CLI.
+    This function is kept for API compatibility but no longer modifies commands.
     """
-
-    cmd = (command or "").strip()
-    if not cmd:
-        return command
-
-    # Only touch commands that actually invoke himalaya.
-    if " himalaya" not in f" {cmd} ":
-        return command
-
-    # Respect explicit config injection (either env prefix or CLI flags).
-    if "HIMALAYA_CONFIG=" in cmd:
-        return command
-    if " --config " in f" {cmd} " or " -c " in f" {cmd} ":
-        return command
-
-    cfg = os.environ.get("HIMALAYA_CONFIG")
-    if not cfg or not str(cfg).strip():
-        return command
-
-    return f"HIMALAYA_CONFIG={shlex.quote(str(cfg))} {command}"
+    return command
 
 
 def _safe_shell_run(
@@ -364,7 +337,7 @@ def shell(
     if effective_timeout is None:
         # Detect common patterns like:
         #   himalaya ...
-        #   HIMALAYA_CONFIG=... himalaya ...
+        #   export HIMALAYA_CONFIG=... && himalaya ...
         if cmd.startswith("himalaya ") or " himalaya " in f" {cmd} ":
             effective_timeout = 45
         else:
