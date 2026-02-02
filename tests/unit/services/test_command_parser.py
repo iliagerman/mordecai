@@ -157,3 +157,13 @@ class TestCommandParser:
         result = parser.parse("forget delete himalaya config")
         assert result.command_type == CommandType.FORGET_DELETE
         assert result.args == ["himalaya config"]
+
+    def test_parse_forget_dry_run_slash_command(self, parser: CommandParser):
+        result = parser.parse("/forget himalaya config")
+        assert result.command_type == CommandType.FORGET
+        assert result.args == ["himalaya config"]
+
+    def test_parse_forget_delete_slash_exclamation(self, parser: CommandParser):
+        result = parser.parse("/forget! himalaya config")
+        assert result.command_type == CommandType.FORGET_DELETE
+        assert result.args == ["himalaya config"]

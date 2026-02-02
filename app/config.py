@@ -1408,6 +1408,14 @@ class AgentConfig(BaseSettings):
             {"name": "logs", "description": "View recent activity logs"},
             {"name": "install skill <url>", "description": "Install a skill"},
             {"name": "uninstall skill <name>", "description": "Remove a skill"},
+            {
+                "name": "forget <query>",
+                "description": "Preview (dry-run) which long-term memories would be deleted",
+            },
+            {
+                "name": "forget! <query>",
+                "description": "Delete matching long-term memories (use dry-run first)",
+            },
             {"name": "help", "description": "Show available commands"},
             {"name": "name <name>", "description": "Set the agent's name"},
         ]
