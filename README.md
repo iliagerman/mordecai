@@ -65,15 +65,15 @@ This makes it possible for each user/tenant to use their own configuration witho
 ```bash
 cd mordecai
 
-# Create virtual environment
-python -m venv .venv
+# Create virtual environment (recommended: uv)
+uv venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install dependencies
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 
 # Or install in development mode
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 ```
 
 ### 2. Configure
@@ -117,13 +117,13 @@ alembic upgrade head
 ### 4. Run the Application
 
 ```bash
-python -m app.main
+uv run python -m app.main
 ```
 
 Or with uvicorn for the API server:
 
 ```bash
-uvicorn app.main:get_fastapi_app --host 0.0.0.0 --port 8000 --factory
+uv run uvicorn app.main:get_fastapi_app --host 0.0.0.0 --port 8000 --factory
 ```
 
 ### 5. Start Using the Bot

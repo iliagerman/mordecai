@@ -6,6 +6,9 @@ requires:
     - name: GEMINI_API_KEY
       prompt: "Provide your Gemini API key for Nano Banana Pro (it will be stored in skills_secrets.yml and used to call Google's Gemini image API)."
       example: "AIzaSy..."
+  pip:
+    - google-genai
+    - pillow
 ---
 
 # Nano Banana Pro Image Generation & Editing
@@ -13,6 +16,21 @@ requires:
 Generate new images or edit existing ones using Google's Nano Banana Pro API (Gemini 3 Pro Image).
 
 ## Usage
+
+## Dependencies
+
+This skill requires these Python packages:
+
+- `google-genai` (Gemini client)
+- `pillow` (image I/O)
+
+Install them with uv (recommended):
+
+```bash
+uv pip install google-genai pillow
+```
+
+Note: `scripts/generate_image.py` also includes inline script metadata (PEP 723) so `uv run ...` can auto-resolve these dependencies, but pre-installing is faster for repeated runs.
 
 Run the script using the skill's installed path (provided in system prompt as `→ file_read(path="skills/SKILL.md")`).
 

@@ -7,6 +7,8 @@ requires:
     - name: GEMINI_API_KEY
       prompt: "Provide your Gemini API key for Gemini Deep Research (it will be stored in skills_secrets.yml and used for research calls)."
       example: "AIzaSy..."
+  pip:
+    - requests
 ---
 
 # Gemini Deep Research
@@ -17,6 +19,14 @@ Use Gemini's Deep Research Agent to perform complex, long-running context gather
 
 - `GEMINI_API_KEY` environment variable (from Google AI Studio)
 - **Note**: This does NOT work with Antigravity OAuth tokens. Requires a direct Gemini API key.
+
+### Python dependencies
+
+Install required packages with uv:
+
+```bash
+uv pip install requests
+```
 
 ## How It Works
 
@@ -40,7 +50,7 @@ avoid repo-root assumptions like `skills/shared/...`.
 Run from inside the skill folder:
 
 ```bash
-python scripts/deep_research.py --query "Research the history of Google TPUs"
+uv run python scripts/deep_research.py --query "Research the history of Google TPUs"
 ```
 
 **Option B: run from the parent skills directory (e.g., the user's skills dir)**
@@ -48,7 +58,7 @@ python scripts/deep_research.py --query "Research the history of Google TPUs"
 If your current directory is the skills folder that contains `gemini-deep-research/`:
 
 ```bash
-python gemini-deep-research/scripts/deep_research.py --query "Research the history of Google TPUs"
+uv run python gemini-deep-research/scripts/deep_research.py --query "Research the history of Google TPUs"
 ```
 
 **Option C: use an explicit placeholder**
@@ -64,14 +74,14 @@ where `<SKILL_DIR>` is the runtime path to this skill folder (portable across ma
 #### Basic Research
 
 ```bash
-python scripts/deep_research.py \
+uv run python scripts/deep_research.py \
   --query "Research the history of Google TPUs"
 ```
 
 #### Custom Output Format
 
 ```bash
-python scripts/deep_research.py \
+uv run python scripts/deep_research.py \
   --query "Research the competitive landscape of EV batteries" \
   --format "1. Executive Summary\n2. Key Players (include data table)\n3. Supply Chain Risks"
 ```
@@ -79,7 +89,7 @@ python scripts/deep_research.py \
 #### With File Search (optional)
 
 ```bash
-python scripts/deep_research.py \
+uv run python scripts/deep_research.py \
   --query "Compare our 2025 fiscal year report against current public web news" \
   --file-search-store "fileSearchStores/my-store-name"
 ```
@@ -87,14 +97,14 @@ python scripts/deep_research.py \
 #### Stream Progress
 
 ```bash
-python scripts/deep_research.py \
+uv run python scripts/deep_research.py \
   --query "Your research topic" --stream
 ```
 
 #### Custom Output Directory
 
 ```bash
-python scripts/deep_research.py \
+uv run python scripts/deep_research.py \
   --query "Your research topic" \
   --output-dir <OUTPUT_DIR>
 ```
@@ -102,7 +112,7 @@ python scripts/deep_research.py \
 #### Override API Key
 
 ```bash
-python scripts/deep_research.py \
+uv run python scripts/deep_research.py \
   --query "Your research topic" \
   --api-key "your-api-key"
 ```
