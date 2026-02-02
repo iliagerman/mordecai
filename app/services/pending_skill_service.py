@@ -42,6 +42,8 @@ from app.config import (
     resolve_user_skills_dir,
 )
 
+from app.services.agent.frontmatter import parse_skill_frontmatter
+
 
 _RESERVED_DIR_NAMES = {"pending", "failed", ".venvs", ".venv", "__pycache__"}
 
@@ -197,6 +199,112 @@ class PendingSkillService:
 
     def _skill_md_alt_path(self, skill_dir: Path) -> Path:
         return skill_dir / "skill.md"
+
+    def _requirements_path(self, skill_dir: Path) -> Path:
+        return skill_dir / "requirements.txt"
+
+    def _parse_requirements_lines(self, txt: str) -> list[str]:
+        out: list[str] = []
+        for raw in txt.splitlines():
+            ln = raw.strip()
+            if not ln or ln.startswith("#"):
+                continue
+            # Skip common pip options / includes.
+            if ln.startswith("-"):
+                continue
+            out.append(ln)
+        # stable + de-duped
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for ln in out:
+            if ln in seen:
+                continue
+            seen.add(ln)
+            deduped.append(ln)
+        return sorted(deduped)
+
+    def sync_requires_pip_from_requirements(self, candidate: PendingSkillCandidate) -> dict:
+        """Best-effort: keep SKILL.md frontmatter `requires.pip` aligned with requirements.txt.
+
+        This improves consistency for onboarded skills and makes it easier for agents
+        to understand which Python packages are needed.
+
+        Conservative behavior:
+        - If requirements.txt is missing/empty, do nothing.
+        - If SKILL.md frontmatter is missing, do nothing (normalize_skill_md should run first).
+        - Only writes SKILL.md if an update is actually needed.
+        """
+        skill_dir = candidate.skill_dir
+        req_path = self._requirements_path(skill_dir)
+        skill_md = self._skill_md_path(skill_dir)
+
+        if not req_path.exists() or not req_path.is_file():
+            return {"ok": True, "updated": False, "reason": "no requirements.txt"}
+        if not skill_md.exists() or not skill_md.is_file():
+            return {"ok": True, "updated": False, "reason": "no SKILL.md"}
+
+        try:
+            req_txt = req_path.read_text(encoding="utf-8")
+        except Exception as e:
+            return {"ok": False, "error": f"Failed to read requirements.txt: {e}"}
+
+        reqs = self._parse_requirements_lines(req_txt)
+        if not reqs:
+            return {"ok": True, "updated": False, "reason": "requirements.txt empty"}
+
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+        except Exception as e:
+            return {"ok": False, "error": f"Failed to read SKILL.md: {e}"}
+
+        if not content.startswith("---"):
+            return {"ok": True, "updated": False, "reason": "no frontmatter"}
+
+        parts = content.split("---", 2)
+        if len(parts) < 3:
+            return {"ok": True, "updated": False, "reason": "invalid frontmatter"}
+
+        # Parse existing frontmatter
+        fm = parse_skill_frontmatter(content)
+        requires = fm.get("requires")
+        if not isinstance(requires, dict):
+            requires = {}
+            fm["requires"] = requires
+
+        existing = requires.get("pip")
+        existing_list: list[str] = []
+        if isinstance(existing, list):
+            existing_list = [str(x).strip() for x in existing if str(x).strip()]
+        elif isinstance(existing, str) and existing.strip():
+            existing_list = [existing.strip()]
+
+        existing_norm = sorted({x for x in existing_list if x})
+        desired_norm = sorted({x for x in reqs if x})
+
+        if existing_norm == desired_norm:
+            return {"ok": True, "updated": False, "reason": "already in sync"}
+
+        requires["pip"] = desired_norm
+
+        try:
+            import yaml
+
+            new_frontmatter = yaml.safe_dump(
+                fm,
+                sort_keys=False,
+                default_flow_style=False,
+                allow_unicode=True,
+            ).strip()
+        except Exception as e:
+            return {"ok": False, "error": f"Failed to serialize frontmatter YAML: {e}"}
+
+        new_content = "---\n" + new_frontmatter + "\n---" + parts[2]
+        try:
+            skill_md.write_text(new_content, encoding="utf-8")
+        except Exception as e:
+            return {"ok": False, "error": f"Failed to write SKILL.md: {e}"}
+
+        return {"ok": True, "updated": True, "pip": desired_norm}
 
     def normalize_skill_md(self, candidate: PendingSkillCandidate) -> dict:
         """Normalize SKILL.md in-place.
@@ -1223,7 +1331,9 @@ class PendingSkillService:
             # Validate required config files rendered from templates.
             # This happens after env validation because refresh_runtime_env_from_secrets
             # is called there, which triggers template rendering.
-            cfg_rep = self.validate_required_config_files(candidate, runtime_user_id=runtime_user_id)
+            cfg_rep = self.validate_required_config_files(
+                candidate, runtime_user_id=runtime_user_id
+            )
             report["steps"]["validate_required_config_files"] = cfg_rep
             if not cfg_rep.get("ok"):
                 report["ok"] = False
@@ -1248,6 +1358,12 @@ class PendingSkillService:
                 )
                 self._write_preflight_reports(candidate, report)
                 return report
+
+            # Keep SKILL.md frontmatter consistent with requirements.txt.
+            # This is best-effort and should not block onboarding.
+            report["steps"]["sync_requires_pip"] = self.sync_requires_pip_from_requirements(
+                candidate
+            )
 
             syntax = self.validate_python_syntax(candidate)
             report["steps"]["validate_python_syntax"] = syntax
@@ -1398,6 +1514,9 @@ class PendingSkillService:
         user_id: str,
         scope: Literal["user", "shared", "all"] = "all",
         dry_run: bool = False,
+        skill_names: list[str] | None = None,
+        install_deps: bool = True,
+        run_scripts: bool = True,
     ) -> dict:
         """Onboard pending skills into active skill directories.
 
@@ -1413,6 +1532,11 @@ class PendingSkillService:
             candidates.extend(self.list_pending(user_id=None, include_shared=True))
         if include_user:
             candidates.extend(self.list_pending(user_id=user_id, include_shared=False))
+
+        if skill_names:
+            wanted = {s.strip() for s in skill_names if (s or "").strip()}
+            if wanted:
+                candidates = [c for c in candidates if c.skill_name in wanted]
 
         results = []
         onboarded = 0
@@ -1453,8 +1577,8 @@ class PendingSkillService:
                 # Changed skill -> run onboarding again
                 pf = self.preflight(
                     c,
-                    install_deps=(not dry_run),
-                    run_scripts=(not dry_run),
+                    install_deps=(install_deps and (not dry_run)),
+                    run_scripts=(run_scripts and (not dry_run)),
                     runtime_user_id=user_id,
                 )
                 if not pf.get("ok"):
@@ -1498,8 +1622,8 @@ class PendingSkillService:
             # - real onboarding performs deps install + script smoke test.
             pf = self.preflight(
                 c,
-                install_deps=(not dry_run),
-                run_scripts=(not dry_run),
+                install_deps=(install_deps and (not dry_run)),
+                run_scripts=(run_scripts and (not dry_run)),
                 runtime_user_id=user_id,
             )
             if not pf.get("ok"):
