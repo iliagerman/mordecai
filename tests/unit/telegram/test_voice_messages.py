@@ -97,11 +97,11 @@ async def test_handle_voice_downloads_and_enqueues(handlers):
     handlers.file_service.download_file.assert_awaited_once()
     enqueue.assert_awaited_once()
 
-    call = enqueue.await_args.kwargs
-    assert call["user_id"] == "testuser"
-    assert call["chat_id"] == 123
-    assert "Voice message" in call["message"]
-    assert len(call["attachments"]) == 1
+    call_kwargs = enqueue.await_args_list[0].kwargs
+    assert call_kwargs["user_id"] == "testuser"
+    assert call_kwargs["chat_id"] == 123
+    assert "Voice message" in call_kwargs["message"]
+    assert len(call_kwargs["attachments"]) == 1
 
     handlers.logging_service.log_action.assert_awaited()
 
@@ -133,11 +133,11 @@ async def test_handle_audio_downloads_and_enqueues(handlers):
     handlers.file_service.download_file.assert_awaited()
     enqueue.assert_awaited_once()
 
-    call = enqueue.await_args.kwargs
-    assert call["user_id"] == "testuser"
-    assert call["chat_id"] == 123
-    assert call["message"] == "please transcribe"
-    assert len(call["attachments"]) == 1
+    call_kwargs = enqueue.await_args_list[0].kwargs
+    assert call_kwargs["user_id"] == "testuser"
+    assert call_kwargs["chat_id"] == 123
+    assert call_kwargs["message"] == "please transcribe"
+    assert len(call_kwargs["attachments"]) == 1
 
 
 @pytest.mark.asyncio

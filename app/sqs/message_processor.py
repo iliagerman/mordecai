@@ -16,17 +16,29 @@ Requirements:
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Protocol
 
+from app.models.agent import AttachmentInfo
 from app.tools import send_file as send_file_module
 
-if TYPE_CHECKING:
-    from mypy_boto3_sqs import SQSClient
+try:
+    from mypy_boto3_sqs import SQSClient  # type: ignore[reportMissingImports]
+except Exception:  # pragma: no cover
 
+    class SQSClient(Protocol):
+        def receive_message(self, **kwargs: Any) -> Any: ...
+
+        def delete_message(self, **kwargs: Any) -> Any: ...
+
+        def change_message_visibility(self, **kwargs: Any) -> Any: ...
+
+
+if TYPE_CHECKING:
     from app.dao.user_dao import UserDAO
     from app.services.agent_service import AgentService
     from app.services.file_service import FileService
@@ -45,8 +57,36 @@ class QueueMessage:
     timestamp: datetime
     receipt_handle: str
     message_id: str
-    attachments: list[dict] | None = None
+    attachments: list[AttachmentInfo] | None = None
     onboarding: dict[str, str | None] | None = None
+
+
+def _parse_attachments(raw: Any) -> list[AttachmentInfo] | None:
+    """Parse attachment payloads from SQS into typed models.
+
+    The Telegram enqueue path serializes attachments into a list of dicts.
+    Downstream agent code expects `AttachmentInfo` objects.
+    """
+
+    if not raw:
+        return None
+
+    if not isinstance(raw, list):
+        logger.warning("Unexpected attachments payload type: %s", type(raw))
+        return None
+
+    parsed: list[AttachmentInfo] = []
+    for item in raw:
+        if isinstance(item, AttachmentInfo):
+            parsed.append(item)
+            continue
+        if isinstance(item, dict):
+            parsed.append(AttachmentInfo.model_validate(item))
+            continue
+        # Best-effort: ignore invalid items rather than crashing the worker.
+        logger.warning("Ignoring invalid attachment item type: %s", type(item))
+
+    return parsed or None
 
 
 class MessageProcessor:
@@ -313,19 +353,24 @@ class MessageProcessor:
                 self._inflight_total_semaphore.release()
 
     async def _maybe_send_busy_ack(self, body: dict[str, Any], *, queue_lock: asyncio.Lock) -> None:
-        if not self.response_callback:
+        response_cb = self.response_callback
+        if not response_cb:
             return
 
         if not queue_lock.locked():
             return
 
+        raw_chat_id = body.get("chat_id")
+        if raw_chat_id is None:
+            return
+
         try:
-            chat_id = int(body.get("chat_id"))
+            chat_id = int(raw_chat_id)
         except Exception:
             return
 
         try:
-            res = self.response_callback(chat_id, self._busy_ack_text)
+            res = response_cb(chat_id, self._busy_ack_text)
             if asyncio.iscoroutine(res):
                 await res
         except Exception:
@@ -461,8 +506,12 @@ class MessageProcessor:
             if body is None:
                 body = json.loads(message["Body"])
 
+            # Type guard: at this point we require a dict.
+            if body is None:
+                return None
+
             # Parse attachments if present (Requirement 6.3)
-            attachments = body.get("attachments")
+            attachments = _parse_attachments(body.get("attachments"))
 
             # Parse onboarding context if present (first interaction)
             onboarding = body.get("onboarding")
@@ -495,18 +544,20 @@ class MessageProcessor:
             # Get files in working folder before processing (for detection)
             files_before = self._get_working_folder_files(parsed.user_id)
 
-            # Set up send_file tool callbacks before agent runs
-            if self.file_send_callback is not None:
+            # Set up send_file tool callbacks before agent runs.
+            # Bind to a local to keep type narrowing inside nested closures.
+            file_send_cbk = self.file_send_callback
+            if file_send_cbk is not None:
 
                 async def send_file_cb(path: str, caption: str | None) -> bool:
-                    result = self.file_send_callback(parsed.chat_id, path, caption)
+                    result = file_send_cbk(parsed.chat_id, path, caption)
                     if asyncio.iscoroutine(result):
                         return await result
                     return bool(result)
 
                 async def send_photo_cb(path: str, caption: str | None) -> bool:
                     # Use same callback - TelegramBot handles photo vs doc
-                    result = self.file_send_callback(parsed.chat_id, path, caption)
+                    result = file_send_cbk(parsed.chat_id, path, caption)
                     if asyncio.iscoroutine(result):
                         return await result
                     return bool(result)
