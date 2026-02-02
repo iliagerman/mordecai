@@ -295,18 +295,16 @@ def test_shell_forces_non_interactive_when_stdin_not_tty(tmp_path: Path, monkeyp
     # Simulate a non-interactive/headless environment.
     monkeypatch.setattr(shell_env_module, "_stdin_is_tty", lambda: False)
 
-    captured: dict[str, object] = {}
+    # The regression we care about: in non-tty mode we must NOT call the upstream
+    # interactive shell tool (it can hang). We should route to the safe runner.
+    def _boom_base_shell(**_kwargs):
+        raise AssertionError("Base shell should not be used when stdin is not a TTY")
 
-    def _fake_base_shell(**kwargs):
-        captured.update(kwargs)
-        return {"stdout": "ok", "returncode": 0}
-
-    monkeypatch.setattr(shell_env_module, "_call_base_shell", _fake_base_shell)
+    monkeypatch.setattr(shell_env_module, "_call_base_shell", _boom_base_shell)
 
     out = shell_env_module.shell(command="echo noop", non_interactive=False)
 
-    assert out.get("stdout") == "ok"
-    assert captured.get("non_interactive") is True
+    assert out.get("stdout") == "noop\n"
 
 
 def test_shell_clamps_timeout_to_configured_max(tmp_path: Path, monkeypatch):
