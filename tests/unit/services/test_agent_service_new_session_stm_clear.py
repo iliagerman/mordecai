@@ -49,10 +49,8 @@ async def test_new_session_clears_obsidian_stm_even_if_read_fails(tmp_path: Path
     user_id = "u1"
     svc._session_manager._sessions[user_id] = "s1"
     svc._message_counter._counts[user_id] = 2
-    svc._conversation_history_state._history[user_id] = [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
-    ]
+    svc._conversation_history_state.add_message(user_id, "user", "hi")
+    svc._conversation_history_state.add_message(user_id, "assistant", "hello")
 
     # Avoid creating real model/agent by patching at the agent creator level.
     svc._agent_creator.create_agent = MagicMock(return_value=MagicMock())

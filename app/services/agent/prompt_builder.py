@@ -321,20 +321,25 @@ class SystemPromptBuilder:
         if missing:
             prompt += "\n## Skill Setup Required\n\n"
             prompt += (
-                "Some installed skills declare required setup values that are not set yet (env vars and/or config fields).\n"
+                "Some installed have missing prerequisites (env vars, config fields, binaries, or config files).\n"
                 "If a required value is missing, ask the user for it and then persist it:\n"
                 "- Env vars: `set_skill_env_vars(...)`\n"
-                "- Config fields: `set_skill_config(...)` (stored in `skills/<user>/skills_secrets.yml`)\n\n"
+                "- Config fields: `set_skill_config(...)` (stored in `skills/<user>/skills_secrets.yml`)\n"
+                "- Missing binaries: The user needs to install them or they may already be in the skill's venv\n"
+                "- Missing config files: Run skill onboarding to generate them from templates\n\n"
                 "IMPORTANT: If a skill has missing setup requirements, do NOT run its shell commands yet.\n\n"
                 "Examples:\n"
                 '- set_skill_env_vars(skill_name="himalaya", env_json=\'{"HIMALAYA_CONFIG":"/path/to/himalaya.toml"}\', apply_to="user")\n'
-                '- set_skill_config(skill_name="himalaya", config_json=\'{"GMAIL":"user@gmail.com","PASSWORD":"app-password"}\', apply_to="user")\n\n'
+                '- set_skill_config(skill_name="himalaya", config_json=\'{"GMAIL":"user@gmail.com","PASSWORD":"app-password"}\', apply_to="user")\n'
+                '- onboard_pending_skills() to re-run onboarding and generate config files\n\n'
                 "Missing values (do NOT guess these):\n"
             )
             for skill_name, reqs in missing.items():
                 prompt += f"- **{skill_name}**\n"
                 env_reqs = reqs.env or []
                 cfg_reqs = reqs.config or []
+                bins_reqs = reqs.bins or []
+                config_files_reqs = reqs.config_files or []
                 if env_reqs:
                     prompt += "  - env:\n"
                     for r in env_reqs:
@@ -358,6 +363,26 @@ class SystemPromptBuilder:
                             line += f" — {r.prompt}"
                         if r.example:
                             line += f" (example: {r.example})"
+                        prompt += line + "\n"
+                if bins_reqs:
+                    prompt += "  - bins (required executables not found):\n"
+                    for r in bins_reqs:
+                        n = r.name
+                        if not n:
+                            continue
+                        line = f"    - {n}"
+                        if r.prompt:
+                            line += f" — {r.prompt}"
+                        prompt += line + "\n"
+                if config_files_reqs:
+                    prompt += "  - config_files (rendered config files missing):\n"
+                    for r in config_files_reqs:
+                        n = r.name
+                        if not n:
+                            continue
+                        line = f"    - {n}"
+                        if r.prompt:
+                            line += f" — {r.prompt}"
                         prompt += line + "\n"
 
         return prompt

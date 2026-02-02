@@ -164,9 +164,12 @@ class SessionLifecycleManager:
         # memory service is available.
         if self.extraction_service and msg_count > 0:
             try:
-                # Get conversation history
-                history = self._get_conversation_history(user_id)
-                history_for_extraction = cast(list[dict[str, str]], history)
+                # Use the canonical conversation history state and normalize to
+                # dicts for backward compatibility with the extraction service.
+                #
+                # NOTE: `_get_conversation_history()` returns `list[ConversationMessage]`.
+                # Casting those to dicts will crash when downstream code does `.get()`.
+                history_for_extraction = self._conversation_history.to_dict_list(user_id)
 
                 if self.memory_service is not None:
                     # Wait for extraction with timeout (Requirement 6.4)

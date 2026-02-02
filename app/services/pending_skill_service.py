@@ -449,6 +449,85 @@ class PendingSkillService:
 
         return {"ok": True, "checked": len(reqs)}
 
+    def validate_required_config_files(
+        self, candidate: PendingSkillCandidate, *, runtime_user_id: str | None
+    ) -> dict:
+        """Validate that config files rendered from templates exist.
+
+        This checks for *_example and *.example templates and verifies that
+        the corresponding rendered files exist in the user's skills directory.
+        """
+        if runtime_user_id is None:
+            return {"ok": True, "checked": 0, "reason": "no user_id provided"}
+
+        # First, refresh to trigger template rendering
+        try:
+            refresh_runtime_env_from_secrets(
+                secrets_path=Path(getattr(self.config, "secrets_path", "secrets.yml")),
+                user_id=runtime_user_id,
+            )
+        except Exception:
+            pass
+
+        try:
+            user_root = resolve_user_skills_dir(self.config, runtime_user_id, create=True)
+        except Exception:
+            return {"ok": True, "checked": 0, "reason": "could not resolve user skills dir"}
+
+        # Find all *_example and *.example templates
+        example_templates: list[Path] = []
+        try:
+            for tpl in candidate.skill_dir.rglob("*_example"):
+                if tpl.is_file():
+                    example_templates.append(tpl)
+            for tpl in candidate.skill_dir.rglob("*.example"):
+                if tpl.is_file():
+                    example_templates.append(tpl)
+        except Exception:
+            pass
+
+        if not example_templates:
+            return {"ok": True, "checked": 0, "reason": "no config templates found"}
+
+        skill_name = candidate.skill_name
+        missing: list[dict] = []
+
+        for tpl in example_templates:
+            # Determine the destination name
+            if tpl.name.endswith("_example"):
+                dest_name = tpl.name[: -len("_example")]
+            elif tpl.name.endswith(".example"):
+                dest_name = tpl.name[: -len(".example")]
+            else:
+                continue
+
+            # Apply naming convention (skill prefix if not already present)
+            if dest_name.startswith(f"{skill_name}.") or dest_name == skill_name:
+                out_name = dest_name
+            else:
+                out_name = f"{skill_name}__{dest_name}"
+
+            dest_path = user_root / out_name
+
+            if not dest_path.exists() or not dest_path.is_file():
+                missing.append(
+                    {
+                        "template": tpl.name,
+                        "expected_path": str(dest_path),
+                        "note": f"Config file {out_name} not found. Ensure skill secrets are configured.",
+                    }
+                )
+
+        if missing:
+            return {
+                "ok": False,
+                "checked": len(example_templates),
+                "missing": missing,
+                "note": "required config files not rendered; ensure skill secrets are set and refresh_runtime_env_from_secrets is called",
+            }
+
+        return {"ok": True, "checked": len(example_templates)}
+
     def _extract_pip_packages_from_frontmatter(self, frontmatter: str) -> list[str]:
         """Best-effort extraction of pip packages from frontmatter.
 
@@ -1137,6 +1216,22 @@ class PendingSkillService:
                     stage="validate_required_env",
                     error="missing required env vars",
                     details=env_rep,
+                )
+                self._write_preflight_reports(candidate, report)
+                return report
+
+            # Validate required config files rendered from templates.
+            # This happens after env validation because refresh_runtime_env_from_secrets
+            # is called there, which triggers template rendering.
+            cfg_rep = self.validate_required_config_files(candidate, runtime_user_id=runtime_user_id)
+            report["steps"]["validate_required_config_files"] = cfg_rep
+            if not cfg_rep.get("ok"):
+                report["ok"] = False
+                self.write_failed(
+                    candidate,
+                    stage="validate_required_config_files",
+                    error="required config files not rendered",
+                    details=cfg_rep,
                 )
                 self._write_preflight_reports(candidate, report)
                 return report
