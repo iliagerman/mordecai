@@ -232,3 +232,65 @@ re-build:
 # Run Docker-specific tests
 test-docker:
     uv run pytest tests/docker/ -v
+
+# =============================================================================
+# Deployment Commands
+# =============================================================================
+
+# Deploy to homeserver (pull latest and restart)
+deploy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    HOST="homeserver"
+    USER="ilia"
+    REMOTE_DIR="~/c/personal/mordecai"
+
+    echo "🚀 Deploying to ${HOST}..."
+
+    ssh ${USER}@${HOST} "
+        set -euo pipefail
+        cd ${REMOTE_DIR}
+        echo '🛑 Stopping Docker Compose...'
+        docker compose down
+        echo '📥 Pulling latest changes...'
+        git pull
+        echo '🚀 Starting Docker Compose...'
+        docker compose up -d
+        echo '⏳ Waiting for services to be healthy...'
+        sleep 5
+        docker compose ps
+    "
+
+    echo "✅ Deployment complete!"
+
+# Deploy to homeserver with hard reset (removes volumes and splintermaster skill)
+deploy-hard-reset:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    HOST="homeserver"
+    USER="ilia"
+    REMOTE_DIR="~/c/personal/mordecai"
+    SPLINTERMASTER_PATH="/home/ilia/codebase/personal/mordecai/skills/splintermaster"
+
+    echo "🚀 Deploying to ${HOST} with HARD RESET..."
+    echo "⚠️  This will remove all Docker volumes and the splintermaster skill!"
+
+    ssh ${USER}@${HOST} "
+        set -euo pipefail
+        cd ${REMOTE_DIR}
+        echo '🛑 Stopping Docker Compose and removing volumes...'
+        docker compose down -v
+        echo '🗑️  Removing splintermaster skill directory...'
+        sudo rm -rf ${SPLINTERMASTER_PATH}
+        echo '📥 Pulling latest changes...'
+        git pull
+        echo '🚀 Starting Docker Compose...'
+        docker compose up -d
+        echo '⏳ Waiting for services to be healthy...'
+        sleep 5
+        docker compose ps
+    "
+
+    echo "✅ Hard reset deployment complete!"
