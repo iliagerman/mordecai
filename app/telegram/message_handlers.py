@@ -815,6 +815,226 @@ class TelegramMessageHandlers:
                 "❌ An error occurred processing your photo.",
             )
 
+    async def handle_voice(
+        self,
+        update: Update,
+        context: Any,
+        enqueue_with_attachments: callable,
+    ) -> None:
+        """Handle incoming Telegram voice messages.
+
+        Telegram voice notes arrive as `message.voice` (typically OGG/OPUS).
+        We download the file and enqueue it as an attachment so the agent
+        worker can process/transcribe it.
+        """
+        if not update.message or not update.message.voice:
+            return
+
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for voice")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        voice = update.message.voice
+
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+
+        if voice.file_size is None:
+            await self._send_response(
+                chat_id,
+                "❌ Telegram did not provide a file size for this voice message; cannot accept it.",
+            )
+            return
+
+        # Validate file size only (voice is a trusted Telegram upload type)
+        max_bytes = self.config.max_file_size_mb * 1024 * 1024
+        if voice.file_size > max_bytes:
+            await self._send_response(
+                chat_id,
+                f"❌ Voice message too large. Maximum size is {self.config.max_file_size_mb}MB",
+            )
+            return
+
+        try:
+            from app.telegram.models import TelegramAttachment
+
+            unique = getattr(voice, "file_unique_id", None) or voice.file_id
+            file_name = self.file_service.sanitize_filename(f"voice_{unique}.ogg")
+            mime_type = getattr(voice, "mime_type", None) or "audio/ogg"
+
+            metadata = await self.file_service.download_file(
+                bot=self.bot,
+                file_id=voice.file_id,
+                user_id=user_id,
+                file_name=file_name,
+                mime_type=mime_type,
+            )
+
+            attachment = TelegramAttachment(
+                file_id=voice.file_id,
+                file_name=metadata.file_name,
+                file_path=metadata.file_path,
+                mime_type=metadata.mime_type,
+                file_size=metadata.file_size,
+                is_image=False,
+            )
+
+            duration = getattr(voice, "duration", None)
+            duration_text = f" duration={duration}s" if duration is not None else ""
+            message_text = f"[Voice message]{duration_text}"
+
+            await enqueue_with_attachments(
+                user_id=user_id,
+                chat_id=chat_id,
+                message=message_text,
+                attachments=[attachment],
+            )
+
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action="Voice message received",
+                severity=LogSeverity.INFO,
+                details={
+                    "file_name": metadata.file_name,
+                    "file_size": metadata.file_size,
+                    "mime_type": metadata.mime_type,
+                    "duration": duration,
+                },
+            )
+        except TelegramError as e:
+            logger.error("Telegram voice download failed: %s", e)
+            await self._send_response(
+                chat_id, "❌ Failed to download voice message. Please try again."
+            )
+        except Exception as e:
+            logger.error("Voice handling error: %s", e)
+            await self._send_response(
+                chat_id, "❌ An error occurred processing your voice message."
+            )
+
+    async def handle_audio(
+        self,
+        update: Update,
+        context: Any,
+        enqueue_with_attachments: callable,
+    ) -> None:
+        """Handle incoming Telegram audio messages.
+
+        Audio files arrive as `message.audio`. We download and enqueue them
+        as attachments for agent processing.
+        """
+        if not update.message or not update.message.audio:
+            return
+
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for audio")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        audio = update.message.audio
+        caption = update.message.caption or ""
+
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+
+        if audio.file_size is None:
+            await self._send_response(
+                chat_id,
+                "❌ Telegram did not provide a file size for this audio message; cannot accept it.",
+            )
+            return
+
+        max_bytes = self.config.max_file_size_mb * 1024 * 1024
+        if audio.file_size > max_bytes:
+            await self._send_response(
+                chat_id,
+                f"❌ Audio file too large. Maximum size is {self.config.max_file_size_mb}MB",
+            )
+            return
+
+        try:
+            from app.telegram.models import TelegramAttachment
+
+            unique = getattr(audio, "file_unique_id", None) or audio.file_id
+            mime_type = getattr(audio, "mime_type", None)
+
+            suggested_name = getattr(audio, "file_name", None)
+            if suggested_name:
+                file_name = self.file_service.sanitize_filename(suggested_name)
+            else:
+                # Best-effort extension guess from mime type.
+                ext = ".audio"
+                if mime_type == "audio/mpeg":
+                    ext = ".mp3"
+                elif mime_type == "audio/mp4":
+                    ext = ".m4a"
+                elif mime_type == "audio/ogg":
+                    ext = ".ogg"
+                file_name = self.file_service.sanitize_filename(f"audio_{unique}{ext}")
+
+            metadata = await self.file_service.download_file(
+                bot=self.bot,
+                file_id=audio.file_id,
+                user_id=user_id,
+                file_name=file_name,
+                mime_type=mime_type,
+            )
+
+            attachment = TelegramAttachment(
+                file_id=audio.file_id,
+                file_name=metadata.file_name,
+                file_path=metadata.file_path,
+                mime_type=metadata.mime_type,
+                file_size=metadata.file_size,
+                is_image=False,
+            )
+
+            message_text = caption or "[Audio message]"
+
+            await enqueue_with_attachments(
+                user_id=user_id,
+                chat_id=chat_id,
+                message=message_text,
+                attachments=[attachment],
+            )
+
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action="Audio received",
+                severity=LogSeverity.INFO,
+                details={
+                    "file_name": metadata.file_name,
+                    "file_size": metadata.file_size,
+                    "mime_type": metadata.mime_type,
+                    "duration": getattr(audio, "duration", None),
+                    "title": getattr(audio, "title", None),
+                    "performer": getattr(audio, "performer", None),
+                },
+            )
+        except TelegramError as e:
+            logger.error("Telegram audio download failed: %s", e)
+            await self._send_response(chat_id, "❌ Failed to download audio. Please try again.")
+        except Exception as e:
+            logger.error("Audio handling error: %s", e)
+            await self._send_response(chat_id, "❌ An error occurred processing your audio.")
+
     def select_highest_resolution_photo(
         self,
         photos: list[PhotoSize],
