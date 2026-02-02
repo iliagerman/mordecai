@@ -1112,6 +1112,20 @@ class AgentConfig(BaseSettings):
             "This prevents hung commands from wedging the agent indefinitely."
         ),
     )
+    shell_max_timeout_seconds: int = Field(
+        default=3600,
+        description=(
+            "Maximum allowed timeout for shell tool commands (hard clamp). "
+            "Prevents a caller/model from requesting excessively long-running commands."
+        ),
+    )
+    shell_progress_heartbeat_seconds: int = Field(
+        default=15,
+        description=(
+            "While a shell tool command is running, emit periodic progress heartbeats at this interval. "
+            "This prevents long-running (but healthy) commands from being misclassified as stalled."
+        ),
+    )
     shell_use_safe_runner: bool = Field(
         default=False,
         description=(

@@ -15,12 +15,13 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from app.config import refresh_runtime_env_from_secrets
+from app.config import refresh_runtime_env_from_secrets, resolve_user_skills_dir
 from app.observability.health_state import mark_progress
 from app.observability.trace_context import get_trace_id
 from app.observability.trace_logging import trace_event
@@ -84,6 +85,22 @@ def set_shell_env_context(*, user_id: str, secrets_path: str | Path, config=None
     _current_user_id_var.set(user_id)
     _secrets_path_var.set(Path(secrets_path))
     _config_var.set(config)
+
+    # Provide a portable skills base dir for SKILL.md examples.
+    #
+    # Many skills historically hard-coded `/app/skills/...` (container path).
+    # In dev, the skills base dir differs, so examples should reference:
+    #   ${MORDECAI_SKILLS_BASE_DIR}/<USERNAME>/...
+    #
+    # We compute this from config in a way that respects user_skills_dir_template.
+    try:
+        if config is not None:
+            user_dir = resolve_user_skills_dir(config, str(user_id), create=True)
+            base_dir = user_dir.parent
+            os.environ["MORDECAI_SKILLS_BASE_DIR"] = str(base_dir)
+    except Exception:
+        # Never fail agent startup due to env convenience vars.
+        pass
 
 
 def _default_shell_timeout_seconds() -> int:
@@ -165,6 +182,7 @@ def _safe_shell_run(
     command: str,
     work_dir: str | None,
     timeout_seconds: int,
+    heartbeat_seconds: int = 15,
 ) -> dict[str, Any]:
     """Run a shell command safely with a hard timeout.
 
@@ -203,13 +221,28 @@ def _safe_shell_run(
             text=True,
             start_new_session=True,  # allows killing the whole process group
         )
-        try:
-            out, err = proc.communicate(timeout=timeout_seconds)
-            stdout = out or ""
-            stderr = err or ""
-            returncode = int(proc.returncode or 0)
-        except subprocess.TimeoutExpired:
-            timed_out = True
+        deadline = time.monotonic() + float(max(1, int(timeout_seconds)))
+        hb = float(max(1, int(heartbeat_seconds)))
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+
+            step = min(hb, remaining)
+            try:
+                out, err = proc.communicate(timeout=step)
+                stdout = out or ""
+                stderr = err or ""
+                returncode = int(proc.returncode or 0)
+                break
+            except subprocess.TimeoutExpired:
+                # Still running. Emit a heartbeat so stall detection doesn't fire.
+                mark_progress("tool.shell.heartbeat")
+                continue
+
+        if timed_out:
             # Kill the full process group to avoid orphaned children.
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
@@ -378,10 +411,31 @@ def shell(
             effective_timeout = _default_shell_timeout_seconds()
 
     # Safety: if the model tries to pass a crazy timeout, clamp it.
+    cfg = _config_var.get()
     try:
-        effective_timeout = max(1, min(int(effective_timeout), 3600))
+        max_timeout = int(getattr(cfg, "shell_max_timeout_seconds", 3600))
+    except Exception:
+        max_timeout = 3600
+
+    max_timeout = max(1, max_timeout)
+    try:
+        effective_timeout = max(1, min(int(effective_timeout), max_timeout))
     except Exception:
         effective_timeout = _default_shell_timeout_seconds()
+
+    # Emit periodic progress heartbeats while the underlying runner executes.
+    # This avoids long-running commands being flagged as "stalled".
+    try:
+        heartbeat_s = int(getattr(cfg, "shell_progress_heartbeat_seconds", 15))
+    except Exception:
+        heartbeat_s = 15
+    heartbeat_s = max(1, heartbeat_s)
+
+    heartbeat_stop = threading.Event()
+
+    def _heartbeat_loop() -> None:
+        while not heartbeat_stop.wait(timeout=float(heartbeat_s)):
+            mark_progress("tool.shell.heartbeat")
 
     forwarded: dict[str, Any] = {
         "command": command,
@@ -402,20 +456,25 @@ def shell(
     if effective_timeout is not None:
         forwarded["timeout"] = effective_timeout
 
+    hb_thread = threading.Thread(target=_heartbeat_loop, name="tool-shell-heartbeat", daemon=True)
+
     try:
         effective_command = _maybe_prefix_himalaya_config(command)
 
         # Default to delegating to the upstream strands_tools shell implementation.
         # This preserves compatibility with skills and allows tests to monkeypatch
         # the base call.
-        cfg = _config_var.get()
         use_safe_runner = bool(getattr(cfg, "shell_use_safe_runner", False))
+
+        # Start the heartbeat only while the underlying runner executes.
+        hb_thread.start()
 
         if use_safe_runner:
             result = _safe_shell_run(
                 command=effective_command,
                 work_dir=work_dir,
                 timeout_seconds=effective_timeout,
+                heartbeat_seconds=heartbeat_s,
             )
         else:
             forwarded["command"] = effective_command
@@ -452,3 +511,5 @@ def shell(
                 error_type=type(e).__name__,
             )
         raise
+    finally:
+        heartbeat_stop.set()

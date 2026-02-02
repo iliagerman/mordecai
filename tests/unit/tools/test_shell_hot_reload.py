@@ -12,6 +12,21 @@ from app.tools import shell_env as shell_env_module
 from app.tools import skill_secrets as skill_secrets_module
 
 
+def test_shell_env_context_sets_skills_base_dir_env(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.delenv("MORDECAI_SKILLS_BASE_DIR", raising=False)
+
+    secrets_path = tmp_path / "secrets.yml"
+    secrets_path.write_text("skills: {}\n", encoding="utf-8")
+
+    user_id = "u_base"
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+
+    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    assert os.environ.get("MORDECAI_SKILLS_BASE_DIR") == str(tmp_path / "skills")
+
+
 def test_shell_sees_new_secret_without_restart(tmp_path: Path, monkeypatch):
     """Validate hot-reload: after saving secrets, next shell call sees new env without restart."""
 
@@ -256,3 +271,66 @@ def test_shell_forces_non_interactive_when_stdin_not_tty(tmp_path: Path, monkeyp
 
     assert out.get("stdout") == "ok"
     assert captured.get("non_interactive") is True
+
+
+def test_shell_clamps_timeout_to_configured_max(tmp_path: Path, monkeypatch):
+    secrets_path = tmp_path / "secrets.yml"
+    secrets_path.write_text("skills: {}\n", encoding="utf-8")
+
+    user_id = "u_max_timeout"
+    monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
+
+    cfg = AgentConfig(
+        skills_base_dir=str(tmp_path / "skills"),
+        shell_max_timeout_seconds=7,
+        shell_progress_heartbeat_seconds=60,
+    )
+    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    captured: dict[str, object] = {}
+
+    def _fake_base_shell(**kwargs):
+        captured.update(kwargs)
+        return {"stdout": "ok", "returncode": 0}
+
+    monkeypatch.setattr(shell_env_module, "_call_base_shell", _fake_base_shell)
+
+    out = shell_env_module.shell(command="echo noop", timeout_seconds=999)
+    assert out.get("stdout") == "ok"
+    assert captured.get("timeout") == 7
+
+
+def test_shell_emits_progress_heartbeats_during_long_runs(tmp_path: Path, monkeypatch):
+    secrets_path = tmp_path / "secrets.yml"
+    secrets_path.write_text("skills: {}\n", encoding="utf-8")
+
+    user_id = "u_heartbeat"
+    monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
+
+    cfg = AgentConfig(
+        skills_base_dir=str(tmp_path / "skills"),
+        shell_progress_heartbeat_seconds=1,
+    )
+    shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    events: list[str] = []
+
+    def _fake_mark_progress(event: str | None = None) -> None:
+        if event is not None:
+            events.append(event)
+
+    def _fake_base_shell(**_kwargs):
+        # Run longer than the heartbeat interval so at least one heartbeat fires.
+        import time
+
+        time.sleep(1.2)
+        return {"stdout": "ok", "returncode": 0}
+
+    monkeypatch.setattr(shell_env_module, "mark_progress", _fake_mark_progress)
+    monkeypatch.setattr(shell_env_module, "_call_base_shell", _fake_base_shell)
+
+    out = shell_env_module.shell(command="echo noop", timeout_seconds=5)
+    assert out.get("stdout") == "ok"
+    assert "tool.shell.start" in events
+    assert "tool.shell.end" in events
+    assert "tool.shell.heartbeat" in events

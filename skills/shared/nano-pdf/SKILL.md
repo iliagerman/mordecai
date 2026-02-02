@@ -16,6 +16,20 @@ install:
 
 Edit PDFs using natural-language instructions via the `nano-pdf` CLI.
 
+## Install
+
+Install the CLI with uv (recommended):
+
+```bash
+uv pip install nano-pdf
+```
+
+After install, verify the binary exists:
+
+```bash
+command -v nano-pdf && nano-pdf --help
+```
+
 ## Edit a Page
 
 ```bash
