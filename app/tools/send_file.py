@@ -15,6 +15,7 @@ invocation via :func:`asyncio.to_thread`).
 import logging
 from contextvars import ContextVar
 from pathlib import Path
+import threading
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
@@ -59,13 +60,45 @@ _send_photo_callback: ContextVar[Callable[[str, str | None], Awaitable[bool]] | 
 )
 
 
-def _get_pending_files_ref() -> list[dict]:
-    """Get the per-task pending file list, creating it if missing."""
-    files = _pending_files.get()
-    if files is None:
-        files = []
-        _pending_files.set(files)
-    return files
+# ---------------------------------------------------------------------------
+# Pending file queue
+# ---------------------------------------------------------------------------
+#
+# The agent executes tools from a background thread.
+#
+# We previously attempted to share a mutable list via ContextVar between the
+# parent asyncio task and the background thread. In practice, depending on the
+# runtime and the agent/tool execution strategy, ContextVar values can fail to
+# share exactly as expected.
+#
+# We *do* reliably see the send callbacks propagate into the tool execution
+# context. Therefore we key the pending queue off the identity of the callback
+# function object. Each message gets fresh callback callables (defined in
+# app/sqs/message_processor.py), so this key is effectively per-message.
+_pending_files_lock = threading.Lock()
+_pending_files_by_key: dict[int, list[dict[str, object]]] = {}
+
+
+def _pending_key_for_current_context() -> int | None:
+    cb = _send_file_callback.get()
+    if cb is None:
+        return None
+    return id(cb)
+
+
+def _get_pending_files_ref() -> list[dict[str, object]]:
+    """Get the per-message pending file list, creating it if missing."""
+    key = _pending_key_for_current_context()
+    if key is None:
+        # No callbacks means we're not in a sending-capable context.
+        return []
+
+    with _pending_files_lock:
+        files = _pending_files_by_key.get(key)
+        if files is None:
+            files = []
+            _pending_files_by_key[key] = files
+        return files
 
 
 def set_send_callbacks(
@@ -83,28 +116,26 @@ def set_send_callbacks(
     _send_file_callback.set(send_file)
     _send_photo_callback.set(send_photo)
 
-    # IMPORTANT:
-    # The agent is invoked via asyncio.to_thread() (see message_processing.py).
-    # asyncio.to_thread propagates ContextVars *into* the background thread by
-    # copying the current context, but changes made to ContextVars inside that
-    # thread do NOT propagate back to the parent task.
-    #
-    # To allow tools executed in the thread to queue files for the parent task
-    # to send, we store a *mutable list* in this ContextVar up-front. The copied
-    # context will reference the same list object, so appends in the thread are
-    # visible here.
-    existing = _pending_files.get()
-    if existing is None:
-        _pending_files.set([])
-    else:
-        existing.clear()
+    # Ensure pending queue exists and is cleared for this callback key.
+    key = _pending_key_for_current_context()
+    if key is None:
+        return
+    with _pending_files_lock:
+        existing = _pending_files_by_key.get(key)
+        if existing is None:
+            _pending_files_by_key[key] = []
+        else:
+            existing.clear()
 
 
 def clear_send_callbacks() -> None:
     """Clear the send callbacks after processing."""
+    key = _pending_key_for_current_context()
+    if key is not None:
+        with _pending_files_lock:
+            _pending_files_by_key.pop(key, None)
     _send_file_callback.set(None)
     _send_photo_callback.set(None)
-    _pending_files.set([])
 
 
 def send_file(tool: dict, **kwargs: Any) -> dict:
@@ -156,7 +187,16 @@ def send_file(tool: dict, **kwargs: Any) -> dict:
     is_image = path.suffix.lower() in IMAGE_EXTENSIONS
 
     # Queue the file send (will be executed after agent response)
-    _get_pending_files_ref().append(
+    pending = _get_pending_files_ref()
+    if pending is None:
+        # Defensive (should not happen), but avoid claiming success.
+        return {
+            "toolUseId": tool_use_id,
+            "status": "error",
+            "content": [{"text": "File sending not available in this context."}],
+        }
+
+    pending.append(
         {
             "path": str(path),
             "caption": caption,
@@ -172,19 +212,17 @@ def send_file(tool: dict, **kwargs: Any) -> dict:
     }
 
 
-# Pending files to send after agent response (per-task)
-_pending_files: ContextVar[list[dict] | None] = ContextVar(
-    "send_file_pending_files",
-    default=None,
-)
-
-
 def get_pending_files() -> list[dict]:
     """Get and clear the list of pending files to send.
 
     Returns:
         List of file dicts with path, caption, is_image.
     """
-    files = _get_pending_files_ref().copy()
-    _pending_files.set([])
-    return files
+    key = _pending_key_for_current_context()
+    if key is None:
+        return []
+
+    with _pending_files_lock:
+        files = list(_pending_files_by_key.get(key, []))
+        _pending_files_by_key[key] = []
+        return files

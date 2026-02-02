@@ -4,10 +4,10 @@ These tests cover a subtle but critical behavior:
 - The Strands agent is invoked via asyncio.to_thread()
 - The send_file tool runs inside that background thread
 - We still need pending files queued by the tool to be visible in the parent
-  asyncio task so the message processor can actually send them.
+    asyncio task so the message processor can actually send them.
 
-We achieve this by storing a shared mutable list in a ContextVar before
-entering the background thread.
+Implementation note:
+We key the pending queue off the identity of the per-message send callback.
 """
 
 from __future__ import annotations
