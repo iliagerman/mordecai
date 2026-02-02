@@ -396,6 +396,23 @@ def shell(
         # Never block shell execution if refresh fails.
         pass
 
+    # Ensure MORDECAI_SKILLS_BASE_DIR is set for skills that reference it in
+    # their documented shell snippets (notably himalaya).
+    #
+    # We do this here (not only in set_shell_env_context) because:
+    # - some upstream tool runners may sanitize env between invocations
+    # - hot-reload paths can reinitialize env state
+    # - it must work even if the agent context setter failed silently
+    try:
+        if not (os.environ.get("MORDECAI_SKILLS_BASE_DIR") or "").strip():
+            cfg = _config_var.get()
+            uid = _current_user_id_var.get()
+            if cfg is not None and uid:
+                user_dir = resolve_user_skills_dir(cfg, str(uid), create=True)
+                os.environ["MORDECAI_SKILLS_BASE_DIR"] = str(user_dir.parent)
+    except Exception:
+        pass
+
     # Guardrail: certain CLIs (notably himalaya over IMAP/SMTP) can block for a long time
     # on network/auth issues. If a skill forgets to pass a timeout, apply a conservative
     # default so the agent doesn't hang indefinitely.

@@ -115,6 +115,24 @@ class TestPerUserSkillInstallation:
         pending_dir = svc._get_user_pending_skills_dir(TEST_USER_ID)
         assert pending_dir == user_dir / "pending"
 
+    def test_user_skills_directory_template_base_dir_only(self, temp_skills_dir, temp_shared_dir):
+        """If user_skills_dir_template is set to a base dir, append /<user_id>.
+
+        This matches common docker-compose env usage where AGENT_USER_SKILLS_DIR_TEMPLATE
+        is set to something like /app/skills (without placeholders).
+        """
+        config = AgentConfig(
+            telegram_bot_token="test-token",
+            skills_base_dir=str(Path(temp_skills_dir) / "ignored"),
+            shared_skills_dir=temp_shared_dir,
+            session_storage_dir=temp_skills_dir,
+            user_skills_dir_template=str(Path(temp_skills_dir) / "per-user"),
+        )
+        svc = SkillService(config)
+
+        user_dir = svc._get_user_skills_dir(TEST_USER_ID)
+        assert user_dir.samefile(Path(temp_skills_dir) / "per-user" / TEST_USER_ID)
+
     def test_different_users_have_separate_directories(self, skill_service, temp_skills_dir):
         """Test that different users get separate skill directories."""
         user1_dir = skill_service._get_user_skills_dir("user1")

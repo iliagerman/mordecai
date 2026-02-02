@@ -86,12 +86,20 @@ def resolve_user_skills_dir(config: Any, user_id: str, *, create: bool = True) -
     template = _normalize_user_skills_dir_template(str(raw_template)) if raw_template else ""
 
     if template:
-        try:
-            rendered = template.format(username=u, user_id=u)
-        except Exception as e:
-            raise ValueError(f"Invalid user_skills_dir_template: {template}") from e
-
-        p = Path(rendered).expanduser()
+        # Support two common configurations:
+        #  1) Full template with placeholders (recommended):
+        #       /app/skills/{username}
+        #  2) Base dir only (common in docker-compose envs):
+        #       /app/skills
+        #     In this case, treat it as the base and append the user id.
+        if ("{username}" in template) or ("{user_id}" in template):
+            try:
+                rendered = template.format(username=u, user_id=u)
+            except Exception as e:
+                raise ValueError(f"Invalid user_skills_dir_template: {template}") from e
+            p = Path(rendered).expanduser()
+        else:
+            p = Path(template).expanduser() / u
     else:
         base = Path(getattr(config, "skills_base_dir", "./skills")).expanduser()
         p = base / u
