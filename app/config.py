@@ -1112,6 +1112,14 @@ class AgentConfig(BaseSettings):
             "This prevents hung commands from wedging the agent indefinitely."
         ),
     )
+    shell_use_safe_runner: bool = Field(
+        default=False,
+        description=(
+            "If true, the shell tool uses an internal subprocess runner with a hard kill-on-timeout "
+            "instead of delegating to strands_tools.shell. This can help avoid hangs in some environments, "
+            "at the cost of reduced feature parity with the upstream tool."
+        ),
+    )
     health_stall_seconds: int = Field(
         default=180,
         description=(

@@ -397,17 +397,23 @@ def shell(
         forwarded["timeout"] = effective_timeout
 
     try:
-        # Prefer our safe runner (kill-on-timeout). This keeps the service
-        # responsive and prevents hung tools from wedging the process.
-        #
-        # If a future need arises to use the upstream implementation, we can
-        # add a config flag to opt back in.
         effective_command = _maybe_prefix_himalaya_config(command)
-        result = _safe_shell_run(
-            command=effective_command,
-            work_dir=work_dir,
-            timeout_seconds=effective_timeout,
-        )
+
+        # Default to delegating to the upstream strands_tools shell implementation.
+        # This preserves compatibility with skills and allows tests to monkeypatch
+        # the base call.
+        cfg = _config_var.get()
+        use_safe_runner = bool(getattr(cfg, "shell_use_safe_runner", False))
+
+        if use_safe_runner:
+            result = _safe_shell_run(
+                command=effective_command,
+                work_dir=work_dir,
+                timeout_seconds=effective_timeout,
+            )
+        else:
+            forwarded["command"] = effective_command
+            result = _call_base_shell(**forwarded)
 
         # Heartbeat again after completion.
         mark_progress("tool.shell.end")
