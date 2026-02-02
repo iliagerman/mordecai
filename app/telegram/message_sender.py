@@ -42,38 +42,81 @@ class TelegramMessageSender:
         from telegram.constants import ParseMode
         from app.telegram.response_formatter import TelegramResponseFormatter
 
-        # Convert markdown to Telegram HTML format (more reliable than MarkdownV2)
-        formatter = TelegramResponseFormatter()
-        formatted = formatter.format_for_html(response)
+        # Telegram has a hard 4096-character limit for sendMessage text.
+        #
+        # IMPORTANT:
+        # - Splitting *after* formatting (HTML) can break tags across boundaries.
+        #   That can cause Telegram parse errors and lead to retries that look like
+        #   duplicated messages (especially for long onboarding messages).
+        # - Therefore we chunk the *raw* text first, then format each chunk.
+        telegram_max_len = 4096
+        # Leave room for HTML markup added by the formatter.
+        raw_chunk_len = 3500
 
-        try:
-            # Split long messages (Telegram has 4096 char limit)
-            max_length = 4096
-            if len(formatted) <= max_length:
+        def _split_raw(text: str, max_len: int) -> list[str]:
+            if not text:
+                return [""]
+            lines = text.splitlines(keepends=True)
+            chunks: list[str] = []
+            current = ""
+
+            for line in lines:
+                if len(current) + len(line) <= max_len:
+                    current += line
+                    continue
+
+                if current:
+                    chunks.append(current)
+                    current = ""
+
+                # If the next line itself is too big, hard-slice it.
+                if len(line) > max_len:
+                    for i in range(0, len(line), max_len):
+                        part = line[i : i + max_len]
+                        if len(part) == max_len:
+                            chunks.append(part)
+                        else:
+                            current = part
+                else:
+                    current = line
+
+            if current:
+                chunks.append(current)
+            return chunks
+
+        formatter = TelegramResponseFormatter()
+        raw_chunks = _split_raw(response, raw_chunk_len)
+
+        for raw in raw_chunks:
+            try:
+                formatted = formatter.format_for_html(raw)
+                # Guard: if formatting expands beyond Telegram limit, fall back.
+                if len(formatted) > telegram_max_len:
+                    raise ValueError(
+                        f"Formatted chunk exceeds Telegram limit ({len(formatted)}>{telegram_max_len})"
+                    )
+
                 await self.bot.send_message(
                     chat_id=chat_id,
                     text=formatted,
                     parse_mode=ParseMode.HTML,
                 )
-            else:
-                # Split into chunks
-                for i in range(0, len(formatted), max_length):
-                    chunk = formatted[i : i + max_length]
-                    await self.bot.send_message(
-                        chat_id=chat_id,
-                        text=chunk,
-                        parse_mode=ParseMode.HTML,
+            except Exception as e:
+                logger.warning(
+                    "Failed to send formatted chunk to chat %s (falling back to plain text): %s",
+                    chat_id,
+                    e,
+                )
+                try:
+                    await self.bot.send_message(chat_id=chat_id, text=raw)
+                except Exception as fallback_error:
+                    logger.error(
+                        "Fallback plain-text send failed for chat %s: %s",
+                        chat_id,
+                        fallback_error,
                     )
 
-            logger.debug("Response sent to chat %s", chat_id)
-
-        except Exception as e:
-            logger.error("Failed to send response to chat %s: %s", chat_id, e)
-            # Fallback to plain text if markdown parsing fails
-            try:
-                await self.bot.send_message(chat_id=chat_id, text=response)
-            except Exception as fallback_error:
-                logger.error("Fallback send also failed: %s", fallback_error)
+        logger.debug("Response sent to chat %s", chat_id)
 
     async def send_file(
         self,
