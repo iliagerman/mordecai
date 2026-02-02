@@ -2,11 +2,20 @@
 
 This tool allows the agent to send files (images, documents) back to
 the user in the Telegram chat.
+
+Concurrency note:
+The agent can process multiple messages concurrently (across users and/or
+prefetched messages). Tool state must therefore be *per message/task*.
+
+We use :mod:`contextvars` so callbacks and pending files are isolated to the
+current asyncio task (and propagate into the background thread used for agent
+invocation via :func:`asyncio.to_thread`).
 """
 
 import logging
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -25,32 +34,38 @@ TOOL_SPEC = {
                 "file_path": {
                     "type": "string",
                     "description": (
-                        "Full path to the file to send. "
-                        "Must be an existing file on the filesystem."
-                    )
+                        "Full path to the file to send. Must be an existing file on the filesystem."
+                    ),
                 },
                 "caption": {
                     "type": "string",
-                    "description": (
-                        "Optional caption/message to include with the file"
-                    )
-                }
+                    "description": ("Optional caption/message to include with the file"),
+                },
             },
-            "required": ["file_path"]
+            "required": ["file_path"],
         }
-    }
+    },
 }
 
 # Image extensions that should be sent as photos
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
-# Global references - set by message processor before agent runs
-_send_file_callback: (
-    Callable[[str, str | None], Awaitable[bool]] | None
-) = None
-_send_photo_callback: (
-    Callable[[str, str | None], Awaitable[bool]] | None
-) = None
+# Per-task references - set by message processor before agent runs
+_send_file_callback: ContextVar[Callable[[str, str | None], Awaitable[bool]] | None] = ContextVar(
+    "send_file_callback", default=None
+)
+_send_photo_callback: ContextVar[Callable[[str, str | None], Awaitable[bool]] | None] = ContextVar(
+    "send_photo_callback", default=None
+)
+
+
+def _get_pending_files_ref() -> list[dict]:
+    """Get the per-task pending file list, creating it if missing."""
+    files = _pending_files.get()
+    if files is None:
+        files = []
+        _pending_files.set(files)
+    return files
 
 
 def set_send_callbacks(
@@ -65,16 +80,15 @@ def set_send_callbacks(
         send_file: Async callback to send a document.
         send_photo: Async callback to send a photo.
     """
-    global _send_file_callback, _send_photo_callback
-    _send_file_callback = send_file
-    _send_photo_callback = send_photo
+    _send_file_callback.set(send_file)
+    _send_photo_callback.set(send_photo)
 
 
 def clear_send_callbacks() -> None:
     """Clear the send callbacks after processing."""
-    global _send_file_callback, _send_photo_callback
-    _send_file_callback = None
-    _send_photo_callback = None
+    _send_file_callback.set(None)
+    _send_photo_callback.set(None)
+    _pending_files.set([])
 
 
 def send_file(tool: dict, **kwargs: Any) -> dict:
@@ -96,7 +110,7 @@ def send_file(tool: dict, **kwargs: Any) -> dict:
         return {
             "toolUseId": tool_use_id,
             "status": "error",
-            "content": [{"text": "No file path provided."}]
+            "content": [{"text": "No file path provided."}],
         }
 
     path = Path(file_path)
@@ -104,53 +118,49 @@ def send_file(tool: dict, **kwargs: Any) -> dict:
         return {
             "toolUseId": tool_use_id,
             "status": "error",
-            "content": [{
-                "text": f"File not found: {file_path}"
-            }]
+            "content": [{"text": f"File not found: {file_path}"}],
         }
 
     if not path.is_file():
         return {
             "toolUseId": tool_use_id,
             "status": "error",
-            "content": [{
-                "text": f"Path is not a file: {file_path}"
-            }]
+            "content": [{"text": f"Path is not a file: {file_path}"}],
         }
 
     # Check if callbacks are set
-    if _send_file_callback is None or _send_photo_callback is None:
+    if _send_file_callback.get() is None or _send_photo_callback.get() is None:
         return {
             "toolUseId": tool_use_id,
             "status": "error",
-            "content": [{
-                "text": "File sending not available in this context."
-            }]
+            "content": [{"text": "File sending not available in this context."}],
         }
 
     # Determine if this is an image
     is_image = path.suffix.lower() in IMAGE_EXTENSIONS
 
     # Queue the file send (will be executed after agent response)
-    # Store in a global list that message processor will handle
-    _pending_files.append({
-        "path": str(path),
-        "caption": caption,
-        "is_image": is_image,
-    })
+    _get_pending_files_ref().append(
+        {
+            "path": str(path),
+            "caption": caption,
+            "is_image": is_image,
+        }
+    )
 
     file_type = "image" if is_image else "file"
     return {
         "toolUseId": tool_use_id,
         "status": "success",
-        "content": [{
-            "text": f"Queued {file_type} for sending: {path.name}"
-        }]
+        "content": [{"text": f"Queued {file_type} for sending: {path.name}"}],
     }
 
 
-# Pending files to send after agent response
-_pending_files: list[dict] = []
+# Pending files to send after agent response (per-task)
+_pending_files: ContextVar[list[dict] | None] = ContextVar(
+    "send_file_pending_files",
+    default=None,
+)
 
 
 def get_pending_files() -> list[dict]:
@@ -159,7 +169,6 @@ def get_pending_files() -> list[dict]:
     Returns:
         List of file dicts with path, caption, is_image.
     """
-    global _pending_files
-    files = _pending_files.copy()
-    _pending_files = []
+    files = _get_pending_files_ref().copy()
+    _pending_files.set([])
     return files

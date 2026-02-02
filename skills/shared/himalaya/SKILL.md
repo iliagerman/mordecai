@@ -138,13 +138,25 @@ Do NOT run plain `himalaya ...` without the explicit prefix.
 command -v himalaya && himalaya --version
 ```
 
-**IMPORTANT**: Before calling any himalaya command, do a preflight to ensure the config exists and is addressable.
+**HARD REQUIREMENT: Before calling any himalaya command, do a preflight to ensure the TOML exists and is readable.**
+
+This skill runs in non-interactive tool execution. If the config is missing, Himalaya will often try to launch an interactive wizard ("Would you like to create one with the wizard?") and the tool run will hang / time out.
 
 Preflight (must pass):
 
 ```bash
-test -n "${HIMALAYA_CONFIG:-}" && test -f "$HIMALAYA_CONFIG"
+test -n "${HIMALAYA_CONFIG:-}" \
+  && test -f "$HIMALAYA_CONFIG" \
+  && test -s "$HIMALAYA_CONFIG" \
+  && cat "$HIMALAYA_CONFIG" >/dev/null
 ```
+
+If preflight fails:
+
+1. **STOP. Do NOT run any `himalaya ...` command yet.**
+2. Ask the user for the provider and required placeholders (Gmail or Outlook).
+3. Persist them with `set_skill_config(skill_name="himalaya", ...)`.
+4. Re-run the preflight, then validate with `himalaya account list`.
 
 Then verify the config is valid by listing accounts:
 
