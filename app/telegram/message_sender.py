@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from telegram import InputFile
 from telegram.error import TelegramError
@@ -16,11 +16,13 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramBotProtocol(Protocol):
-    async def send_message(self, *args: object, **kwargs: object) -> object: ...
+    # NOTE: Protocol parameter types must not be *wider* than the real bot's
+    # signature, otherwise structural typing fails (ExtBot is stricter than `object`).
+    async def send_message(self, chat_id: int | str, text: str, **kwargs: Any) -> Any: ...
 
-    async def send_document(self, *args: object, **kwargs: object) -> object: ...
+    async def send_document(self, chat_id: int | str, document: Any, **kwargs: Any) -> Any: ...
 
-    async def send_photo(self, *args: object, **kwargs: object) -> object: ...
+    async def send_photo(self, chat_id: int | str, photo: Any, **kwargs: Any) -> Any: ...
 
 
 class TelegramMessageSender:
