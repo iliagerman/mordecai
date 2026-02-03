@@ -14,6 +14,7 @@ import logging
 import os
 import random
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from strands.agent.conversation_manager import SlidingWindowConversationManager
@@ -50,15 +51,15 @@ class MessageProcessor:
         conversation_history: ConversationHistoryState,
         message_counter: MessageCounter,
         extraction_lock: ExtractionLockRegistry,
-        get_session_id: callable,
-        get_user_messages: callable,
-        create_agent: callable,
-        create_model: callable,
-        add_to_conversation_history: callable,
-        sync_shared_skills: callable,
-        increment_message_count: callable,
-        maybe_store_explicit_memory: callable,
-        trigger_extraction_and_clear: callable,
+        get_session_id: Callable[..., Any],
+        get_user_messages: Callable[..., Any],
+        create_agent: Callable[..., Any],
+        create_model: Callable[..., Any],
+        add_to_conversation_history: Callable[..., Any],
+        sync_shared_skills: Callable[..., Any],
+        increment_message_count: Callable[..., Any],
+        maybe_store_explicit_memory: Callable[..., Any],
+        trigger_extraction_and_clear: Callable[..., Any],
         deterministic_skill_runner: Any | None = None,
     ):
         """Initialize the message processor.
@@ -122,9 +123,11 @@ class MessageProcessor:
         inflight_inc()
         mark_progress("agent.message.start")
         response: str | None = None
+        # Initialize tracing variables before any potential exception
+        trace_this: bool = False
+        trace_id: str | None = None
+        t0: float = 0.0
         try:
-            trace_this = False
-            trace_id: str | None = None
             if getattr(self.config, "trace_enabled", False):
                 try:
                     sample_rate = float(getattr(self.config, "trace_sample_rate", 1.0) or 0.0)
@@ -182,8 +185,16 @@ class MessageProcessor:
                     ctx_dict = self.memory_service.retrieve_memory_context(
                         user_id=user_id, query=message
                     )
+                    # Handle agent_name which may be str | None | list[str]
+                    # due to type annotation inconsistency in retrieve_memory_context
+                    agent_name_value = ctx_dict.get("agent_name")
+                    agent_name: str | None = (
+                        agent_name_value[0] if isinstance(agent_name_value, list) and agent_name_value
+                        else agent_name_value if isinstance(agent_name_value, str)
+                        else None
+                    )
                     memory_context = MemoryContext(
-                        agent_name=ctx_dict.get("agent_name"),
+                        agent_name=agent_name,
                         facts=ctx_dict.get("facts", []),
                         preferences=ctx_dict.get("preferences", []),
                     )
@@ -426,8 +437,15 @@ class MessageProcessor:
             try:
                 query = message if message else "file attachment"
                 ctx_dict = self.memory_service.retrieve_memory_context(user_id=user_id, query=query)
+                # Handle agent_name which may be str | None | list[str]
+                agent_name_value = ctx_dict.get("agent_name")
+                agent_name: str | None = (
+                    agent_name_value[0] if isinstance(agent_name_value, list) and agent_name_value
+                    else agent_name_value if isinstance(agent_name_value, str)
+                    else None
+                )
                 memory_context = MemoryContext(
-                    agent_name=ctx_dict.get("agent_name"),
+                    agent_name=agent_name,
                     facts=ctx_dict.get("facts", []),
                     preferences=ctx_dict.get("preferences", []),
                 )
@@ -542,8 +560,15 @@ class MessageProcessor:
                 ctx_dict = self.memory_service.retrieve_memory_context(
                     user_id=user_id, query=message or "image analysis"
                 )
+                # Handle agent_name which may be str | None | list[str]
+                agent_name_value = ctx_dict.get("agent_name")
+                agent_name: str | None = (
+                    agent_name_value[0] if isinstance(agent_name_value, list) and agent_name_value
+                    else agent_name_value if isinstance(agent_name_value, str)
+                    else None
+                )
                 memory_context = MemoryContext(
-                    agent_name=ctx_dict.get("agent_name"),
+                    agent_name=agent_name,
                     facts=ctx_dict.get("facts", []),
                     preferences=ctx_dict.get("preferences", []),
                 )
