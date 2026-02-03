@@ -283,6 +283,7 @@ class AgentCreator:
         attachments: list[AttachmentInfo] | None = None,
         messages: list[Any] | None = None,
         onboarding_context: dict[str, str | None] | None = None,
+        for_cron_task: bool = False,
     ) -> Agent:
         """Create an agent instance.
 
@@ -293,16 +294,28 @@ class AgentCreator:
             messages: Previous conversation messages to restore context.
             onboarding_context: Optional onboarding context (soul.md, id.md content)
                 if this is the user's first interaction.
+            for_cron_task: If True, create an isolated agent for cron task execution.
+                Uses a fresh conversation manager and does not cache the agent.
 
         Returns:
             Configured Agent instance.
         """
-        model = self.create_model()
+        # Check if any attachment is an image - if so, use vision model
+        has_image_attachment = (
+            attachments is not None
+            and any(att.is_image for att in attachments)
+        )
+        model = self.create_model(use_vision=has_image_attachment)
         user_skills_dir = str(self.get_user_skills_dir(user_id))
 
         # Get or create conversation manager for this user
-        # This ensures conversation history is preserved across messages
-        conversation_manager = self.get_or_create_conversation_manager(user_id)
+        # For cron tasks, create a fresh isolated manager to avoid state corruption
+        if for_cron_task:
+            conversation_manager = SlidingWindowConversationManager(
+                window_size=self.config.conversation_window_size,
+            )
+        else:
+            conversation_manager = self.get_or_create_conversation_manager(user_id)
 
         # Set up the set_agent_name tool with memory service context
         if self.config.memory_enabled and self.memory_service is not None:
@@ -452,6 +465,20 @@ class AgentCreator:
         if self.skill_service is not None:
             builtin_tools.append(download_skill_module.download_skill_to_pending)
 
+        # Add image_reader tool if there's an image attachment (vision support)
+        # This allows the agent to analyze images when users send photos
+        has_image_attachment = (
+            attachments is not None
+            and any(att.is_image for att in attachments)
+        )
+        if has_image_attachment:
+            try:
+                from strands_tools import image_reader as image_reader_module
+                builtin_tools.append(image_reader_module.image_reader)
+                logger.info("Added image_reader tool for vision processing")
+            except (ImportError, AttributeError) as e:
+                logger.warning("image_reader tool not available for image attachment: %s", e)
+
         # Load MCP clients from configuration if available
         try:
             from app.config import _find_repo_root
@@ -569,7 +596,10 @@ class AgentCreator:
             logger.info("User %s: No skills loaded", user_id)
 
         # Cache the agent so we can retrieve messages later
-        self.cache_agent(user_id, agent)
+        # IMPORTANT: Do NOT cache cron task agents - they must remain ephemeral
+        # to avoid corrupting the main conversation state
+        if not for_cron_task:
+            self.cache_agent(user_id, agent)
 
         return agent
 

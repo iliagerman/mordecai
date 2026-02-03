@@ -92,7 +92,7 @@ MagicMock
 # OS
 .DS_Store
 Thumbs.db
-
+settings.local.json
 # Project specific
 agent.db
 splintermaster

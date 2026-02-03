@@ -638,6 +638,7 @@ class AgentService:
             memory_context=None,
             messages=[],  # Empty conversation - isolated
             onboarding_context=None,
+            for_cron_task=True,  # Use ephemeral conversation manager, don't cache
         )
 
         try:
