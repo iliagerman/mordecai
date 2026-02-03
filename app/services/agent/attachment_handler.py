@@ -137,10 +137,10 @@ class AttachmentHandler:
 
             # Import image_reader tool for vision processing
             try:
-                from strands_tools import image_reader
+                from strands_tools import image_reader as image_reader_module
 
-                vision_tools = [image_reader]
-            except ImportError:
+                vision_tools = [image_reader_module.image_reader]
+            except (ImportError, AttributeError):
                 logger.warning("image_reader tool not available")
                 vision_tools = []
 
