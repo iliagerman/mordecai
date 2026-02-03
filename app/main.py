@@ -27,6 +27,7 @@ os.environ["BYPASS_TOOL_CONSENT"] = "true"
 
 from app.config import AgentConfig
 from app.dao import LogDAO, TaskDAO, UserDAO
+from app.dao.conversation_dao import ConversationDAO
 from app.dao.cron_dao import CronDAO
 from app.dao.cron_lock_dao import CronLockDAO
 from app.database import Database
@@ -69,6 +70,28 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 
+# Filter to suppress spurious warnings from MCP client library
+# The session.py module uses logging.warning() directly (root logger),
+# so we need a custom filter to suppress specific messages
+class McpWarningFilter(logging.Filter):
+    """Filter out known benign warnings from MCP library."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Filter out SSE keepalive warnings
+        if "Unknown SSE event: keepalive" in record.getMessage():
+            return False
+        # Filter out notifications/initialized validation errors
+        # (known issue: InitializedNotification not in ServerNotification union)
+        if "Failed to validate notification" in record.getMessage():
+            if "notifications/initialized" in record.getMessage():
+                return False
+        return True
+
+
+# Apply the filter to the root logger's handler
+for handler in logging.root.handlers:
+    handler.addFilter(McpWarningFilter())
+
 
 class Application:
     """Main application container.
@@ -97,6 +120,7 @@ class Application:
         self.log_dao: LogDAO | None = None
         self.cron_dao: CronDAO | None = None
         self.cron_lock_dao: CronLockDAO | None = None
+        self.conversation_dao: ConversationDAO | None = None
 
         # Services
         self.agent_service: AgentService | None = None
@@ -174,6 +198,7 @@ class Application:
         self.log_dao = LogDAO(self.database)
         self.cron_dao = CronDAO(self.database)
         self.cron_lock_dao = CronLockDAO(self.database)
+        self.conversation_dao = ConversationDAO(self.database.get_session)
         logger.info("DAOs initialized")
 
         # Initialize services
@@ -217,6 +242,7 @@ class Application:
             pending_skill_service=self.pending_skill_service,
             skill_service=self.skill_service,
             logging_service=self.logging_service,
+            conversation_dao=self.conversation_dao,
         )
         self.task_service = TaskService(self.task_dao, self.user_dao, self.log_dao)
         self.webhook_service = WebhookService(self.logging_service)

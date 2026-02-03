@@ -100,6 +100,8 @@ temp_files
 himalaya.toml
 
 
+mcp_servers.json
+
 # Skills - ignore all except shared
 skills/*
 !skills/shared

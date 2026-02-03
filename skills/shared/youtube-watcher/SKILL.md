@@ -26,19 +26,28 @@ Retrieve the text transcript of a video.
 python3 {baseDir}/scripts/get_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
+**Important:** For long videos, this command may take 2-5 minutes to complete. Always pass `timeout_seconds=300` (or higher) to avoid timeouts:
+
+```bash
+timeout_seconds=300 python3 {baseDir}/scripts/get_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID"
+```
+
 ## Examples
 
 **Summarize a video:**
 
-1. Get the transcript:
+1. Get the transcript (always use timeout_seconds=300 or higher):
    ```bash
-   python3 {baseDir}/scripts/get_transcript.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+   timeout_seconds=300 python3 {baseDir}/scripts/get_transcript.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
    ```
 2. Read the output and summarize it for the user.
 
 **Find specific information:**
 
-1. Get the transcript.
+1. Get the transcript (use timeout_seconds=300 or higher):
+   ```bash
+   timeout_seconds=300 python3 {baseDir}/scripts/get_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID"
+   ```
 2. Search the text for keywords or answer the user's question based on the content.
 
 ## Notes
@@ -46,3 +55,4 @@ python3 {baseDir}/scripts/get_transcript.py "https://www.youtube.com/watch?v=VID
 - Requires `yt-dlp` to be installed and available in the PATH.
 - Works with videos that have closed captions (CC) or auto-generated subtitles.
 - If a video has no subtitles, the script will fail with an error message.
+- **Timeout:** YouTube transcript fetching can be slow. Always use `timeout_seconds=300` (5 minutes) or higher to avoid command timeouts, especially for long videos.

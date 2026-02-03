@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import TYPE_CHECKING, Awaitable, Callable
 from uuid import uuid4
 
@@ -131,7 +131,7 @@ class CronScheduler:
             - 10.5: Schedule hourly file cleanup job
         """
         # Calculate initial next execution time
-        cron = croniter(cron_expression, datetime.utcnow())
+        cron = croniter(cron_expression, datetime.now(UTC))
         next_execution = cron.get_next(datetime)
 
         task = SystemTask(
@@ -271,7 +271,7 @@ class CronScheduler:
         Requirements:
             - 10.5: Schedule hourly file cleanup job
         """
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         for task in self._system_tasks:
             if task.next_execution <= now:
@@ -337,14 +337,15 @@ class CronScheduler:
         )
 
         try:
-            # Execute through agent
-            result = await self.agent_service.process_message(
+            # Execute through agent using isolated cron task processing
+            # This prevents cron tasks from corrupting the main conversation state
+            result = await self.agent_service.process_cron_task(
                 user_id=task.user_id,
-                message=task.instructions,
+                instructions=task.instructions,
             )
 
             # Update timestamps
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             next_execution = self.cron_service.calculate_next_execution(
                 task.cron_expression, now
             )

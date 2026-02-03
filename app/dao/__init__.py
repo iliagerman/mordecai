@@ -1,6 +1,7 @@
 """Data Access Objects package."""
 
 from .base import BaseDAO
+from .conversation_dao import ConversationDAO
 from .cron_dao import CronDAO
 from .cron_lock_dao import CronLockDAO
 from .log_dao import LogDAO
@@ -10,6 +11,7 @@ from .user_dao import UserDAO
 
 __all__ = [
     "BaseDAO",
+    "ConversationDAO",
     "CronDAO",
     "CronLockDAO",
     "LogDAO",

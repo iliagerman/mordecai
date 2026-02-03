@@ -31,6 +31,9 @@ if TYPE_CHECKING:
     from app.services.memory_service import MemoryService
     from app.services.pending_skill_service import PendingSkillService
 
+from strands.tools.tools import PythonAgentTool
+from strands.types.tools import ToolFunc, ToolSpec
+
 from app.tools import (
     cron_tools as cron_tools_module,
 )
@@ -45,6 +48,9 @@ from app.tools import (
 )
 from app.tools import (
     forget_memory as forget_memory_module,
+)
+from app.tools import (
+    mcp_manager as mcp_manager_module,
 )
 from app.tools import (
     onboard_pending_skills as onboard_pending_skills_module,
@@ -383,8 +389,17 @@ class AgentCreator:
             file_read_env_module.file_read,
             file_write_env_module.file_write,
             set_agent_name_tool,
-            send_file_module.send_file,
-            send_progress_module.send_progress,
+            # Wrap send_file and send_progress as PythonAgentTool for proper registration
+            PythonAgentTool(
+                send_file_module.TOOL_SPEC["name"],
+                cast(ToolSpec, send_file_module.TOOL_SPEC),
+                cast(ToolFunc, send_file_module.send_file),
+            ),
+            PythonAgentTool(
+                send_progress_module.TOOL_SPEC["name"],
+                cast(ToolSpec, send_progress_module.TOOL_SPEC),
+                cast(ToolFunc, send_progress_module.send_progress),
+            ),
         ]
 
         # Built-in tools for persisting per-skill settings into secrets.yml
@@ -436,6 +451,80 @@ class AgentCreator:
         # Add skill download tool if skill service is available
         if self.skill_service is not None:
             builtin_tools.append(download_skill_module.download_skill_to_pending)
+
+        # Load MCP clients from configuration if available
+        try:
+            from app.config import _find_repo_root
+            from app.services.mcp.mcp_config import load_mcp_config
+
+            repo_root = _find_repo_root(start=Path(__file__))
+            user_skills_dir = self.get_user_skills_dir(user_id)
+
+            servers = load_mcp_config(
+                repo_root=repo_root,
+                user_id=user_id,
+                user_skills_dir=user_skills_dir,
+            )
+
+            # Helper function to create MCP client for a specific server
+            def _create_mcp_client_for_server(name: str, server_type: str, url: str | None, command: str | None, args: list[str] | None):
+                """Create an MCPClient for a specific server configuration."""
+                from strands.tools.mcp import MCPClient
+
+                if server_type == "remote" and url:
+                    from mcp.client.sse import sse_client
+                    return MCPClient(
+                        lambda: sse_client(url),
+                        prefix=name,
+                    )
+                elif server_type == "stdio" and command:
+                    from mcp import stdio_client, StdioServerParameters
+                    return MCPClient(
+                        lambda: stdio_client(StdioServerParameters(
+                            command=command,
+                            args=args or [],
+                        )),
+                        prefix=name,
+                    )
+                return None
+
+            # Create MCP clients for each configured server
+            for server_name, server_config in servers.items():
+                try:
+                    client = _create_mcp_client_for_server(
+                        server_name,
+                        server_config.server_type,
+                        server_config.url,
+                        server_config.command,
+                        server_config.args,
+                    )
+                    if client:
+                        builtin_tools.append(client)
+                        logger.info("User %s: Added MCP client '%s'", user_id, server_name)
+                except Exception as e:
+                    logger.warning(
+                        "User %s: Failed to create MCP client '%s': %s",
+                        user_id,
+                        server_name,
+                        e,
+                    )
+
+            # Set up MCP manager tools context
+            mcp_manager_module.set_mcp_manager_context(
+                self.config,
+                user_id,
+                repo_root,
+            )
+            builtin_tools.extend([
+                mcp_manager_module.mcp_add_server,
+                mcp_manager_module.mcp_remove_server,
+                mcp_manager_module.mcp_list_servers,
+            ])
+
+        except ImportError as e:
+            logger.warning("MCP support not available: %s", e)
+        except Exception as e:
+            logger.warning("Failed to load MCP configuration: %s", e)
 
         agent = Agent(
             model=model,
