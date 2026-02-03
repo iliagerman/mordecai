@@ -44,7 +44,7 @@ def config(temp_vault_dir):
 @pytest.mark.asyncio
 async def test_consolidation_deletes_file_on_success(config, temp_vault_dir):
     user_id = "u1"
-    stm_path = Path(temp_vault_dir) / "me" / user_id / "stm.md"
+    stm_path = Path(temp_vault_dir) / "users" / user_id / "stm.md"
     stm_path.parent.mkdir(parents=True, exist_ok=True)
     stm_path.write_text("# Short-term memories\n\n- (fact) timezone: UTC\n", encoding="utf-8")
 
@@ -71,7 +71,7 @@ async def test_consolidation_deletes_file_on_success(config, temp_vault_dir):
 @pytest.mark.asyncio
 async def test_consolidation_keeps_file_on_failure(config, temp_vault_dir):
     user_id = "u2"
-    stm_path = Path(temp_vault_dir) / "me" / user_id / "stm.md"
+    stm_path = Path(temp_vault_dir) / "users" / user_id / "stm.md"
     stm_path.parent.mkdir(parents=True, exist_ok=True)
     stm_path.write_text("# Short-term memories\n\n- (fact) name: Alice\n", encoding="utf-8")
 

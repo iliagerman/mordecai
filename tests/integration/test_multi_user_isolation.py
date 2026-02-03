@@ -236,7 +236,7 @@ class TestSessionIsolationBetweenUsers:
         # Track which user_id was passed to process_message
         processed_users = []
 
-        async def track_process(user_id: str, message: str) -> str:
+        async def track_process(user_id: str, message: str, onboarding_context=None) -> str:
             processed_users.append(user_id)
             return f"Response for {user_id}"
 
@@ -393,7 +393,7 @@ class TestConcurrentUserSupport:
         processed = []
         lock = asyncio.Lock()
 
-        async def track_process(user_id: str, message: str) -> str:
+        async def track_process(user_id: str, message: str, onboarding_context=None) -> str:
             async with lock:
                 processed.append({"user_id": user_id, "message": message})
             return f"Response for {user_id}"
@@ -458,7 +458,7 @@ class TestConcurrentUserSupport:
             async with lock:
                 responses.append({"chat_id": chat_id, "response": response})
 
-        async def process_message(user_id: str, message: str) -> str:
+        async def process_message(user_id: str, message: str, onboarding_context=None) -> str:
             # Simulate some processing time
             await asyncio.sleep(0.01)
             return f"Response for {user_id}"
@@ -521,7 +521,7 @@ class TestConcurrentUserSupport:
         processing_log = []
         lock = asyncio.Lock()
 
-        async def track_process(user_id: str, message: str) -> str:
+        async def track_process(user_id: str, message: str, onboarding_context=None) -> str:
             async with lock:
                 processing_log.append(
                     {
@@ -612,7 +612,7 @@ class TestConcurrentUserSupport:
             processed = []
             lock = asyncio.Lock()
 
-            async def track_process(user_id: str, message: str) -> str:
+            async def track_process(user_id: str, message: str, onboarding_context=None) -> str:
                 async with lock:
                     processed.append({"user_id": user_id, "message": message})
                 return f"Response for {user_id}"

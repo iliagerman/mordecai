@@ -15,64 +15,46 @@ Obsidian uses a combination of Markdown flavors:
 - [LaTeX](https://www.latex-project.org/) for math
 - Obsidian-specific extensions (wikilinks, callouts, embeds, etc.)
 
-## Vaults in this deployment
+## Scratchpad in this deployment
 
-This deployment uses **one** Obsidian vault directory.
+This deployment does **not** grant the agent broad filesystem access to an external Obsidian vault.
 
-The vault root is configured by the backend setting:
+All agent-authored notes must live under the repo-root scratchpad:
 
-- `obsidian_vault_root` (env override: `AGENT_OBSIDIAN_VAULT_ROOT`)
+- `<SCRATCHPAD_ROOT>/` where `<SCRATCHPAD_ROOT> = <REPO_ROOT>/scratchpad`
 
-In container deployments, this is commonly set to `/app/obsidian-vaults/`.
+User-scoped content must be stored under:
 
-Important:
-- Treat `/app/obsidian-vaults/` as a *common default*, not a guarantee.
-- The authoritative vault root at runtime is whatever the backend config resolves
-  for `obsidian_vault_root` / `AGENT_OBSIDIAN_VAULT_ROOT`.
-- If you are unsure which path is active, ask the operator/user to confirm the
-  resolved path *inside the running container*.
-
-Within that single vault, top-level folders are used as categories/areas:
-
-- `me/` (agent-owned root)
-  - `me/[USER_ID]/` (per-user area; default write target)
-- `family/`
-- `work/`
-- `personal/`
-- `agentleague/`
-- `tools/`
+- `users/[USER_ID]/` (per-user area; default write target)
 
 Selection rules:
 
-- If the user explicitly names a folder/category (e.g. “in my work notes”), use that folder.
-- If the user does not specify, default to `me/[USER_ID]/`.
-- The agent must always scope reads/writes to the current user’s folder `me/[USER_ID]/` so information between users will not be mixed.
-  - Never read/write another user’s folder (e.g. `me/<someone-else>/`) unless the user explicitly requests it *and* you can confirm it’s the same tenant/user.
-  - If `[USER_ID]` is not known from the current context, ask for it before creating/modifying any files under `me/`.
-- Do not modify content outside `me/[USER_ID]/` unless the user explicitly asks (or clearly implies) changes there.
+- If the user does not specify, default to `users/[USER_ID]/`.
+- Always scope reads/writes to the current user’s folder `users/[USER_ID]/` so information between users will not be mixed.
+  - Never read/write another user’s folder (e.g. `users/<someone-else>/`) unless the user explicitly requests it *and* you can confirm it’s the same tenant/user.
+  - If `[USER_ID]` is not known from the current context, ask for it before creating/modifying any files under `users/`.
+- Do not modify content outside `users/[USER_ID]/` unless the user explicitly asks.
 
 Path conventions:
 
 - When you propose creating/editing a note, include a concrete filesystem path like:
-  `<VAULT_ROOT>/me/[USER_ID]/<relative-path>.md`
-  where `<VAULT_ROOT>` is the configured `obsidian_vault_root`.
+  `<SCRATCHPAD_ROOT>/users/[USER_ID]/<relative-path>.md`
 
 ## Safe file discovery (when the exact note path is unknown)
 
 If the user asks for a note but does not provide an exact filename/path (e.g. “what’s on my shopping list?”), and the vault is accessible at runtime, you should:
 
-1. **Search within the expected folder(s)** (usually `family/` and/or `me/[USER_ID]/`).
+1. **Search within the expected folder(s)** (usually `users/[USER_ID]/`).
 2. **Keep searches bounded** (limit depth, limit results) and ask a clarifying question if multiple candidates match.
 3. **Read the most likely candidates** (using file_read) until you find the requested content.
 
 Recommended bounded search patterns (use shell tool):
 
 - Find likely shopping list notes (names only):
-  - `find <VAULT_ROOT>/family -maxdepth 3 -type f \( -iname '*shop*' -o -iname '*grocery*' -o -iname '*list*' \) -print | head -n 20`
-  - `find <VAULT_ROOT>/me/[USER_ID] -maxdepth 4 -type f \( -iname '*shop*' -o -iname '*grocery*' -o -iname '*list*' \) -print | head -n 20`
+  - `find <SCRATCHPAD_ROOT>/users/[USER_ID] -maxdepth 4 -type f \( -iname '*shop*' -o -iname '*grocery*' -o -iname '*list*' \) -print | head -n 20`
 
 - Content search (bounded; prefer ripgrep if available):
-  - `rg -n --max-count 20 -S "shopping|grocery" <VAULT_ROOT>/family 2>/dev/null || true`
+  - `rg -n --max-count 20 -S "shopping|grocery" <SCRATCHPAD_ROOT>/users/[USER_ID] 2>/dev/null || true`
 
 Then, for the top candidates:
 - `file_read(path="/full/path/to/note.md", mode="view")`
@@ -82,11 +64,11 @@ If you cannot find a unique match:
 
 ## Personality files
 
-Personality/identity instructions are stored as markdown files in the vault:
+Personality/identity instructions are stored as markdown files under the scratchpad:
 
 - Per-user:
-  - `me/[USER_ID]/soul.md`
-  - `me/[USER_ID]/id.md`
+  - `users/[USER_ID]/soul.md`
+  - `users/[USER_ID]/id.md`
 
 Default fallback templates live in the repo:
 
@@ -96,7 +78,7 @@ Default fallback templates live in the repo:
 When the per-user file is missing, the backend will fall back to the repo defaults under `instructions/`.
 - For `obsidian://open` links:
   - `vault` should be the **vault name on that device** (it’s the folder name you opened in Obsidian).
-  - `file` should be a path *within the vault*, e.g. `me/[USER_ID]/Notes/Welcome.md`.
+  - `file` should be a path *within the scratchpad/vault*, e.g. `users/[USER_ID]/Notes/Welcome.md`.
 
 ## Basic Formatting
 

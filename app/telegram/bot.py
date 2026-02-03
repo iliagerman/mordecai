@@ -401,6 +401,34 @@ class TelegramBotInterface:
         sender = TelegramMessageSender(self.application.bot)
         return await sender.send_photo(chat_id, photo_path, caption)
 
+    async def send_progress(self, chat_id: int, message: str) -> bool:
+        """Send a short progress update message to a Telegram chat.
+
+        Used during long-running operations to keep the user informed.
+
+        Args:
+            chat_id: Telegram chat ID to send to.
+            message: Progress message to send.
+
+        Returns:
+            True if send succeeded, False otherwise.
+        """
+        from app.telegram.message_sender import TelegramMessageSender
+
+        sender = TelegramMessageSender(self.application.bot)
+
+        # Truncate very long messages to avoid spam
+        MAX_LENGTH = 200
+        if len(message) > MAX_LENGTH:
+            message = message[: MAX_LENGTH - 3] + "..."
+
+        try:
+            await sender.send_response(chat_id, message)
+            return True
+        except Exception as e:
+            logger.warning("Failed to send progress to chat %s: %s", chat_id, e)
+            return False
+
     # ========================================================================
     # Deprecated Formatting Methods (kept for compatibility, delegate to formatter)
     # ========================================================================

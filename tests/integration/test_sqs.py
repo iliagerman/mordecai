@@ -179,8 +179,10 @@ class TestMessageConsumptionAndRouting:
     @pytest_asyncio.fixture
     async def mock_agent_service(self):
         """Create a mock agent service."""
+        async def process_message(user_id: str, message: str, onboarding_context=None) -> str:
+            return "Test response"
         mock = AsyncMock()
-        mock.process_message = AsyncMock(return_value="Test response")
+        mock.process_message = AsyncMock(side_effect=process_message)
         return mock
 
     async def test_message_consumed_from_queue(
@@ -220,6 +222,7 @@ class TestMessageConsumptionAndRouting:
         mock_agent_service.process_message.assert_called_once_with(
             user_id=user_id,
             message="Hello, agent!",
+            onboarding_context=None,
         )
 
     async def test_message_deleted_after_processing(
@@ -351,7 +354,7 @@ class TestMessageProcessingOrder:
         """Create an agent service that tracks message order."""
         processed_messages = []
 
-        async def track_message(user_id: str, message: str) -> str:
+        async def track_message(user_id: str, message: str, onboarding_context=None) -> str:
             processed_messages.append(message)
             return f"Processed: {message}"
 

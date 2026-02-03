@@ -78,6 +78,8 @@ class SystemPromptBuilder:
         prompt += self._skills_section(user_id)
         prompt += self._working_folder_section(user_id)
 
+        prompt += self._progress_updates_section()
+
         if self.has_cron:
             prompt += self._scheduling_section()
 
@@ -132,9 +134,9 @@ class SystemPromptBuilder:
             return ""
 
         lines: list[str] = []
-        lines.append("## Personality (Obsidian Vault)\n")
+        lines.append("## Personality (Scratchpad)\n")
         lines.append(
-            "The following files are loaded from repo defaults and/or the configured Obsidian vault and must be followed as system-level instructions.\n"
+            "The following files are loaded from repo defaults and/or the configured scratchpad and must be followed as system-level instructions.\n"
         )
 
         if "soul" in docs:
@@ -155,7 +157,7 @@ class SystemPromptBuilder:
         return "\n".join(lines)
 
     def _obsidian_access_section(self) -> str:
-        # Obsidian vault access capabilities
+        # Scratchpad access capabilities (historical name kept for compatibility)
         try:
             vault_root_raw = getattr(self.config, "obsidian_vault_root", None)
             vault_root_path = (
@@ -170,33 +172,25 @@ class SystemPromptBuilder:
             vault_accessible = False
             vault_root_display = f"`{vault_root_raw}`" if vault_root_raw else "(not configured)"
 
-        out = "\n## Obsidian Vault Access\n\n"
+        out = "\n## Scratchpad Access\n\n"
         if not vault_root_raw:
             out += (
-                "Obsidian vault root is **not configured**. You do NOT have filesystem access to the user's Obsidian notes. "
-                "Do not claim you can read or write Obsidian. Ask the user to paste content or send files as attachments.\n\n"
-                "If/when Obsidian access is enabled, prefer a **bounded search** (limited depth/results) rather than scanning an entire vault.\n\n"
+                "Scratchpad root is **not configured**. You do NOT have filesystem access to the user's scratchpad notes. "
+                "Ask the user to paste content or send files as attachments.\n\n"
             )
         elif not vault_accessible:
             out += (
-                f"Obsidian vault root is configured as {vault_root_display}, but it is **not accessible in this runtime** (missing path / not mounted / no permissions). "
-                "Do not claim you can read the user's vault. Ask the user to paste the relevant note contents (or attach the file), or fix the deployment so the vault is mounted and readable.\n\n"
-                "If the vault becomes accessible later, use a **bounded search** (limit depth/results; avoid scanning the entire vault) when locating notes by keyword.\n\n"
+                f"Scratchpad root is configured as {vault_root_display}, but it is **not accessible in this runtime** (missing path / no permissions). "
+                "Ask the user to paste the relevant contents (or attach files), or fix the deployment so the scratchpad directory is readable/writable.\n\n"
             )
         else:
             out += (
-                f"Obsidian vault root is accessible at {vault_root_display}.\n\n"
+                f"Scratchpad root is accessible at {vault_root_display}.\n\n"
                 "Constraints and best practices:\n"
-                "- You may safely read/write ONLY the per-user personality/identity files under `me/<USER_ID>/{soul.md,id.md}` via the personality tools.\n"
-                "- You may use the injected STM scratchpad (`me/<USER_ID>/stm.md`) as context when it appears in this prompt.\n"
-                "- If the user asks for content that likely exists in the vault but does not provide an exact path, you SHOULD perform a bounded search in the most relevant folder(s) (e.g. `family/` and/or `me/<USER_ID>/`).\n"
-                "  - Keep searches bounded: limit depth, limit results (e.g. first 20), avoid scanning the entire vault.\n"
-                "  - Prefer filename-based search first; if ambiguous, ask a clarifying question.\n"
-                "  - After finding candidate files, read them (file_read) until you find the requested content, or ask the user to confirm which file is correct.\n"
-                "  - Example bounded search commands (via shell):\n"
-                "    - `find <VAULT_ROOT>/family -maxdepth 4 -type f -iname '*.md' -print | head -n 50`\n"
-                "    - `find <VAULT_ROOT>/family -maxdepth 4 -type f \\( -iname '*<keyword>*' -o -iname '*<keyword2>*' \\) -print | head -n 20`\n"
-                '    - `rg -n --max-count 20 -S "<keyword>|<keyword2>" <VAULT_ROOT>/family 2>/dev/null || true`\n\n'
+                "- You may only read/write files under `scratchpad/**` (no other filesystem access).\n"
+                "- Store user-scoped notes and artifacts under `users/<USER_ID>/...` within the scratchpad.\n"
+                "- Use the personality tools to edit only `users/<USER_ID>/{soul.md,id.md}`.\n"
+                "- You may use the injected STM scratchpad (`users/<USER_ID>/stm.md`) as context when it appears in this prompt.\n"
             )
         return out
 
@@ -229,8 +223,8 @@ class SystemPromptBuilder:
             )
 
             return (
-                "\n## Short-Term Memory (Obsidian)\n\n"
-                "The following content comes from the user's Obsidian STM scratchpad. "
+                "\n## Short-Term Memory (Scratchpad)\n\n"
+                "The following content comes from the user's scratchpad STM note. "
                 "It may include recent session summaries and notes that are not yet reliably "
                 "available via long-term memory retrieval.\n\n"
                 "Use it as context for this session. If it conflicts with other info, "
@@ -422,6 +416,29 @@ class SystemPromptBuilder:
             "You have read and write access to this directory.\n"
         )
         return out
+
+    def _progress_updates_section(self) -> str:
+        return (
+            "## Progress Updates\n\n"
+            "You can send short progress updates to the user during long-running operations. "
+            "This helps keep the user informed while you work.\n\n"
+            "**When to send progress updates:**\n"
+            "- Before starting a long-running operation (e.g., 'Reading large file...')\n"
+            "- After completing a significant step (e.g., 'Analysis complete, generating report...')\n"
+            "- When operations take more than a few seconds\n\n"
+            "**How to use:**\n"
+            '- Call `send_progress(message="your status")` with a brief message\n'
+            "- Keep messages under 100 characters\n"
+            "- Use present continuous tense (e.g., 'Processing data...' not 'Processed data')\n\n"
+            "**Examples:**\n"
+            '- send_progress(message="Searching for files...")\n'
+            '- send_progress(message="Running analysis...")\n'
+            '- send_progress(message="Almost done...")\n\n'
+            "**Important:**\n"
+            "- Don't send progress for instant operations\n"
+            "- Don't spam with too many updates (2-3 max per task)\n"
+            "- If an error occurs, mention it in your final response\n\n"
+        )
 
     def _scheduling_section(self) -> str:
         return (

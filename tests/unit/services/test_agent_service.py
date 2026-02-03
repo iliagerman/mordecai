@@ -1137,7 +1137,7 @@ class TestAgentServicePersonalityInjection:
 
         prompt = service._build_system_prompt(user_id)
 
-        assert "## Personality (Obsidian Vault)" in prompt
+        assert "## Personality (Scratchpad)" in prompt
         assert "## Obsidian Vault Access" in prompt
         assert "bounded search" in prompt.lower()
         assert "# Soul (Personality)" in prompt

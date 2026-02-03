@@ -463,13 +463,13 @@ class SessionLifecycleManager:
         """Internal daily job: promote Obsidian short-term memories into LTM.
 
         Source of truth for short-term memory:
-                    <vault>/me/<USER_ID>/stm.md
+                    <vault>/users/<USER_ID>/stm.md
 
         This method is intended to be called by a *system* cron task that is
         registered in code (not DB-backed), so it is not user-editable.
 
         Behavior:
-        - For each user folder under <vault>/me/* (excluding 'default'):
+        - For each user folder under <vault>/users/* (excluding 'default'):
                     - If stm.md exists and is non-empty:
             - Extract important facts/preferences into long-term memory.
             - Optionally store a concise summary.

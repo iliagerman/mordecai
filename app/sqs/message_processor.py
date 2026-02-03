@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from app.models.agent import AttachmentInfo
 from app.tools import send_file as send_file_module
+from app.tools import send_progress as send_progress_module
+from app.sqs.typing_indicator import TypingIndicatorLoop, TypingIndicatorSender
 
 try:
     from mypy_boto3_sqs import SQSClient  # type: ignore[reportMissingImports]
@@ -39,6 +41,7 @@ except Exception:  # pragma: no cover
 
 
 if TYPE_CHECKING:
+    from app.config import AgentConfig
     from app.dao.user_dao import UserDAO
     from app.services.agent_service import AgentService
     from app.services.file_service import FileService
@@ -119,9 +122,12 @@ class MessageProcessor:
         sqs_client: "SQSClient",
         queue_manager: "SQSQueueManager",
         agent_service: "AgentService",
+        config: "AgentConfig | None" = None,
         user_dao: "UserDAO | None" = None,
         response_callback: Callable[[int, str], Any] | None = None,
         file_send_callback: (Callable[[int, str | Path, str | None], Any] | None) = None,
+        progress_callback: (Callable[[int, str], Any] | None) = None,
+        typing_action_callback: (Callable[[int, str], Any] | None) = None,
         file_service: "FileService | None" = None,
         polling_interval: float = 1.0,
         max_workers: int = 10,
@@ -134,12 +140,17 @@ class MessageProcessor:
             sqs_client: Boto3 SQS client.
             queue_manager: Queue manager for getting queue URLs.
             agent_service: Agent service for processing messages.
+            config: Agent config for parallel processing settings.
             user_dao: User DAO for ensuring users exist in database.
             response_callback: Optional callback for sending responses
                 (e.g., to Telegram). Signature: (chat_id, response) -> Any
             file_send_callback: Optional callback for sending files
                 (e.g., to Telegram).
                 Signature: (chat_id, file_path, caption) -> Any
+            progress_callback: Optional callback for sending progress updates
+                (e.g., to Telegram). Signature: (chat_id, message) -> Any
+            typing_action_callback: Optional callback for sending chat actions
+                (e.g., typing indicator). Signature: (chat_id, action) -> Any
             file_service: Optional file service for working folder access.
             polling_interval: Seconds between polling cycles (default: 1.0).
             max_workers: Max concurrent workers for processing (default: 10).
@@ -147,20 +158,30 @@ class MessageProcessor:
         self.sqs_client = sqs_client
         self.queue_manager = queue_manager
         self.agent_service = agent_service
+        self.config = config
         self.user_dao = user_dao
         self.response_callback = response_callback
         self.file_send_callback = file_send_callback
+        self.progress_callback = progress_callback
+        self.typing_action_callback = typing_action_callback
         self.file_service = file_service
         self.polling_interval = polling_interval
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.running = False
         self._processing_task: asyncio.Task | None = None
         self._heartbeat_tasks: dict[str, asyncio.Task] = {}
-        self._queue_locks: dict[str, asyncio.Lock] = {}
+        # Per-user semaphores for parallel message processing (replaces _queue_locks)
+        self._user_semaphores: dict[str, asyncio.Semaphore] = {}
+        self._semaphore_lock = asyncio.Lock()
         self._queue_prefetch_semaphores: dict[str, asyncio.Semaphore] = {}
         self._inflight_total_semaphore = asyncio.Semaphore(max_inflight_total)
         self._max_prefetch_per_queue = max_prefetch_per_queue
         self._message_tasks: set[asyncio.Task] = set()
+
+        # Get max concurrent tasks per user from config (default to 5 for backward compatibility)
+        self._max_concurrent_per_user = (
+            config.max_concurrent_tasks_per_user if config else 5
+        )
 
         # A short, user-friendly ack for when messages arrive while a previous
         # message from the same queue is still being processed.
@@ -228,12 +249,19 @@ class MessageProcessor:
             await asyncio.gather(*self._heartbeat_tasks.values(), return_exceptions=True)
         self._heartbeat_tasks.clear()
 
-    def _get_queue_lock(self, queue_url: str) -> asyncio.Lock:
-        lock = self._queue_locks.get(queue_url)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._queue_locks[queue_url] = lock
-        return lock
+    async def _get_user_semaphore(self, user_id: str) -> asyncio.Semaphore:
+        """Get or create a semaphore for the given user.
+
+        The semaphore limits the number of concurrent messages processed
+        for each user, enabling parallel processing while preventing
+        resource exhaustion.
+        """
+        async with self._semaphore_lock:
+            if user_id not in self._user_semaphores:
+                self._user_semaphores[user_id] = asyncio.Semaphore(
+                    self._max_concurrent_per_user
+                )
+            return self._user_semaphores[user_id]
 
     def _get_queue_prefetch_semaphore(self, queue_url: str) -> asyncio.Semaphore:
         sem = self._queue_prefetch_semaphores.get(queue_url)
@@ -272,7 +300,7 @@ class MessageProcessor:
 
                 messages = response.get("Messages", [])
                 for message in messages:
-                    await self._handle_message_ordered(queue_url, message)
+                    await self._handle_message_parallel(queue_url, message)
 
             except Exception as e:
                 logger.error("Error processing queue %s: %s", queue_url, e)
@@ -280,17 +308,17 @@ class MessageProcessor:
 
         # Background polling behavior (used by start()):
         # - Keeps polling responsive even when a long-running agent call is in progress.
-        # - Preserves in-queue ordering by serializing per-queue handling with a lock.
+        # - Uses per-user semaphores to allow parallel processing up to a configurable limit.
         # - Limits prefetch (number of reserved/invisible SQS messages) per queue.
-        queue_lock = self._get_queue_lock(queue_url)
         queue_prefetch_sem = self._get_queue_prefetch_semaphore(queue_url)
 
         if queue_url not in self._logged_background_queues:
             self._logged_background_queues.add(queue_url)
             logger.info(
-                "Queue poller active (background=true) queue=%s max_prefetch_per_queue=%s",
+                "Queue poller active (background=true) queue=%s max_prefetch_per_queue=%s max_concurrent_per_user=%s",
                 queue_url,
                 self._max_prefetch_per_queue,
+                self._max_concurrent_per_user,
             )
 
         # Avoid reserving more messages than we can safely heartbeat.
@@ -325,7 +353,7 @@ class MessageProcessor:
 
             async def runner() -> None:
                 try:
-                    await self._handle_message_ordered(queue_url, message, queue_lock=queue_lock)
+                    await self._handle_message_parallel(queue_url, message)
                 finally:
                     # Release prefetch capacity after the message is fully processed.
                     queue_prefetch_sem.release()
@@ -352,12 +380,19 @@ class MessageProcessor:
             if acquired_total:
                 self._inflight_total_semaphore.release()
 
-    async def _maybe_send_busy_ack(self, body: dict[str, Any], *, queue_lock: asyncio.Lock) -> None:
+    async def _maybe_send_busy_ack(self, body: dict[str, Any], *, user_semaphore: asyncio.Semaphore) -> None:
+        """Send a busy acknowledgment if the user's semaphore is at capacity.
+
+        This informs the user that their message has been queued because
+        they have reached their concurrent task limit.
+        """
         response_cb = self.response_callback
         if not response_cb:
             return
 
-        if not queue_lock.locked():
+        # Check if semaphore is at capacity (all slots taken)
+        if user_semaphore._value > 0:
+            # There's still capacity, no need for busy ack
             return
 
         raw_chat_id = body.get("chat_id")
@@ -376,46 +411,93 @@ class MessageProcessor:
         except Exception:
             logger.exception("Failed sending busy ack")
 
-    async def _handle_message_ordered(
+    async def _handle_message_parallel(
         self,
         queue_url: str,
         message: dict,
-        *,
-        queue_lock: asyncio.Lock | None = None,
     ) -> str | None:
-        """Handle a message with heartbeat + per-queue ordering.
+        """Handle a message with heartbeat + per-user concurrency limit.
 
-        Heartbeat starts immediately upon receipt (before waiting on the per-queue lock),
-        so prefetched messages won't reappear while waiting behind a long-running task.
+        Uses a per-user semaphore to allow parallel processing up to a
+        configurable limit. Heartbeat starts immediately upon receipt.
+
+        This replaces the old _handle_message_ordered which used a lock
+        for strict sequential processing.
         """
-        if queue_lock is None:
-            queue_lock = self._get_queue_lock(queue_url)
-
         message_id = message.get("MessageId", "unknown")
         receipt_handle = message["ReceiptHandle"]
 
-        # Parse body early so we can potentially send a "queued" ack while busy.
+        # Parse body early to get user_id for semaphore and for potential "queued" ack.
         body: dict[str, Any] | None = None
+        user_id: str | None = None
+        chat_id: int | None = None
         try:
             body = json.loads(message.get("Body", "{}"))
+            user_id = body.get("user_id") if body else None
+            chat_id = body.get("chat_id") if body else None
         except Exception:
             body = None
+
+        # If we couldn't parse user_id, we can't use the semaphore - process anyway
+        # but skip the busy ack and semaphore acquisition.
+        if not user_id:
+            logger.warning("No user_id in message %s, processing without semaphore", message_id)
 
         heartbeat_task = asyncio.create_task(
             self._start_heartbeat(queue_url, receipt_handle, message_id)
         )
         self._heartbeat_tasks[message_id] = heartbeat_task
 
-        try:
-            if body is not None:
-                await self._maybe_send_busy_ack(body, queue_lock=queue_lock)
+        # Typing indicator loop (will be started if typing_action_callback is available)
+        typing_loop: TypingIndicatorLoop | None = None
 
-            async with queue_lock:
+        try:
+            # Get the user's semaphore and potentially send busy ack if at capacity
+            if user_id and body:
+                user_semaphore = await self._get_user_semaphore(user_id)
+                await self._maybe_send_busy_ack(body, user_semaphore=user_semaphore)
+
+            # Acquire the semaphore to limit concurrent processing per user
+            if user_id:
+                user_semaphore = await self._get_user_semaphore(user_id)
+                async with user_semaphore:
+                    # Set up progress callback if available
+                    if self.progress_callback and chat_id:
+                        progress_cbk = self.progress_callback
+
+                        async def progress_cb(message: str) -> bool:
+                            result = progress_cbk(chat_id, message)
+                            if asyncio.iscoroutine(result):
+                                return await result
+                            return bool(result)
+
+                        send_progress_module.set_progress_callback(progress_cb)
+
+                    # Start typing indicator loop if typing_action_callback is available
+                    if self.typing_action_callback and chat_id:
+                        typing_cbk = self.typing_action_callback
+
+                        async def typing_action_cb(c_id: int, action: str) -> None:
+                            result = typing_cbk(c_id, action)
+                            if asyncio.iscoroutine(result):
+                                await result
+
+                        sender = TypingIndicatorSender(typing_action_cb)
+                        typing_loop = TypingIndicatorLoop(sender, chat_id)
+                        await typing_loop.start()
+
+                    return await self._handle_message(queue_url, message, body=body)
+            else:
+                # No user_id, process directly (shouldn't happen in normal flow)
                 return await self._handle_message(queue_url, message, body=body)
         finally:
             self._stop_heartbeat(message_id)
+            # Stop typing indicator loop
+            if typing_loop:
+                await typing_loop.stop()
             # Clear per-task tool callbacks and pending file queue.
             send_file_module.clear_send_callbacks()
+            send_progress_module.clear_progress_callback()
 
     async def _start_heartbeat(self, queue_url: str, receipt_handle: str, message_id: str) -> None:
         """Start a heartbeat task to extend visibility timeout.

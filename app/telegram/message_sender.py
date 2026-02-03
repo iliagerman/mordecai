@@ -39,6 +39,12 @@ class TelegramBotProtocol(Protocol):
         caption: str | None = None,
     ) -> Any: ...
 
+    async def send_chat_action(
+        self,
+        chat_id: int | str,
+        action: str,
+    ) -> Any: ...
+
 
 class TelegramMessageSender:
     """Handles sending messages and files to Telegram.
@@ -274,3 +280,54 @@ class TelegramMessageSender:
                     return await self.send_file(chat_id, photo_path, caption)
 
         return False
+
+    async def send_chat_action(
+        self,
+        chat_id: int,
+        action: str = "typing",
+    ) -> bool:
+        """Send a chat action to show bot activity.
+
+        Chat actions like 'typing' or 'upload_document' show the user
+        that the bot is working on their request. Actions expire after
+        about 5 seconds and need to be resent.
+
+        Args:
+            chat_id: Telegram chat ID to send to.
+            action: Chat action type. Common values:
+                - 'typing': Bot is typing a message
+                - 'upload_document': Bot is uploading a file
+                - 'upload_photo': Bot is uploading a photo
+                - 'record_video': Bot is recording a video
+                - 'record_audio': Bot is recording audio
+                - 'find_location': Bot is sharing location
+
+        Returns:
+            True if send succeeded, False otherwise.
+        """
+        from telegram.constants import ChatAction
+
+        # Map string action to ChatAction enum
+        action_map = {
+            "typing": ChatAction.TYPING,
+            "upload_document": ChatAction.UPLOAD_DOCUMENT,
+            "upload_photo": ChatAction.UPLOAD_PHOTO,
+            "record_video": ChatAction.RECORD_VIDEO,
+            "record_audio": ChatAction.RECORD_AUDIO,
+            "record_voice_note": ChatAction.RECORD_VOICE_NOTE,
+            "find_location": ChatAction.FIND_LOCATION,
+            "choose_contact": ChatAction.CHOOSE_CONTACT,
+        }
+
+        chat_action = action_map.get(action, ChatAction.TYPING)
+
+        try:
+            await self.bot.send_chat_action(
+                chat_id=chat_id,
+                action=chat_action,
+            )
+            logger.debug("Sent chat action '%s' to chat %s", action, chat_id)
+            return True
+        except Exception as e:
+            logger.warning("Failed to send chat action to chat %s: %s", chat_id, e)
+            return False

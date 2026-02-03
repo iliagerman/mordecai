@@ -62,6 +62,9 @@ from app.tools import (
     send_file as send_file_module,
 )
 from app.tools import (
+    send_progress as send_progress_module,
+)
+from app.tools import (
     set_agent_name as set_agent_name_tool,
 )
 from app.tools import (
@@ -380,7 +383,8 @@ class AgentCreator:
             file_read_env_module.file_read,
             file_write_env_module.file_write,
             set_agent_name_tool,
-            send_file_module,
+            send_file_module.send_file,
+            send_progress_module.send_progress,
         ]
 
         # Built-in tools for persisting per-skill settings into secrets.yml
@@ -388,7 +392,7 @@ class AgentCreator:
         builtin_tools.append(skill_secrets_module.set_skill_env_vars)
         builtin_tools.append(skill_secrets_module.set_skill_config)
 
-        # Add personality vault tools (read/write soul.md + id.md under me/<TELEGRAM_ID>/)
+        # Add personality vault tools (read/write soul.md + id.md under users/<TELEGRAM_ID>/)
         builtin_tools.extend(
             [
                 personality_vault_module.personality_read,

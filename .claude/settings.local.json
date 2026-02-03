@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__homeserver-development__context7-query-docs",
+      "mcp__homeserver-development__context7-resolve-library-id",
+      "mcp__homeserver-development__agentcore-search-agentcore-docs",
+      "Bash(python:*)"
+    ]
+  }
+}

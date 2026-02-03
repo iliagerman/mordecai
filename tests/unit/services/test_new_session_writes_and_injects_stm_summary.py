@@ -71,5 +71,5 @@ async def test_new_session_appends_summary_to_stm_and_next_prompt_injects_it(tmp
 
     # Next session prompt includes STM content (injected)
     prompt = svc._build_system_prompt(user_id=user_id)
-    assert "Short-Term Memory (Obsidian)" in prompt
+    assert "Short-Term Memory (Scratchpad)" in prompt
     assert "Decided B" in prompt

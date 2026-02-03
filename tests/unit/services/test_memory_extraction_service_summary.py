@@ -116,7 +116,7 @@ async def test_summarize_and_store_writes_obsidian_summary_note(tmp_path, mock_c
 
     assert summary is not None
 
-    note_path = Path(mock_config.obsidian_vault_root) / "me" / "u1" / "conversations" / "s1.md"
+    note_path = Path(mock_config.obsidian_vault_root) / "users" / "u1" / "conversations" / "s1.md"
     assert note_path.exists()
 
     content = note_path.read_text(encoding="utf-8")
@@ -124,7 +124,7 @@ async def test_summarize_and_store_writes_obsidian_summary_note(tmp_path, mock_c
     assert "session_id: s1" in content
     assert "Decision: Y" in content
 
-    stm_path = Path(mock_config.obsidian_vault_root) / "me" / "u1" / "stm.md"
+    stm_path = Path(mock_config.obsidian_vault_root) / "users" / "u1" / "stm.md"
     assert stm_path.exists()
     stm = stm_path.read_text(encoding="utf-8")
     assert "## Session summary: s1" in stm
@@ -162,11 +162,11 @@ async def test_summarize_and_store_does_not_write_obsidian_note_when_sensitive(
     assert summary is None
     memory_service.store_fact.assert_not_called()
 
-    note_path = Path(mock_config.obsidian_vault_root) / "me" / "u1" / "conversations" / "s1.md"
+    note_path = Path(mock_config.obsidian_vault_root) / "users" / "u1" / "conversations" / "s1.md"
     assert not note_path.exists()
 
-    stm_path = Path(mock_config.obsidian_vault_root) / "me" / "u1" / "stm.md"
+    stm_path = Path(mock_config.obsidian_vault_root) / "users" / "u1" / "stm.md"
     assert not stm_path.exists()
 
-    stm_path = Path(mock_config.obsidian_vault_root) / "me" / "u1" / "stm.md"
+    stm_path = Path(mock_config.obsidian_vault_root) / "users" / "u1" / "stm.md"
     assert not stm_path.exists()

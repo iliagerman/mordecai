@@ -232,9 +232,12 @@ class Application:
             sqs_client=self.sqs_client,
             queue_manager=self.queue_manager,
             agent_service=self.agent_service,
+            config=self.config,
             user_dao=self.user_dao,
             response_callback=self._send_telegram_response,
             file_send_callback=self._send_telegram_file,
+            progress_callback=self._send_telegram_progress,
+            typing_action_callback=self._send_telegram_typing_action,
         )
         logger.info("Message processor initialized")
 
@@ -332,6 +335,37 @@ class Application:
         if file_path.suffix.lower() in image_extensions:
             return await self.telegram_bot.send_photo(chat_id, file_path, caption)
         return await self.telegram_bot.send_file(chat_id, file_path, caption)
+
+    async def _send_telegram_progress(self, chat_id: int, message: str) -> bool:
+        """Send progress update via Telegram bot.
+
+        Callback for message processor to send progress updates.
+
+        Args:
+            chat_id: Telegram chat ID.
+            message: Progress message to send.
+
+        Returns:
+            True if send succeeded, False otherwise.
+        """
+        if self.telegram_bot:
+            return await self.telegram_bot.send_progress(chat_id, message)
+        return False
+
+    async def _send_telegram_typing_action(self, chat_id: int, action: str) -> None:
+        """Send typing action via Telegram bot.
+
+        Callback for message processor to send chat actions (typing indicator).
+
+        Args:
+            chat_id: Telegram chat ID.
+            action: Chat action type (typing, upload_document, etc.).
+        """
+        if self.telegram_bot:
+            from app.telegram.message_sender import TelegramMessageSender
+
+            sender = TelegramMessageSender(self.telegram_bot.application.bot)
+            await sender.send_chat_action(chat_id, action)
 
     def create_fastapi_app(self) -> FastAPI:
         """Create and configure FastAPI application.

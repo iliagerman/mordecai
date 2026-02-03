@@ -143,14 +143,14 @@ class OnboardingService:
         """
         vault_root = self._vault_root()
         if vault_root is None:
-            return False, "Obsidian vault root is not configured"
+            return False, "Scratchpad root is not configured"
 
         repo_dir = self._repo_instructions_dir()
         if repo_dir is None:
             return False, "Repo instructions directory not found"
 
         results = []
-        user_dir = vault_root / "me" / user_id
+        user_dir = vault_root / "users" / user_id
 
         for kind in ("soul", "id"):
             filename = self._kind_to_filename(kind)
@@ -196,7 +196,7 @@ class OnboardingService:
         vault_root = self._vault_root()
         vault_note = ""
         if vault_root:
-            vault_note = f"📁 me/{user_id}/soul.md\n📁 me/{user_id}/id.md\n\n"
+            vault_note = f"📁 users/{user_id}/soul.md\n📁 users/{user_id}/id.md\n\n"
         else:
             vault_note = "Note: Vault not configured, using repo defaults.\n\n"
 

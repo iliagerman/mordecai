@@ -163,15 +163,7 @@ def resolve_user_skills_secrets_path(config: Any, user_id: str, *, create: bool 
     return p
 
 
-# Container deployments commonly mount a host Obsidian vault at a known path.
-# If the configured obsidian_vault_root does not exist *in the current runtime*,
-# we will prefer this mount when present.
-#
-# This is intentionally overridable because different deployments may mount the vault
-# at different paths.
-DEFAULT_CONTAINER_OBSIDIAN_VAULT_ROOT = os.environ.get(
-    "AGENT_CONTAINER_OBSIDIAN_VAULT_ROOT", "/app/obsidian-vaults"
-)
+SCRATCHPAD_DIRNAME = "scratchpad"
 
 
 def _create_config_file(path: str, config_data: dict) -> None:
@@ -1267,39 +1259,11 @@ class AgentConfig(BaseSettings):
                     tp = repo_root / tp
                 self.user_skills_dir_template = str(tp)
 
-            # Optional: allow relative obsidian_vault_root in dev (e.g., ./vault).
-            if self.obsidian_vault_root:
-                vault = Path(str(self.obsidian_vault_root)).expanduser()
-                if not vault.is_absolute():
-                    self.obsidian_vault_root = str((repo_root / vault).resolve())
+            # NOTE: This deployment intentionally constrains all user-specific notes/
+            # memory artifacts to the repo-local scratchpad.
+            self.obsidian_vault_root = str((repo_root / SCRATCHPAD_DIRNAME).resolve())
         except Exception:
             # Be conservative: never fail config construction due to normalization.
-            return
-
-        # Obsidian vault root auto-detection:
-        # - Env override (AGENT_OBSIDIAN_VAULT_ROOT) always wins.
-        # - If we're running in a container where /app/obsidian-vaults is mounted,
-        #   use it when the configured path is missing in this runtime.
-        try:
-            if os.environ.get("AGENT_OBSIDIAN_VAULT_ROOT"):
-                return
-
-            container_root = Path(DEFAULT_CONTAINER_OBSIDIAN_VAULT_ROOT).expanduser().resolve()
-            container_root_ok = container_root.exists() and container_root.is_dir()
-            if not container_root_ok:
-                return
-
-            raw = (self.obsidian_vault_root or "").strip()
-            if not raw:
-                self.obsidian_vault_root = str(container_root)
-                return
-
-            candidate = Path(raw).expanduser()
-            # Only override when the configured path does not exist in this runtime.
-            if not candidate.exists():
-                self.obsidian_vault_root = str(container_root)
-        except Exception:
-            # Never fail config construction due to vault-path heuristics.
             return
 
     # Pending skill onboarding
@@ -1388,12 +1352,12 @@ class AgentConfig(BaseSettings):
     # avoid confusion with other pluralized directories.
     working_folder_base_dir: str = Field(default="./workspace")
 
-    # Obsidian vault (external to repo) + personality files
+    # Scratchpad (repo-local) + personality files
     obsidian_vault_root: str | None = Field(
-        default=None,
+        default=f"./{SCRATCHPAD_DIRNAME}",
         description=(
-            "Filesystem path to the Obsidian vault root (outside the repo). "
-            "Used for loading per-user personality/identity files under me/<TELEGRAM_ID>/."
+            "Filesystem path to the repo-local scratchpad root. "
+            "All user-specific notes/memory artifacts are stored under this directory."
         ),
     )
 
@@ -1435,6 +1399,12 @@ class AgentConfig(BaseSettings):
     timezone: str = Field(
         default="UTC",
         description="Timezone for displaying current date/time (e.g., 'Asia/Jerusalem', 'America/New_York')",
+    )
+
+    # Parallel message processing settings
+    max_concurrent_tasks_per_user: int = Field(
+        default=5,
+        description="Maximum number of concurrent message processing tasks per user",
     )
 
     @classmethod

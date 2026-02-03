@@ -87,6 +87,8 @@ dmypy.json
 # Alembic
 alembic/versions/*.pyc
 
+MagicMock
+
 # OS
 .DS_Store
 Thumbs.db

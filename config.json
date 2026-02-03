@@ -15,6 +15,7 @@
   "extraction_timeout_seconds": 30,
   "api_host": "0.0.0.0",
   "api_port": 8742,
+  "max_concurrent_tasks_per_user": 5,
   "agent_commands": [
     {
       "name": "new",

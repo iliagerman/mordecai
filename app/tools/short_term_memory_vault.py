@@ -1,14 +1,12 @@
-"""Short-term memory storage in an Obsidian vault.
+"""Short-term memory storage under the repo-local scratchpad.
 
-We store per-user short-term memories as an Obsidian note at:
-    me/<USER_ID>/stm.md
+We store per-user short-term memories as a markdown note at:
+    users/<USER_ID>/stm.md
 
 Where <USER_ID> is the same value as actor_id in AgentCore memory.
 
-Backward compatibility:
-- Older deployments used: me/<USER_ID>/short_term_memories.md
-    We will read from the legacy path if the new note doesn't exist, and we will
-    attempt to migrate the legacy file to the new path on first write.
+This deployment intentionally does NOT maintain backward compatibility with
+older on-disk layouts. The source of truth is the `users/<USER_ID>/` folder.
 
 This module is intentionally *not* exposed as Strands tools.
 It is an internal system component used by:
@@ -30,6 +28,8 @@ from pathlib import Path
 
 DEFAULT_MAX_CHARS = 20_000
 
+
+USER_ROOT_DIRNAME = "users"
 
 STM_FILENAME = "stm.md"
 LEGACY_STM_FILENAME = "short_term_memories.md"
@@ -61,19 +61,6 @@ def append_session_summary(
 
     target = short_term_memory_path(vault_root_raw, user_id)
     target.parent.mkdir(parents=True, exist_ok=True)
-
-    # Migrate legacy file name if it exists (best-effort).
-    if not target.exists():
-        legacy = _legacy_short_term_memory_path(vault_root_raw, user_id)
-        if legacy.exists() and legacy.is_file():
-            try:
-                legacy.rename(target)
-            except Exception:
-                try:
-                    target.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
-                    legacy.unlink(missing_ok=True)
-                except Exception:
-                    pass
 
     ts = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
 
@@ -129,34 +116,35 @@ def _safe_under_root(root: Path, candidate: Path) -> Path:
 
 def short_term_memory_path(vault_root_raw: str, user_id: str) -> Path:
     root = _vault_root(vault_root_raw)
-    path = root / "me" / user_id / STM_FILENAME
+    path = root / USER_ROOT_DIRNAME / user_id / STM_FILENAME
     return _safe_under_root(root, path)
 
 
 def _legacy_short_term_memory_path(vault_root_raw: str, user_id: str) -> Path:
     root = _vault_root(vault_root_raw)
-    path = root / "me" / user_id / LEGACY_STM_FILENAME
+    # Legacy filename within the current folder layout.
+    path = root / USER_ROOT_DIRNAME / user_id / LEGACY_STM_FILENAME
     return _safe_under_root(root, path)
 
 
 def list_user_ids(vault_root_raw: str) -> list[str]:
-    """List user ids that exist under <vault>/me/*.
+    """List user ids that exist under <vault>/users/*.
 
     Excludes the reserved folder 'default'.
     """
 
     root = _vault_root(vault_root_raw)
-    me_dir = root / "me"
+    users_dir = root / USER_ROOT_DIRNAME
     try:
-        me_dir = _safe_under_root(root, me_dir)
+        users_dir = _safe_under_root(root, users_dir)
     except Exception:
         return []
 
-    if not me_dir.exists() or not me_dir.is_dir():
+    if not users_dir.exists() or not users_dir.is_dir():
         return []
 
     user_ids: list[str] = []
-    for child in me_dir.iterdir():
+    for child in users_dir.iterdir():
         if not child.is_dir():
             continue
         name = child.name
@@ -166,7 +154,6 @@ def list_user_ids(vault_root_raw: str) -> list[str]:
             continue
         user_ids.append(name)
 
-    # Deterministic ordering (useful for tests/logging)
     user_ids.sort()
     return user_ids
 
@@ -203,7 +190,7 @@ def append_memory(
     target = short_term_memory_path(vault_root_raw, user_id)
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    # Migrate legacy file name if it exists (best-effort).
+    # If a legacy filename exists in the current folder layout, migrate it (best-effort).
     if not target.exists():
         legacy = _legacy_short_term_memory_path(vault_root_raw, user_id)
         if legacy.exists() and legacy.is_file():
@@ -215,7 +202,6 @@ def append_memory(
                     target.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
                     legacy.unlink(missing_ok=True)
                 except Exception:
-                    # If migration fails, we'll just write to the new file.
                     pass
 
     ts = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")

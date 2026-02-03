@@ -120,7 +120,7 @@ class TestEndToEndMessageFlow:
         """Create a mock agent service that returns predictable responses."""
         service = AsyncMock()
         service.process_message = AsyncMock(
-            side_effect=lambda user_id, message: f"Response to: {message}"
+            side_effect=lambda user_id, message, onboarding_context=None: f"Response to: {message}"
         )
         service.new_session = MagicMock()
         return service
@@ -207,6 +207,7 @@ class TestEndToEndMessageFlow:
         mock_agent_service.process_message.assert_called_once_with(
             user_id=user_id,
             message=message,
+            onboarding_context=None,
         )
 
     @pytest.mark.asyncio
