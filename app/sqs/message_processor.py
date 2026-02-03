@@ -451,6 +451,20 @@ class MessageProcessor:
         # Typing indicator loop (will be started if typing_action_callback is available)
         typing_loop: TypingIndicatorLoop | None = None
 
+        # Start typing indicator IMMEDIATELY (before semaphore acquisition)
+        # This ensures the user sees visual feedback as soon as SQS starts processing
+        if self.typing_action_callback and chat_id:
+            typing_cbk = self.typing_action_callback
+
+            async def typing_action_cb(c_id: int, action: str) -> None:
+                result = typing_cbk(c_id, action)
+                if asyncio.iscoroutine(result):
+                    await result
+
+            sender = TypingIndicatorSender(typing_action_cb)
+            typing_loop = TypingIndicatorLoop(sender, chat_id)
+            await typing_loop.start()
+
         try:
             # Get the user's semaphore and potentially send busy ack if at capacity
             if user_id and body:
@@ -472,19 +486,6 @@ class MessageProcessor:
                             return bool(result)
 
                         send_progress_module.set_progress_callback(progress_cb)
-
-                    # Start typing indicator loop if typing_action_callback is available
-                    if self.typing_action_callback and chat_id:
-                        typing_cbk = self.typing_action_callback
-
-                        async def typing_action_cb(c_id: int, action: str) -> None:
-                            result = typing_cbk(c_id, action)
-                            if asyncio.iscoroutine(result):
-                                await result
-
-                        sender = TypingIndicatorSender(typing_action_cb)
-                        typing_loop = TypingIndicatorLoop(sender, chat_id)
-                        await typing_loop.start()
 
                     return await self._handle_message(queue_url, message, body=body)
             else:

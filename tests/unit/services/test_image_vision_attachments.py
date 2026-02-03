@@ -15,10 +15,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import asyncio
+
 from app.config import AgentConfig
 from app.enums import ModelProvider
 from app.models.agent import AttachmentInfo
 from app.services.agent.agent_creation import AgentCreator
+from app.services.agent.message_processing import MessageProcessor
 
 
 class TestImageVisionAttachments:
@@ -223,3 +226,136 @@ class TestImageVisionAttachments:
             assert len(create_model_calls) > 0, "create_model should have been called"
             assert create_model_calls[0]["use_vision"] is False, \
                 f"Expected create_model to be called with use_vision=False for non-image attachments, got use_vision={create_model_calls[0]['use_vision']}"
+
+    def test_process_single_image_uses_correct_content_block_format(self, config, test_image_path):
+        """Test that _process_single_image uses correct Strands SDK content block format.
+
+        Regression test for bug where ImageContent and ImageSource classes were used
+        instead of the correct dictionary format: {"image": {"format": "png", "source": {"bytes": b"..."}}
+
+        The Strands SDK expects image content blocks as dictionaries with the format:
+        {"image": {"format": "<png|jpeg|gif|webp>", "source": {"bytes": <bytes>}}}
+
+        Using incorrect format (e.g., ImageContent/ImageSource classes) causes
+        "content_type=<format> | unsupported type" errors.
+        """
+        # Create a MessageProcessor with all required dependencies
+        memory_service = MagicMock()
+        logging_service = MagicMock()
+        conversation_history = {}
+        message_counter = MagicMock()
+        message_counter.get = MagicMock(return_value=0)  # Return 0 to avoid extraction trigger
+        extraction_lock = MagicMock()
+
+        # Track content blocks passed to Agent
+        captured_messages = []
+
+        def mock_agent_init(*args, **kwargs):
+            # Capture the messages parameter
+            messages = kwargs.get("messages", args[1] if len(args) > 1 else None)
+            if messages:
+                captured_messages.append(messages)
+            mock_agent = MagicMock()
+            mock_agent.return_value = "Test response"
+            return mock_agent
+
+        # Setup mock functions
+        def get_session_id(user_id): return f"session-{user_id}"
+        def get_user_messages(user_id): return []
+        def create_agent(*args, **kwargs):
+            mock_agent = MagicMock()
+            mock_agent.return_value = "Should not be called"
+            return mock_agent
+        def create_model(use_vision=False):
+            mock_model = MagicMock()
+            mock_model.provider = "bedrock"
+            mock_model.id = "test-vision-model"
+            return mock_model
+        def add_to_conversation_history(user_id, role, content): pass
+        def sync_shared_skills(user_id): pass
+        def increment_message_count(user_id, count): pass
+        def maybe_store_explicit_memory(user_id, message): pass
+        def trigger_extraction_and_clear(user_id): pass
+
+        extraction_lock.is_locked = MagicMock(return_value=False)
+
+        # Create MessageProcessor
+        processor = MessageProcessor(
+            config=config,
+            memory_service=memory_service,
+            logging_service=logging_service,
+            conversation_history=conversation_history,
+            message_counter=message_counter,
+            extraction_lock=extraction_lock,
+            get_session_id=get_session_id,
+            get_user_messages=get_user_messages,
+            create_agent=create_agent,
+            create_model=create_model,
+            add_to_conversation_history=add_to_conversation_history,
+            sync_shared_skills=sync_shared_skills,
+            increment_message_count=increment_message_count,
+            maybe_store_explicit_memory=maybe_store_explicit_memory,
+            trigger_extraction_and_clear=trigger_extraction_and_clear,
+        )
+
+        # Mock the Agent class to capture initialization arguments
+        with patch("strands.Agent") as mock_agent_class:
+            mock_agent_class.side_effect = mock_agent_init
+
+            # Run the async method
+            result = asyncio.run(processor._process_single_image(
+                user_id="test_user",
+                message="What is in this image?",
+                image_path=test_image_path,
+            ))
+
+        # Verify Agent was called with messages
+        assert len(captured_messages) > 0, "Agent should have been initialized with messages"
+
+        # captured_messages is a list of message lists
+        messages_list = captured_messages[0]
+        assert isinstance(messages_list, list), "Messages should be a list"
+
+        # Get the first message (user message with image)
+        first_message = messages_list[0]
+        assert isinstance(first_message, dict), "Message should be a dict"
+        assert first_message.get("role") == "user", "First message should be user role"
+
+        # Verify content is a list with image block in correct format
+        content = first_message.get("content")
+        assert isinstance(content, list), "Content should be a list"
+
+        # The image should be in the correct Strands SDK format
+        # Format: {"image": {"format": "<png|jpeg|gif|webp>", "source": {"bytes": b"..."}}
+        image_blocks = [block for block in content if isinstance(block, dict) and "image" in block]
+        assert len(image_blocks) > 0, "Should have at least one image block"
+
+        image_block = image_blocks[0]
+        assert "image" in image_block, "Block should have 'image' key"
+
+        image_data = image_block["image"]
+        assert isinstance(image_data, dict), "Image data should be a dict"
+        assert "format" in image_data, "Image data should have 'format' key"
+        assert "source" in image_data, "Image data should have 'source' key"
+
+        # Verify format is a string (jpeg for .jpg files)
+        assert image_data["format"] == "jpeg", f"Expected format 'jpeg', got '{image_data['format']}'"
+
+        # Verify source has 'bytes' key
+        source = image_data["source"]
+        assert isinstance(source, dict), "Source should be a dict"
+        assert "bytes" in source, "Source should have 'bytes' key"
+        assert isinstance(source["bytes"], bytes), "Bytes should be bytes type"
+
+        # Verify we're NOT using the incorrect ImageContent/ImageSource class format
+        # The incorrect format would have 'format' and 'source' directly at block level
+        # or use class instances instead of dicts
+        for block in content:
+            if isinstance(block, dict):
+                # Block should not have both 'format' and 'source' at top level
+                # (that would be the incorrect ImageContent class format)
+                if "format" in block and "source" in block and "image" not in block:
+                    raise AssertionError(
+                        f"Block has incorrect format: {block}. "
+                        "Expected {'image': {'format': ..., 'source': ...}} format"
+                    )

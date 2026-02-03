@@ -307,16 +307,19 @@ class TelegramMessageSender:
         """
         from telegram.constants import ChatAction
 
-        # Map string action to ChatAction enum
+        # Map string action to ChatAction enum (only valid actions from telegram>=21.x)
         action_map = {
             "typing": ChatAction.TYPING,
             "upload_document": ChatAction.UPLOAD_DOCUMENT,
             "upload_photo": ChatAction.UPLOAD_PHOTO,
+            "upload_video": ChatAction.UPLOAD_VIDEO,
+            "upload_voice": ChatAction.UPLOAD_VOICE,
+            "upload_video_note": ChatAction.UPLOAD_VIDEO_NOTE,
             "record_video": ChatAction.RECORD_VIDEO,
-            "record_audio": ChatAction.RECORD_AUDIO,
-            "record_voice_note": ChatAction.RECORD_VOICE_NOTE,
+            "record_video_note": ChatAction.RECORD_VIDEO_NOTE,
+            "record_voice": ChatAction.RECORD_VOICE,
             "find_location": ChatAction.FIND_LOCATION,
-            "choose_contact": ChatAction.CHOOSE_CONTACT,
+            "choose_sticker": ChatAction.CHOOSE_STICKER,
         }
 
         chat_action = action_map.get(action, ChatAction.TYPING)
