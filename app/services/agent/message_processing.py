@@ -14,24 +14,27 @@ import logging
 import os
 import random
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
+
+from strands.agent.conversation_manager import SlidingWindowConversationManager
 
 from app.enums import LogSeverity, ModelProvider
-from app.models.agent import AttachmentInfo, ConversationMessage, MemoryContext
+from app.models.agent import AttachmentInfo, MemoryContext
+from app.observability.health_state import inflight_dec, inflight_inc, mark_progress
 from app.observability.trace_context import new_trace_id, set_trace
 from app.observability.trace_logging import trace_event
-from app.observability.health_state import inflight_inc, inflight_dec, mark_progress
 from app.services.agent.response_extractor import extract_response_text
 
 if TYPE_CHECKING:
-    from strands import Agent
     from app.config import AgentConfig
-    from app.services.memory_service import MemoryService
     from app.services.agent.state import (
         ConversationHistory as ConversationHistoryState,
-        MessageCounter,
-        ExtractionLockRegistry,
     )
+    from app.services.agent.state import (
+        ExtractionLockRegistry,
+        MessageCounter,
+    )
+    from app.services.memory_service import MemoryService
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,7 @@ class MessageProcessor:
         get_session_id: callable,
         get_user_messages: callable,
         create_agent: callable,
+        create_model: callable,
         add_to_conversation_history: callable,
         sync_shared_skills: callable,
         increment_message_count: callable,
@@ -69,6 +73,7 @@ class MessageProcessor:
             get_session_id: Function to get session ID.
             get_user_messages: Function to get user messages.
             create_agent: Function to create an agent.
+            create_model: Function to create a model (with vision support).
             add_to_conversation_history: Function to add to conversation history.
             sync_shared_skills: Function to sync shared skills.
             increment_message_count: Function to increment message count.
@@ -85,6 +90,7 @@ class MessageProcessor:
         self._get_session_id = get_session_id
         self._get_user_messages = get_user_messages
         self._create_agent = create_agent
+        self._create_model = create_model
         self._add_to_conversation_history = add_to_conversation_history
         self._sync_shared_skills = sync_shared_skills
         self._increment_message_count = increment_message_count
@@ -380,6 +386,23 @@ class MessageProcessor:
             - 4.2: Provide full path to downloaded files
             - 4.3: Include file metadata in context
         """
+        # Special case: if there's a single image attachment, use the dedicated
+        # image processing path which has proper vision tool support
+        images = [att for att in attachments if att.is_image]
+        if len(images) == 1 and len(attachments) == 1:
+            # Use the dedicated image processing path from AttachmentHandler
+            image_path = images[0].file_path
+            if image_path:
+                # We need to use the attachment_handler's process_image_message
+                # But MessageProcessor doesn't have direct access to it.
+                # For now, create a vision-capable agent with the image_reader tool.
+                return await self._process_single_image(
+                    user_id=user_id,
+                    message=message,
+                    image_path=image_path,
+                    onboarding_context=onboarding_context,
+                )
+
         inflight_inc()
         mark_progress("agent.attachments.start")
         # Sync shared skills into user skills on every message.
@@ -476,6 +499,161 @@ class MessageProcessor:
         if self._deterministic_skill_runner is None:
             return None
         return self._deterministic_skill_runner.maybe_run(user_id=user_id, message=message)
+
+    async def _process_single_image(
+        self,
+        user_id: str,
+        message: str,
+        image_path: str,
+        onboarding_context: dict[str, str | None] | None = None,
+    ) -> str:
+        """Process a single image attachment using vision model.
+
+        Creates a vision-capable agent and passes the image as content blocks
+        directly to the model, bypassing the image_reader tool.
+
+        This approach is cleaner and more reliable than using the image_reader
+        tool because the image data is passed directly to the vision model.
+
+        Args:
+            user_id: User's telegram ID.
+            message: User's text message (caption).
+            image_path: Path to the downloaded image file.
+            onboarding_context: Optional onboarding context.
+
+        Returns:
+            Agent's response text.
+        """
+        # Sync shared skills
+        self._sync_shared_skills(user_id)
+
+        # Increment message count
+        self._increment_message_count(user_id, 1)
+
+        # Track user message
+        prompt_text = message or f"[Image: {image_path}]"
+        self._add_to_conversation_history(user_id, "user", prompt_text)
+        self._maybe_store_explicit_memory(user_id=user_id, message=prompt_text)
+
+        # Retrieve memory context
+        memory_context: MemoryContext | None = None
+        if self.config.memory_enabled and self.memory_service is not None:
+            try:
+                ctx_dict = self.memory_service.retrieve_memory_context(
+                    user_id=user_id, query=message or "image analysis"
+                )
+                memory_context = MemoryContext(
+                    agent_name=ctx_dict.get("agent_name"),
+                    facts=ctx_dict.get("facts", []),
+                    preferences=ctx_dict.get("preferences", []),
+                )
+            except Exception as e:
+                logger.warning("Failed to retrieve memory: %s", e)
+                memory_context = None
+
+        # Create vision model
+        use_vision = bool(self.config.vision_model_id)
+        model = self._create_model(use_vision=use_vision)
+
+        # Create conversation manager for this session
+        conversation_manager = SlidingWindowConversationManager(
+            window_size=self.config.conversation_window_size,
+        )
+
+        # Build system prompt for vision analysis
+        if memory_context and memory_context.agent_name:
+            system_prompt = (
+                f"YOUR NAME IS {memory_context.agent_name.upper()}.\n"
+                f"Always identify yourself as {memory_context.agent_name}.\n"
+                "You are a helpful AI assistant with vision capabilities. "
+                "When users send images, analyze them carefully and describe "
+                "what you see in detail."
+            )
+        else:
+            system_prompt = (
+                "You are a helpful AI assistant with vision capabilities. "
+                "When users send images, analyze them carefully and describe "
+                "what you see in detail."
+            )
+
+        # Prepare the image as content blocks
+        # This passes the image data directly to the vision model
+        from pathlib import Path
+
+        from strands import Agent
+        from strands.types.content import Message
+        from strands.types.media import ImageContent, ImageSource
+
+        # Determine image format
+        ext = Path(image_path).suffix.lower()
+        format_map = {
+            ".png": "png",
+            ".jpg": "jpeg",
+            ".jpeg": "jpeg",
+            ".gif": "gif",
+            ".webp": "webp",
+        }
+        img_format = format_map.get(ext, "png")
+
+        # Read image bytes and create ImageContent
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+
+        # Create content blocks with image and optional text caption
+        # Text can be a string directly in the content list
+        content_blocks: list[dict | str] = [
+            ImageContent(
+                format=img_format,  # type: ignore
+                source=ImageSource(bytes=image_bytes)  # type: ignore
+            )
+        ]
+
+        logger.info(
+            "User %s: Processing image attachment with direct content blocks (%s, %d bytes)",
+            user_id,
+            img_format,
+            len(image_bytes),
+        )
+
+        # Create the initial user message with image content
+        user_message = Message(role="user", content=content_blocks)  # type: ignore
+
+        # Create agent with the image message pre-loaded
+        # No image_reader tool needed - the model receives image data directly
+        agent = Agent(
+            model=model,
+            messages=[user_message],  # Pass image as initial message
+            conversation_manager=conversation_manager,
+            tools=[],  # No tools needed for direct image processing
+            system_prompt=system_prompt,
+        )
+
+        # Execute agent - the image is already in the conversation context
+        # If no caption was provided, send a prompt to trigger analysis
+        prompt = message or "Please analyze this image and describe what you see."
+
+        mark_progress("agent.invoke.start")
+        result = await asyncio.to_thread(agent, prompt)
+        mark_progress("agent.invoke.end")
+
+        response = self._extract_response_text(result)
+
+        # Track response and increment count
+        self._add_to_conversation_history(user_id, "assistant", response)
+        self._increment_message_count(user_id, 1)
+
+        # Check for extraction
+        current_count = self._message_counter.get(user_id)
+        if current_count >= self.config.max_conversation_messages:
+            if not self._extraction_lock.is_locked(user_id):
+                asyncio.create_task(self._trigger_extraction_and_clear(user_id))
+                response = (
+                    f"{response}\n\n"
+                    "✨ Your conversation has been summarized and important "
+                    "information saved. Starting fresh!"
+                )
+
+        return response
 
     def _extract_response_text(self, result: Any) -> str:
         """Extract text response from agent result.

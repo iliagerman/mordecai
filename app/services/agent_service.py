@@ -230,6 +230,7 @@ class AgentService:
             get_session_id=self._get_session_id,
             get_user_messages=self._agent_creator.get_user_messages,
             create_agent=self._agent_creator.create_agent,
+            create_model=self._agent_creator.create_model,
             add_to_conversation_history=self._add_to_conversation_history,
             sync_shared_skills=self._agent_creator.sync_shared_skills_for_user,
             increment_message_count=self._session_lifecycle.increment_message_count,
