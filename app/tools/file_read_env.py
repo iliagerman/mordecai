@@ -10,6 +10,7 @@ We keep the public tool name as `file_read` so prompts/skills remain compatible.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 from app.observability.trace_context import get_trace_id
@@ -67,6 +68,39 @@ def _call_base_file_read(**kwargs: Any):
     raise TypeError("strands_tools file_read implementation is not callable")
 
 
+def _find_repo_root(*, start: Path) -> Path:
+    """Best-effort repository root discovery (pyproject.toml heuristic)."""
+
+    try:
+        start = start.resolve()
+        for p in [start, *start.parents]:
+            if (p / "pyproject.toml").exists():
+                return p
+    except Exception:
+        pass
+    return Path.cwd()
+
+
+def _scratchpad_root() -> Path:
+    repo_root = _find_repo_root(start=Path(__file__))
+    return (repo_root / "scratchpad").resolve()
+
+
+def _ensure_scratchpad_path(path_raw: str) -> Path:
+    root = _scratchpad_root()
+    p = Path(str(path_raw)).expanduser()
+    if not p.is_absolute():
+        p = _find_repo_root(start=Path(__file__)) / p
+    resolved = p.resolve()
+    try:
+        resolved.relative_to(root)
+    except Exception as e:
+        raise ValueError(
+            f"file_read is restricted to scratchpad/**. Refusing path: {resolved}"
+        ) from e
+    return resolved
+
+
 @tool(
     name="file_read",
     description=(
@@ -91,8 +125,10 @@ def file_read(
             mode=mode,
         )
 
+    safe_path = str(_ensure_scratchpad_path(path))
+
     try:
-        result = _call_base_file_read(path=path, mode=mode, **kwargs)
+        result = _call_base_file_read(path=safe_path, mode=mode, **kwargs)
         if get_trace_id() is not None:
             # Avoid emitting huge payloads; keep a preview and size.
             preview = None

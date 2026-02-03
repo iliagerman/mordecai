@@ -106,7 +106,7 @@ async def test_obsidian_stm_handoff_on_new_session(tmp_path):
 
     # The new session prompt must include the previous session's summary block.
     prompt = agent_service._build_system_prompt(user_id)
-    assert "Short-Term Memory (Obsidian)" in prompt
+    assert "Short-Term Memory (Scratchpad)" in prompt
     assert f"Session summary: {old_session_id}" in prompt
 
     print("[e2e] ✅ Prompt contains STM handoff summary block")

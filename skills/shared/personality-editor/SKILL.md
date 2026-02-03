@@ -10,10 +10,10 @@ This skill explains how the agent modifies its own personality/identity **when t
 ## Prerequisites / install & verify
 
 - Prerequisite: the backend must be configured with an Obsidian vault root (the agent needs filesystem access to the vault).
-- Verify configuration: ensure `obsidian_vault_root` is set (or `AGENT_OBSIDIAN_VAULT_ROOT` override is provided).
+- Verify configuration: ensure `obsidian_vault_root` points to the repo `scratchpad/` directory.
 - Verify expected files:
    - Repo defaults exist: `instructions/soul.md`, `instructions/id.md`
-   - Per-user files exist (or can be created in the vault): `me/<TELEGRAM_ID>/soul.md`, `me/<TELEGRAM_ID>/id.md`
+   - Per-user files exist (or can be created under scratchpad): `users/<TELEGRAM_ID>/soul.md`, `users/<TELEGRAM_ID>/id.md`
 
 Example (verification flow):
 
@@ -22,14 +22,14 @@ personality_read(kind="soul", source="auto")
 personality_read(kind="id", source="auto")
 ```
 
-## Storage layout (Obsidian vault; NOT the repo workspace)
+## Storage layout (scratchpad; repo workspace)
 
-Vault root is configured by the backend (`obsidian_vault_root`, env override `AGENT_OBSIDIAN_VAULT_ROOT`).
+Scratchpad root is configured by the backend (`obsidian_vault_root`) and points to `<REPO_ROOT>/scratchpad`.
 
 Files:
 - Per-user (Telegram id):
-  - `me/<TELEGRAM_ID>/soul.md`
-  - `me/<TELEGRAM_ID>/id.md`
+   - `users/<TELEGRAM_ID>/soul.md`
+   - `users/<TELEGRAM_ID>/id.md`
 
 - Defaults (built-in repo templates):
    - `instructions/soul.md`
@@ -37,12 +37,12 @@ Files:
 
 Resolution order (per file):
 
-1. If `me/<TELEGRAM_ID>/<file>.md` exists, it is used.
+1. If `users/<TELEGRAM_ID>/<file>.md` exists, it is used.
 2. Else `instructions/<file>.md` is used.
 
 ## When the user asks to change the agent's personality
 
-- The personality file to change is **always** the per-user file: `me/<TELEGRAM_ID>/soul.md`.
+- The personality file to change is **always** the per-user file: `users/<TELEGRAM_ID>/soul.md`.
 - Do NOT edit the repo defaults (`instructions/soul.md`) unless the operator explicitly asks to change the global defaults.
 
 ### Process
@@ -60,7 +60,7 @@ If the per-user file doesn't exist yet:
 
 ## When the user asks to change bot identity metadata
 
-- Use `me/<TELEGRAM_ID>/id.md`.
+- Use `users/<TELEGRAM_ID>/id.md`.
 - This file should contain:
   - bot name
   - bot age

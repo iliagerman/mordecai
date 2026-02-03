@@ -1,9 +1,8 @@
-"""Load personality/identity markdown from an Obsidian vault (per-user overrides) with repo defaults.
+"""Load personality/identity markdown from the repo-local scratchpad with repo defaults.
 
-The vault is **outside** the repo workspace. Per-user overrides are resolved using
-a strict layout to prevent cross-user leakage:
+Per-user overrides are resolved using a strict layout to prevent cross-user leakage:
 
-- Per-user (Telegram id): me/<USER_ID>/{soul,id}.md
+- Per-user (Telegram id): users/<USER_ID>/{soul,id}.md
 
 Repo defaults live under `instructions/{soul,id}.md`.
 
@@ -32,7 +31,7 @@ class PersonalityDoc:
 
 
 class PersonalityService:
-    """Resolve and load personality docs from an Obsidian vault."""
+    """Resolve and load personality docs from the scratchpad."""
 
     def __init__(
         self,
@@ -102,7 +101,7 @@ class PersonalityService:
 
         root = self._vault_root()
         if root is not None:
-            user_path = root / "me" / user_id / filename
+            user_path = root / "users" / user_id / filename
             candidates.append(("user", user_path))
 
         # Built-in defaults live in the repo (instructions/). These are intended to

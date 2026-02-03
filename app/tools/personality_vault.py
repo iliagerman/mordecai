@@ -1,14 +1,15 @@
-"""Constrained tools for reading/writing per-user personality files in an Obsidian vault.
+"""Constrained tools for reading/writing per-user personality files under the scratchpad.
 
 These tools are designed to safely edit ONLY:
-- me/<TELEGRAM_ID>/soul.md
-- me/<TELEGRAM_ID>/id.md
+- users/<TELEGRAM_ID>/soul.md
+- users/<TELEGRAM_ID>/id.md
 
 …and to read built-in defaults from the repo under:
 - instructions/soul.md
 - instructions/id.md
 
-Vault root is configured via AgentConfig.obsidian_vault_root (env: AGENT_OBSIDIAN_VAULT_ROOT).
+The root is configured via AgentConfig.obsidian_vault_root and is expected to point at the
+repo-local scratchpad.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ def _require_context() -> tuple[bool, str]:
     if not _vault_root_raw:
         return (
             False,
-            "Obsidian vault root is not configured (obsidian_vault_root / AGENT_OBSIDIAN_VAULT_ROOT).",
+            "Scratchpad root is not configured (obsidian_vault_root).",
         )
     if not _current_user_id:
         return False, "User context not available."
@@ -98,7 +99,7 @@ def _safe_under_root(root: Path, candidate: Path) -> Path:
 def _paths_for(kind: PersonalityDocKind) -> dict[str, Path]:
     root = _vault_root()
     fname = _filename(kind)
-    user_path = root / "me" / _current_user_id / fname  # type: ignore[arg-type]
+    user_path = root / "users" / _current_user_id / fname  # type: ignore[arg-type]
     return {
         "user": _safe_under_root(root, user_path),
         "default": _repo_default_path(kind),
@@ -159,8 +160,8 @@ def personality_read(
 @tool(
     name="personality_write",
     description=(
-        "Write/update the per-user personality/identity file in the Obsidian vault. "
-        "This ONLY writes to me/<TELEGRAM_ID>/{soul,id}.md. "
+        "Write/update the per-user personality/identity file under the scratchpad. "
+        "This ONLY writes to users/<TELEGRAM_ID>/{soul,id}.md. "
         "Use this when the user asks to modify the agent's personality (soul) or identity (id)."
     ),
 )
@@ -200,7 +201,7 @@ def personality_write(
     name="personality_reset_to_default",
     description=(
         "Reset the per-user personality/identity file to the built-in default version (instructions/{soul,id}.md). "
-        "Copies the repo default into me/<TELEGRAM_ID>/*.md in the configured vault."
+        "Copies the repo default into users/<TELEGRAM_ID>/*.md under the scratchpad."
     ),
 )
 def personality_reset_to_default(kind: PersonalityDocKind) -> str:

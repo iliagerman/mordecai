@@ -74,6 +74,7 @@ async def test_long_running_message_does_not_block_other_queues() -> None:
         sqs_client=sqs_client,
         queue_manager=queue_manager,
         agent_service=agent_service,
+        config=None,  # No config, uses default max_concurrent_per_user=5
         polling_interval=0.01,
         max_prefetch_per_queue=2,
         max_inflight_total=10,
@@ -92,8 +93,74 @@ async def test_long_running_message_does_not_block_other_queues() -> None:
 
 
 @pytest.mark.asyncio
-async def test_same_queue_prefetch_sends_busy_ack() -> None:
-    """If a second message arrives for same queue while first is running, we should ack/queue it."""
+async def test_same_queue_allows_parallel_processing() -> None:
+    """With parallel processing enabled, multiple messages from the same user run concurrently."""
+
+    queue_manager = MagicMock()
+    queue_manager.get_all_queue_urls.return_value = ["q://u1"]
+
+    messages = [
+        _make_sqs_message(user_id="u1", chat_id=1, message="first", message_id="m1"),
+        _make_sqs_message(user_id="u1", chat_id=1, message="second", message_id="m2"),
+    ]
+
+    def receive_message(*, QueueUrl: str, **kwargs) -> dict:  # noqa: N803
+        if messages:
+            return {"Messages": [messages.pop(0)]}
+        return {"Messages": []}
+
+    sqs_client = MagicMock()
+    sqs_client.receive_message.side_effect = receive_message
+    sqs_client.delete_message.return_value = {}
+    sqs_client.change_message_visibility.return_value = {}
+
+    started_first = asyncio.Event()
+    started_second = asyncio.Event()
+    allow_first_finish = asyncio.Event()
+    allow_second_finish = asyncio.Event()
+
+    async def process_message(*, user_id: str, message: str, onboarding_context=None) -> str:  # type: ignore[no-untyped-def]
+        if message == "first":
+            started_first.set()
+            await allow_first_finish.wait()
+        elif message == "second":
+            started_second.set()
+            await allow_second_finish.wait()
+        return "ok"
+
+    agent_service = MagicMock()
+    agent_service.process_message = AsyncMock(side_effect=process_message)
+
+    processor = MessageProcessor(
+        sqs_client=sqs_client,
+        queue_manager=queue_manager,
+        agent_service=agent_service,
+        config=None,  # Uses default max_concurrent_per_user=5
+        polling_interval=0.01,
+        max_prefetch_per_queue=2,
+        max_inflight_total=10,
+    )
+
+    task = processor.start_background()
+
+    # Both messages should start processing in parallel
+    await asyncio.wait_for(started_first.wait(), timeout=1.0)
+    await asyncio.wait_for(started_second.wait(), timeout=1.0)
+
+    # Cleanup.
+    allow_first_finish.set()
+    allow_second_finish.set()
+    await processor.stop()
+    task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_semaphore_at_capacity_sends_busy_ack() -> None:
+    """When the user's semaphore is at capacity, we send a busy acknowledgment."""
+
+    # Create a mock config with max_concurrent_tasks_per_user=1
+    config = MagicMock()
+    config.max_concurrent_tasks_per_user = 1
 
     queue_manager = MagicMock()
     queue_manager.get_all_queue_urls.return_value = ["q://u1"]
@@ -131,6 +198,7 @@ async def test_same_queue_prefetch_sends_busy_ack() -> None:
         sqs_client=sqs_client,
         queue_manager=queue_manager,
         agent_service=agent_service,
+        config=config,  # max_concurrent_tasks_per_user=1 forces sequential behavior
         response_callback=response_callback,
         polling_interval=0.01,
         max_prefetch_per_queue=2,
@@ -139,11 +207,12 @@ async def test_same_queue_prefetch_sends_busy_ack() -> None:
 
     task = processor.start_background()
 
-    # Ensure the first message is actively processing (lock held), then allow the poller to prefetch the second.
+    # Ensure the first message is actively processing (semaphore held), then allow the poller to prefetch the second.
     await asyncio.wait_for(started_first.wait(), timeout=1.0)
     await asyncio.sleep(0.05)
 
-    # We should have sent an "I'm still working" ack for the second message.
+    # We should have sent an "I'm still working" ack for the second message
+    # because the semaphore (capacity=1) is at capacity.
     assert response_callback.await_count >= 1
     assert any(
         (call.args and "still working" in str(call.args[1]).lower())

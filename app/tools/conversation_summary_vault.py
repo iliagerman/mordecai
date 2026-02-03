@@ -1,12 +1,12 @@
-"""Per-conversation memory artifacts in an Obsidian vault.
+"""Per-conversation memory artifacts stored under the repo-local scratchpad.
 
-We persist a *session-level* conversation summary as an Obsidian note:
+We persist a *session-level* conversation summary as a markdown note:
 
-    me/<USER_ID>/conversations/<SESSION_ID>.md
+    users/<USER_ID>/conversations/<SESSION_ID>.md
 
 This is intentionally separate from the rolling STM scratchpad note:
 
-    me/<USER_ID>/stm.md
+    users/<USER_ID>/stm.md
 
 Rationale:
 - STM is a mutable scratchpad (and may be cleared after consolidation).
@@ -58,7 +58,7 @@ def _safe_filename(name: str, *, max_len: int = 120) -> str:
 def conversation_summary_path(vault_root_raw: str, user_id: str, session_id: str) -> Path:
     root = _vault_root(vault_root_raw)
     safe_session = _safe_filename(session_id)
-    p = root / "me" / user_id / "conversations" / f"{safe_session}.md"
+    p = root / "users" / user_id / "conversations" / f"{safe_session}.md"
     return _safe_under_root(root, p)
 
 

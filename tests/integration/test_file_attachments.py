@@ -454,7 +454,7 @@ class TestPhotoAttachmentFlow:
         call_args = mock_agent_service.process_message_with_attachments.call_args
         attachments = call_args.kwargs["attachments"]
         assert len(attachments) == 1
-        assert attachments[0]["is_image"] is True
+        assert attachments[0].is_image is True
 
 
 class TestFileCleanup:

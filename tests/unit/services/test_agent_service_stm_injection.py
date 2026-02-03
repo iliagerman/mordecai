@@ -29,6 +29,6 @@ def test_build_system_prompt_injects_obsidian_stm(tmp_path: Path):
 
     prompt = svc._build_system_prompt(user_id="u1")
 
-    assert "Short-Term Memory (Obsidian)" in prompt
+    assert "Short-Term Memory (Scratchpad)" in prompt
     assert "## Session summary: s1" in prompt
     assert "Did X" in prompt

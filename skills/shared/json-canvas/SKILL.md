@@ -11,41 +11,31 @@ This skill enables skills-compatible agents to create and edit valid JSON Canvas
 
 JSON Canvas is an open file format for infinite canvas data. Canvas files use the `.canvas` extension and contain valid JSON following the [JSON Canvas Spec 1.0](https://jsoncanvas.org/spec/1.0/).
 
-## Vaults in this deployment
+## Scratchpad in this deployment
 
-This deployment uses **one** Obsidian vault directory.
+This deployment does **not** grant the agent broad filesystem access to an external Obsidian vault.
 
-The authoritative vault root at runtime is configured by the backend setting:
-- `obsidian_vault_root` (env override: `AGENT_OBSIDIAN_VAULT_ROOT`)
+All agent-authored notes (including `.canvas`) must live under the repo-root scratchpad:
 
-In many container deployments, this resolves to `/app/obsidian-vaults/`, but do not assume it.
+- `<SCRATCHPAD_ROOT>/` where `<SCRATCHPAD_ROOT> = <REPO_ROOT>/scratchpad`
 
-Within that single vault, top-level folders are used as categories/areas:
+User-scoped content must be stored under:
 
-- `me/` (agent-owned root)
-  - `me/[USER_ID]/` (per-user area; default write target)
-- `family/`
-- `work/`
-- `personal/`
-- `agentleague/`
-- `tools/`
+- `users/[USER_ID]/` (per-user area; default write target)
 
 Selection rules:
 
-- If the user explicitly names a folder/category, use that folder.
-- If the user does not specify, default to `me/[USER_ID]/`.
-- The agent must always scope reads/writes to the current user’s folder `me/[USER_ID]/` so information between users will not be mixed.
-  - Never read/write another user’s folder (e.g. `me/<someone-else>/`) unless the user explicitly requests it *and* you can confirm it’s the same tenant/user.
-  - If `[USER_ID]` is not known from the current context, ask for it before creating/modifying any files under `me/`.
-- Do not modify content outside `me/[USER_ID]/` unless the user explicitly asks (or clearly implies) changes there.
+- If the user does not specify, default to `users/[USER_ID]/`.
+- Always scope reads/writes to the current user’s folder `users/[USER_ID]/` so information between users will not be mixed.
+  - Never read/write another user’s folder (e.g. `users/<someone-else>/`) unless the user explicitly requests it *and* you can confirm it’s the same tenant/user.
+  - If `[USER_ID]` is not known from the current context, ask for it before creating/modifying any files under `users/`.
+- Do not modify content outside `users/[USER_ID]/` unless the user explicitly asks.
 
 Path conventions:
 
 - When you propose creating/editing a canvas file, include a concrete filesystem path like:
-  `<VAULT_ROOT>/me/[USER_ID]/<relative-path>.canvas`
-  where `<VAULT_ROOT>` is the configured `obsidian_vault_root`.
-- In many container deployments `<VAULT_ROOT>` resolves to `/app/obsidian-vaults/`, but do not assume it.
-- In a canvas `file` node, the `file` field should be a path *within the vault root* (relative to `<VAULT_ROOT>`), e.g. `me/[USER_ID]/Notes/Project Overview.md` or `me/[USER_ID]/Attachments/diagram.png`.
+  `<SCRATCHPAD_ROOT>/users/[USER_ID]/<relative-path>.canvas`
+- In a canvas `file` node, the `file` field should be a path *within the scratchpad root* (relative to `<SCRATCHPAD_ROOT>`), e.g. `users/[USER_ID]/Notes/Project Overview.md` or `users/[USER_ID]/Attachments/diagram.png`.
 
 ## File Structure
 
