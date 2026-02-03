@@ -291,6 +291,14 @@ class TelegramBotInterface:
         """
         self._queue_handler.enqueue_message(user_id, chat_id, message, onboarding_context)
 
+        # Send typing action immediately when message is enqueued
+        # This provides instant visual feedback to the user
+        try:
+            await self.application.bot.send_chat_action(chat_id=chat_id, action="typing")
+            logger.debug("Sent initial typing action to chat %s on enqueue", chat_id)
+        except Exception as e:
+            logger.warning("Failed to send initial typing action to chat %s: %s", chat_id, e)
+
         # Log the action
         try:
             await self.logging_service.log_action(
@@ -311,6 +319,26 @@ class TelegramBotInterface:
     ) -> None:
         """Enqueue a message with file attachments to SQS queue."""
         self._queue_handler.enqueue_message_with_attachments(user_id, chat_id, message, attachments)
+
+        # Send typing action immediately when message is enqueued
+        # Use upload_document for messages with attachments
+        try:
+            from telegram.constants import ChatAction
+
+            # Choose appropriate action based on attachment type
+            if any(getattr(att, "is_image", False) for att in attachments):
+                action = ChatAction.UPLOAD_PHOTO
+            else:
+                action = ChatAction.UPLOAD_DOCUMENT
+
+            await self.application.bot.send_chat_action(chat_id=chat_id, action=action)
+            logger.debug(
+                "Sent initial typing action (%s) to chat %s on enqueue with attachments",
+                action,
+                chat_id,
+            )
+        except Exception as e:
+            logger.warning("Failed to send initial typing action to chat %s: %s", chat_id, e)
 
         # Log the action
         try:

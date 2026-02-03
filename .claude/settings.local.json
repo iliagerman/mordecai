@@ -5,7 +5,9 @@
       "mcp__homeserver-development__context7-resolve-library-id",
       "mcp__homeserver-development__agentcore-search-agentcore-docs",
       "Bash(python:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(tree:*)",
+      "Bash(GEMINI_API_KEY=\"AIzaSyBR3WRDzJ3tY050ha_-RMCZfXOClqfRZZU\" uv run:*)"
     ]
   }
 }

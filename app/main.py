@@ -387,11 +387,16 @@ class Application:
             chat_id: Telegram chat ID.
             action: Chat action type (typing, upload_document, etc.).
         """
-        if self.telegram_bot:
+        if self.telegram_bot and self.telegram_bot.application.bot:
             from app.telegram.message_sender import TelegramMessageSender
 
             sender = TelegramMessageSender(self.telegram_bot.application.bot)
             await sender.send_chat_action(chat_id, action)
+        else:
+            logger.debug(
+                "Telegram bot not initialized, skipping typing action for chat %s",
+                chat_id,
+            )
 
     def create_fastapi_app(self) -> FastAPI:
         """Create and configure FastAPI application.
@@ -513,16 +518,17 @@ class Application:
             # Never break startup due to watchdog configuration.
             pass
 
-        # Start message processor
+        # Start Telegram bot FIRST (before message processor)
+        # The typing callback requires the bot to be initialized
+        if self.telegram_bot:
+            await self.telegram_bot.start()
+            logger.info("Telegram bot started")
+
+        # Start message processor SECOND (after bot is ready)
         if self.message_processor:
             task = self.message_processor.start_background()
             self._background_tasks.append(task)
             logger.info("Message processor started")
-
-        # Start Telegram bot
-        if self.telegram_bot:
-            await self.telegram_bot.start()
-            logger.info("Telegram bot started")
 
         # Start cron scheduler
         if self.cron_scheduler:
@@ -666,11 +672,14 @@ def get_fastapi_app() -> FastAPI:
     return app.fastapi_app
 
 
-async def main() -> None:
+async def main(reload: bool = False) -> None:
     """Main entry point for running the application.
 
     Initializes all components and runs the application until
     shutdown is requested.
+
+    Args:
+        reload: Enable hot reload during development.
     """
     import uvicorn
 
@@ -699,6 +708,7 @@ async def main() -> None:
             host=config.api_host,
             port=config.api_port,
             log_level="info",
+            reload=reload,
         )
 
         # Ensure Uvicorn logging is configured, then suppress noisy healthcheck access logs.
@@ -722,4 +732,10 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run Mordecai application")
+    parser.add_argument("--reload", action="store_true", help="Enable hot reload")
+    args = parser.parse_args()
+
+    asyncio.run(main(reload=args.reload))

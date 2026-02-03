@@ -1,0 +1,16 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "run-real-tests",
+      "type": "shell",
+      "command": "just",
+      "args": ["run-real-tests"],
+      "problemMatcher": [],
+      "group": {
+        "kind": "test",
+        "isDefault": false
+      }
+    }
+  ]
+}

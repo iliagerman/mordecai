@@ -49,13 +49,11 @@ class TypingIndicatorLoop:
     # Default interval: 4 seconds (action expires in ~5 seconds)
     DEFAULT_INTERVAL_SECONDS = 4.0
 
-    # Supported action types
+    # Supported action types (must map to valid ChatAction values)
     ACTION_TYPING = "typing"
     ACTION_UPLOAD_DOCUMENT = "upload_document"
     ACTION_UPLOAD_PHOTO = "upload_photo"
     ACTION_RECORD_VIDEO = "record_video"
-    ACTION_RECORD_AUDIO = "record_audio"
-    ACTION_RECORD_VOICE_NOTE = "record_voice_note"
     ACTION_FIND_LOCATION = "find_location"
 
     def __init__(

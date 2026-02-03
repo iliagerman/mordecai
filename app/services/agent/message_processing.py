@@ -607,7 +607,6 @@ class MessageProcessor:
 
         from strands import Agent
         from strands.types.content import Message
-        from strands.types.media import ImageContent, ImageSource
 
         # Determine image format
         ext = Path(image_path).suffix.lower()
@@ -620,17 +619,14 @@ class MessageProcessor:
         }
         img_format = format_map.get(ext, "png")
 
-        # Read image bytes and create ImageContent
+        # Read image bytes and create content block in Strands SDK format
         with open(image_path, "rb") as f:
             image_bytes = f.read()
 
-        # Create content blocks with image and optional text caption
-        # Text can be a string directly in the content list
-        content_blocks: list[dict | str] = [
-            ImageContent(
-                format=img_format,  # type: ignore
-                source=ImageSource(bytes=image_bytes)  # type: ignore
-            )
+        # Create content blocks with image in the correct Strands SDK format
+        # Format: {"image": {"format": "png", "source": {"bytes": b"..."}}
+        content_blocks: list[dict] = [
+            {"image": {"format": img_format, "source": {"bytes": image_bytes}}}
         ]
 
         logger.info(

@@ -1,0 +1,39 @@
+{
+  "ok": true,
+  "scope": "shared",
+  "skill": "opencode-controller",
+  "steps": {
+    "generate_requirements": {
+      "generated": false,
+      "ok": true,
+      "reason": "no third-party imports detected",
+      "warnings": []
+    },
+    "normalize_skill_md": {
+      "actions": [],
+      "ok": true,
+      "skill_md": "/Users/iliagerman/Work/personal_projects/mordecai/skills/shared/pending/opencode-controller/SKILL.md"
+    },
+    "sync_requires_pip": {
+      "ok": true,
+      "reason": "no requirements.txt",
+      "updated": false
+    },
+    "validate_python_syntax": {
+      "checked": 0,
+      "ok": true
+    },
+    "validate_required_config_files": {
+      "checked": 0,
+      "ok": true,
+      "reason": "no user_id provided"
+    },
+    "validate_required_env": {
+      "checked": 0,
+      "ok": true,
+      "reason": "no required env declared"
+    }
+  },
+  "timestamp": "2026-02-03T17:12:17.669531+00:00",
+  "user_id": null
+}
