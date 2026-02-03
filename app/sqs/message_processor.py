@@ -24,7 +24,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from app.models.agent import AttachmentInfo
-from app.sqs.typing_indicator import TypingIndicatorLoop, TypingIndicatorSender
+from app.sqs.typing_indicator import (
+    ProgressUpdateLoop,
+    ProgressUpdateSender,
+    TypingIndicatorLoop,
+    TypingIndicatorSender,
+)
 from app.tools import send_file as send_file_module
 from app.tools import send_progress as send_progress_module
 
@@ -90,6 +95,23 @@ def _parse_attachments(raw: Any) -> list[AttachmentInfo] | None:
         logger.warning("Ignoring invalid attachment item type: %s", type(item))
 
     return parsed or None
+
+
+def _is_bedrock_tool_transcript_validation_error(exc: Exception) -> bool:
+    """Heuristic for Bedrock ConverseStream tool transcript validation failures.
+
+    These failures are deterministic for the offending transcript and are not
+    helped by SQS retries. If we keep retrying them, we effectively poison the
+    per-user queue.
+    """
+
+    msg = str(exc) or ""
+    lowered = msg.lower()
+    if "toolresult" in lowered and "tooluse" in lowered and "exceeds" in lowered:
+        return True
+    if "conversestream" in lowered and "validationexception" in lowered:
+        return True
+    return False
 
 
 class MessageProcessor:
@@ -179,9 +201,7 @@ class MessageProcessor:
         self._message_tasks: set[asyncio.Task] = set()
 
         # Get max concurrent tasks per user from config (default to 5 for backward compatibility)
-        self._max_concurrent_per_user = (
-            config.max_concurrent_tasks_per_user if config else 5
-        )
+        self._max_concurrent_per_user = config.max_concurrent_tasks_per_user if config else 5
 
         # A short, user-friendly ack for when messages arrive while a previous
         # message from the same queue is still being processed.
@@ -258,9 +278,7 @@ class MessageProcessor:
         """
         async with self._semaphore_lock:
             if user_id not in self._user_semaphores:
-                self._user_semaphores[user_id] = asyncio.Semaphore(
-                    self._max_concurrent_per_user
-                )
+                self._user_semaphores[user_id] = asyncio.Semaphore(self._max_concurrent_per_user)
             return self._user_semaphores[user_id]
 
     def _get_queue_prefetch_semaphore(self, queue_url: str) -> asyncio.Semaphore:
@@ -380,7 +398,9 @@ class MessageProcessor:
             if acquired_total:
                 self._inflight_total_semaphore.release()
 
-    async def _maybe_send_busy_ack(self, body: dict[str, Any], *, user_semaphore: asyncio.Semaphore) -> None:
+    async def _maybe_send_busy_ack(
+        self, body: dict[str, Any], *, user_semaphore: asyncio.Semaphore
+    ) -> None:
         """Send a busy acknowledgment if the user's semaphore is at capacity.
 
         This informs the user that their message has been queued because
@@ -451,6 +471,9 @@ class MessageProcessor:
         # Typing indicator loop (will be started if typing_action_callback is available)
         typing_loop: TypingIndicatorLoop | None = None
 
+        # Progress update loop (will be started if progress_callback is available)
+        progress_loop: ProgressUpdateLoop | None = None
+
         # Start typing indicator IMMEDIATELY (before semaphore acquisition)
         # This ensures the user sees visual feedback as soon as SQS starts processing
         if self.typing_action_callback and chat_id:
@@ -487,6 +510,16 @@ class MessageProcessor:
 
                         send_progress_module.set_progress_callback(progress_cb)
 
+                        # Start progress update loop AFTER callback is set
+                        # Pass a lambda that captures the current context
+                        progress_update_sender = ProgressUpdateSender(progress_cbk)
+                        progress_loop = ProgressUpdateLoop(
+                            progress_update_sender,
+                            chat_id,
+                            lambda: send_progress_module.get_pending_progress_messages(),
+                        )
+                        await progress_loop.start()
+
                     return await self._handle_message(queue_url, message, body=body)
             else:
                 # No user_id, process directly (shouldn't happen in normal flow)
@@ -496,6 +529,9 @@ class MessageProcessor:
             # Stop typing indicator loop
             if typing_loop:
                 await typing_loop.stop()
+            # Stop progress update loop
+            if progress_loop:
+                await progress_loop.stop()
             # Clear per-task tool callbacks and pending file queue.
             send_file_module.clear_send_callbacks()
             send_progress_module.clear_progress_callback()
@@ -667,7 +703,10 @@ class MessageProcessor:
             # Send response via callback if provided
             if self.response_callback and response:
                 try:
-                    callback_result = self.response_callback(parsed.chat_id, response)
+                    # Allow out-of-order heavy jobs while still letting users identify
+                    # which reply maps to which inbound message.
+                    tagged = f"[job {message_id[:8]}] {response}"
+                    callback_result = self.response_callback(parsed.chat_id, tagged)
                     # Handle async callbacks
                     if asyncio.iscoroutine(callback_result):
                         await callback_result
@@ -712,6 +751,38 @@ class MessageProcessor:
             return None
 
         except Exception as e:
+            if _is_bedrock_tool_transcript_validation_error(e):
+                # Deterministic failure: retries will keep failing and poison the queue.
+                logger.error(
+                    "Bedrock tool transcript validation failed for message %s: %s. Deleting message to avoid poison retries.",
+                    message_id,
+                    e,
+                )
+                try:
+                    if self.response_callback is not None:
+                        chat_id: int | None = None
+                        try:
+                            raw_chat_id = body.get("chat_id") if body else None
+                            if isinstance(raw_chat_id, int):
+                                chat_id = raw_chat_id
+                            elif isinstance(raw_chat_id, str):
+                                chat_id = int(raw_chat_id)
+                        except Exception:
+                            chat_id = None
+                        if chat_id is not None:
+                            await self.response_callback(
+                                chat_id,
+                                "I hit an internal tool-streaming error while processing that request. Please resend your last message.",
+                            )
+                except Exception as callback_err:
+                    logger.error(
+                        "Response callback failed for message %s after Bedrock validation error: %s",
+                        message_id,
+                        callback_err,
+                    )
+                await self._delete_message(queue_url, receipt_handle)
+                return None
+
             # Leave message in queue for retry (SQS retry policy)
             logger.error(
                 "Failed to process message %s: %s. Message will be retried per SQS policy.",

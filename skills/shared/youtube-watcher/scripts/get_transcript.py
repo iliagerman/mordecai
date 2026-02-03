@@ -72,9 +72,17 @@ def get_transcript(url: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch YouTube transcript.")
-    parser.add_argument("url", help="YouTube video URL")
+    parser.add_argument("url", help="YouTube video URL", nargs='?')
+    parser.add_argument("--smoke-test", action="store_true", help="Run smoke test for onboarding")
     args = parser.parse_args()
-    
+
+    if args.smoke_test:
+        print("OK")
+        return
+
+    if not args.url:
+        parser.error("the following arguments are required: url")
+
     get_transcript(args.url)
 
 if __name__ == "__main__":

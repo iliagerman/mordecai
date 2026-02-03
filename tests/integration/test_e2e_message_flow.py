@@ -251,9 +251,12 @@ class TestEndToEndMessageFlow:
         await processor._process_queue(queue_url)
 
         # Verify callback was invoked with chat_id and response
-        response_callback.assert_called_once_with(
-            chat_id, f"Response to: {message}"
-        )
+        # The response now includes a [job <id>] prefix
+        response_callback.assert_called_once()
+        actual_chat_id, actual_response = response_callback.call_args[0]
+        assert actual_chat_id == chat_id
+        assert actual_response.endswith(f"Response to: {message}")
+        assert actual_response.startswith("[job ")
 
     @pytest.mark.asyncio
     async def test_full_message_flow(
@@ -304,7 +307,9 @@ class TestEndToEndMessageFlow:
         assert len(responses_received) == len(messages)
         for i, (recv_chat_id, response) in enumerate(responses_received):
             assert recv_chat_id == chat_id
-            assert response == f"Response to: {messages[i]}"
+            # Response now includes [job <id>] prefix
+            assert response.endswith(f"Response to: {messages[i]}")
+            assert response.startswith("[job ")
 
     @pytest.mark.asyncio
     async def test_message_deleted_after_successful_processing(

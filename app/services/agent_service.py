@@ -20,6 +20,7 @@ Requirements:
 - 7.1: Actor ID derived from user's Telegram username or ID
 """
 
+import asyncio
 import logging
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -236,6 +237,7 @@ class AgentService:
             increment_message_count=self._session_lifecycle.increment_message_count,
             maybe_store_explicit_memory=self._maybe_store_explicit_memory_request,
             trigger_extraction_and_clear=self._session_lifecycle.trigger_extraction_and_clear,
+            conversation_dao=self.conversation_dao,
             deterministic_skill_runner=self._deterministic_skill_runner,
         )
 
@@ -403,6 +405,8 @@ class AgentService:
         attachments: list[AttachmentInfo] | None = None,
         messages: list[Any] | None = None,
         onboarding_context: dict[str, str | None] | None = None,
+        *,
+        for_cron_task: bool = False,
     ) -> "Agent":
         """Create an agent instance."""
         return self._agent_creator.create_agent(
@@ -411,6 +415,7 @@ class AgentService:
             attachments=attachments,
             messages=messages,
             onboarding_context=onboarding_context,
+            for_cron_task=for_cron_task,
         )
 
     def get_or_create_agent(self, user_id: str) -> "Agent":
@@ -443,7 +448,11 @@ class AgentService:
             onboarding_context: Optional onboarding context (soul.md, id.md content)
                 if this is the user's first interaction.
         """
-        return await self._message_processor.process_message(user_id, message, onboarding_context)
+        return await self._message_processor.process_message(
+            user_id=user_id,
+            message=message,
+            onboarding_context=onboarding_context,
+        )
 
     async def process_message_with_attachments(
         self,
@@ -625,8 +634,6 @@ class AgentService:
         Returns:
             The agent's response text.
         """
-        import asyncio
-
         logger.info(
             "Processing cron task for user %s: %s",
             user_id,
@@ -680,9 +687,11 @@ class AgentService:
                 user_id,
                 e,
             )
-            # Return error message instead of raising - cron tasks should
-            # fail gracefully without stopping the scheduler
-            return f"Cron task encountered an error: {str(e)}"
+            # Propagate so the scheduler can:
+            # - avoid updating last_executed_at/next_execution_at
+            # - send failure notifications
+            # - keep the lock handling semantics centralized
+            raise
 
     # ========================================================================
     # Personality/Prompt Building (kept for direct access)

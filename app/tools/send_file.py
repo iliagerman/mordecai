@@ -16,37 +16,19 @@ import logging
 from contextvars import ContextVar
 from pathlib import Path
 import threading
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
+
+try:
+    from strands import tool  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
+
+    def tool(*_args, **_kwargs):
+        def decorator(func):
+            return func
+
+        return decorator
 
 logger = logging.getLogger(__name__)
-
-TOOL_SPEC = {
-    "name": "send_file",
-    "description": (
-        "Send a file to the user via Telegram. Use this after generating "
-        "images or creating files that the user should receive. "
-        "For images (.png, .jpg, .jpeg, .gif, .webp), they will be sent "
-        "as photos with inline preview. Other files are sent as documents."
-    ),
-    "inputSchema": {
-        "json": {
-            "type": "object",
-            "properties": {
-                "file_path": {
-                    "type": "string",
-                    "description": (
-                        "Full path to the file to send. Must be an existing file on the filesystem."
-                    ),
-                },
-                "caption": {
-                    "type": "string",
-                    "description": ("Optional caption/message to include with the file"),
-                },
-            },
-            "required": ["file_path"],
-        }
-    },
-}
 
 # Image extensions that should be sent as photos
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
@@ -138,50 +120,41 @@ def clear_send_callbacks() -> None:
     _send_photo_callback.set(None)
 
 
-def send_file(tool: dict, **kwargs: Any) -> dict:
+@tool(
+    name="send_file",
+    description=(
+        "Send a file to the user via Telegram. Use this after generating "
+        "images or creating files that the user should receive. "
+        "For images (.png, .jpg, .jpeg, .gif, .webp), they will be sent "
+        "as photos with inline preview. Other files are sent as documents."
+    ),
+)
+def send_file(file_path: str, caption: str | None = None) -> str:
     """Send a file to the user via Telegram.
 
     Args:
-        tool: Tool invocation data with toolUseId and input.
-        **kwargs: Additional context.
+        file_path: Full path to the file to send. Must be an existing file.
+        caption: Optional caption/message to include with the file.
 
     Returns:
-        Tool result with success/error status.
+        Confirmation message.
     """
-    tool_use_id = tool["toolUseId"]
-    tool_input = tool.get("input", {})
-    file_path = tool_input.get("file_path", "").strip()
-    caption = tool_input.get("caption", "").strip() or None
+    file_path = file_path.strip()
+    caption = caption.strip() if caption else None
 
     if not file_path:
-        return {
-            "toolUseId": tool_use_id,
-            "status": "error",
-            "content": [{"text": "No file path provided."}],
-        }
+        return "No file path provided."
 
     path = Path(file_path)
     if not path.exists():
-        return {
-            "toolUseId": tool_use_id,
-            "status": "error",
-            "content": [{"text": f"File not found: {file_path}"}],
-        }
+        return f"File not found: {file_path}"
 
     if not path.is_file():
-        return {
-            "toolUseId": tool_use_id,
-            "status": "error",
-            "content": [{"text": f"Path is not a file: {file_path}"}],
-        }
+        return f"Path is not a file: {file_path}"
 
     # Check if callbacks are set
     if _send_file_callback.get() is None or _send_photo_callback.get() is None:
-        return {
-            "toolUseId": tool_use_id,
-            "status": "error",
-            "content": [{"text": "File sending not available in this context."}],
-        }
+        return "File sending not available in this context."
 
     # Determine if this is an image
     is_image = path.suffix.lower() in IMAGE_EXTENSIONS
@@ -189,12 +162,7 @@ def send_file(tool: dict, **kwargs: Any) -> dict:
     # Queue the file send (will be executed after agent response)
     pending = _get_pending_files_ref()
     if pending is None:
-        # Defensive (should not happen), but avoid claiming success.
-        return {
-            "toolUseId": tool_use_id,
-            "status": "error",
-            "content": [{"text": "File sending not available in this context."}],
-        }
+        return "File sending not available in this context."
 
     pending.append(
         {
@@ -205,11 +173,7 @@ def send_file(tool: dict, **kwargs: Any) -> dict:
     )
 
     file_type = "image" if is_image else "file"
-    return {
-        "toolUseId": tool_use_id,
-        "status": "success",
-        "content": [{"text": f"Queued {file_type} for sending: {path.name}"}],
-    }
+    return f"Queued {file_type} for sending: {path.name}"
 
 
 def get_pending_files() -> list[dict]:

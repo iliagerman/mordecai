@@ -29,6 +29,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 from app.config import AgentConfig
 from app.dao import UserDAO
@@ -113,8 +114,16 @@ class TelegramBotInterface:
 
         self._get_allowed_users_live = live_allowed_users(config.secrets_path)
 
-        # Build the application with the bot token
-        self.application = Application.builder().token(config.telegram_bot_token).build()
+        # Build the application with the bot token and longer timeouts
+        # Default timeouts (5s) can cause chat_action requests to timeout on slow networks
+        request = HTTPXRequest(
+            read_timeout=30,
+            write_timeout=30,
+            connect_timeout=10,
+        )
+        self.application = (
+            Application.builder().token(config.telegram_bot_token).request(request).build()
+        )
 
         # Initialize helper modules
         self._formatter = TelegramResponseFormatter()

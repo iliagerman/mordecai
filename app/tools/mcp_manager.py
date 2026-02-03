@@ -13,10 +13,13 @@ from typing import TYPE_CHECKING, Any
 try:
     from strands import tool
 except Exception:  # pragma: no cover
+
     def tool(*_args, **_kwargs):
         def _decorator(fn):
             return fn
+
         return _decorator
+
 
 if TYPE_CHECKING:
     from app.config import AgentConfig
@@ -73,7 +76,7 @@ def mcp_add_server(
         Success message or error description.
     """
     from app.config import resolve_user_skills_dir
-    from app.services.mcp.mcp_config import MCPServerConfig, load_mcp_config, save_mcp_config
+    from app.services.mcp.mcp_config import MCPServerConfig, load_mcp_config_file, save_mcp_config
 
     if _config is None or _current_user_id is None or _repo_root is None:
         return "MCP manager context not available."
@@ -95,12 +98,8 @@ def mcp_add_server(
         user_skills_dir = resolve_user_skills_dir(_config, _current_user_id, create=True)
         config_path = user_skills_dir / "mcp_servers.json"
 
-        # Load existing per-user config (don't merge global)
-        existing = load_mcp_config(
-            repo_root=_repo_root,
-            user_id=None,
-            user_skills_dir=user_skills_dir,
-        )
+        # Load existing per-user config only (do not merge global)
+        existing = load_mcp_config_file(config_path)
 
         # Add or update server
         existing[name] = MCPServerConfig(
@@ -140,7 +139,7 @@ def mcp_remove_server(
         Success message or error description.
     """
     from app.config import resolve_user_skills_dir
-    from app.services.mcp.mcp_config import load_mcp_config, save_mcp_config
+    from app.services.mcp.mcp_config import load_mcp_config_file, save_mcp_config
 
     if _config is None or _current_user_id is None or _repo_root is None:
         return "MCP manager context not available."
@@ -154,11 +153,7 @@ def mcp_remove_server(
         user_skills_dir = resolve_user_skills_dir(_config, _current_user_id, create=True)
         config_path = user_skills_dir / "mcp_servers.json"
 
-        existing = load_mcp_config(
-            repo_root=_repo_root,
-            user_id=None,
-            user_skills_dir=user_skills_dir,
-        )
+        existing = load_mcp_config_file(config_path)
 
         if name not in existing:
             return f"MCP server '{name}' not found for user {_current_user_id}."
@@ -172,10 +167,7 @@ def mcp_remove_server(
         else:
             save_mcp_config(config_path, existing)
 
-        return (
-            f"Removed MCP server '{name}'. "
-            "Start a new conversation to apply changes."
-        )
+        return f"Removed MCP server '{name}'. Start a new conversation to apply changes."
 
     except Exception as e:
         logger.exception("Failed to remove MCP server")

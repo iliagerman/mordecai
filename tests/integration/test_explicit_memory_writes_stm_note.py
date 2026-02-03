@@ -72,6 +72,12 @@ async def test_process_message_explicit_remember_writes_stm_note(tmp_path, monke
         obsidian_vault_root=str(tmp_path / "vault"),
     )
 
+    # NOTE: AgentConfig.model_post_init unconditionally overrides obsidian_vault_root
+    # with the repo-local scratchpad. For test isolation, we must override it after
+    # construction and patch the accessor used by MemoryService.
+    vault_path = str(tmp_path / "vault")
+    config.obsidian_vault_root = vault_path
+
     memory_service = MemoryService(config)
 
     # Prevent any real AWS calls: if something instantiates MemoryClient, fail.
@@ -158,6 +164,12 @@ async def test_process_message_does_not_write_stm_for_retrieval_question(tmp_pat
         memory_enabled=True,
         obsidian_vault_root=str(tmp_path / "vault"),
     )
+
+    # NOTE: AgentConfig.model_post_init unconditionally overrides obsidian_vault_root
+    # with the repo-local scratchpad. For test isolation, we must override it after
+    # construction and patch the accessor used by MemoryService.
+    vault_path = str(tmp_path / "vault")
+    config.obsidian_vault_root = vault_path
 
     memory_service = MemoryService(config)
 

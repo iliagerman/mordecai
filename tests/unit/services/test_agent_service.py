@@ -11,7 +11,7 @@ Requirements: 14.2, 14.3, 1.1, 1.2, 1.3, 1.5, 5.1
 import shutil
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -545,15 +545,17 @@ class TestAgentServiceAutomaticExtraction:
         mock_agent_instance.return_value = mock_result
         mock_agent.return_value = mock_agent_instance
 
-        mock_extraction = MagicMock()
-        mock_extraction.extract_and_store = MagicMock(
-            return_value=MagicMock(
+        async def mock_extract(*args, **kwargs):
+            return MagicMock(
                 success=True,
                 preferences=[],
                 facts=[],
                 commitments=[],
             )
-        )
+
+        mock_extraction = MagicMock()
+        mock_extraction.extract_and_store = mock_extract
+        mock_extraction.summarize_and_store = AsyncMock(return_value="Summary")
 
         service = AgentService(
             config_with_low_limit,
@@ -594,6 +596,7 @@ class TestAgentServiceAutomaticExtraction:
 
         mock_extraction = MagicMock()
         mock_extraction.extract_and_store = mock_extract
+        mock_extraction.summarize_and_store = AsyncMock(return_value="Summary")
 
         service = AgentService(
             config_with_low_limit,
@@ -625,6 +628,7 @@ class TestAgentServiceAutomaticExtraction:
         mock_agent.return_value = mock_agent_instance
 
         mock_extraction = MagicMock()
+        mock_extraction.summarize_and_store = AsyncMock(return_value="Summary")
 
         service = AgentService(
             config_with_low_limit,
@@ -663,6 +667,7 @@ class TestAgentServiceAutomaticExtraction:
 
         mock_extraction = MagicMock()
         mock_extraction.extract_and_store = mock_extract
+        mock_extraction.summarize_and_store = AsyncMock(return_value="Summary")
 
         service = AgentService(
             config_with_low_limit,

@@ -54,6 +54,7 @@ class TestDatabaseInitialization:
             "cron_tasks",
             "cron_locks",
             "long_memory",
+            "conversation_messages",
         }
         assert expected_tables == set(table_names)
 
