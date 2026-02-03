@@ -21,6 +21,7 @@ Requirements:
 """
 
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from app.config import AgentConfig
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     from strands.agent.conversation_manager import SlidingWindowConversationManager
     from strands.models.model import Model
 
+    from app.dao.conversation_dao import ConversationDAO
     from app.services.cron_service import CronService
     from app.services.file_service import FileService
     from app.services.memory_extraction_service import MemoryExtractionService
@@ -115,6 +117,7 @@ class AgentService:
         file_service: "FileService | None" = None,
         pending_skill_service: "PendingSkillService | None" = None,
         logging_service: Any | None = None,
+        conversation_dao: "ConversationDAO | None" = None,
     ) -> None:
         """Initialize the agent service.
 
@@ -125,6 +128,7 @@ class AgentService:
             extraction_service: Optional MemoryExtractionService for
                 memory extraction.
             file_service: Optional FileService for file operations.
+            conversation_dao: Optional ConversationDAO for conversation persistence.
         """
         self.config = config
         self.memory_service = memory_service
@@ -137,6 +141,7 @@ class AgentService:
         self.pending_skill_service = pending_skill_service
         self.skill_service = skill_service
         self.logging_service = logging_service
+        self.conversation_dao = conversation_dao
 
         # State managers for type-safe internal state
         self._session_manager = SessionManager()
@@ -589,6 +594,93 @@ class AgentService:
         if cancelled:
             return "✅ Cancellation requested. If something was running, it should stop shortly."
         return "Nothing to cancel right now (no running shell command detected)."
+
+    # ========================================================================
+    # Cron Task Processing (isolated from main conversation)
+    # ========================================================================
+
+    async def process_cron_task(
+        self,
+        user_id: str,
+        instructions: str,
+    ) -> str:
+        """Process a cron task with an isolated agent.
+
+        Cron tasks run in their own isolated context:
+        - Fresh agent instance (not cached)
+        - Separate conversation manager
+        - Empty conversation history (no previous messages loaded)
+        - Results NOT added to the user's main conversation history
+        - Optional audit logging to DB with is_cron=True
+
+        This prevents cron tasks from corrupting the main conversation state
+        and avoids the Bedrock ValidationException caused by concurrent
+        modification of shared agent messages.
+
+        Args:
+            user_id: User's telegram ID.
+            instructions: The cron task instructions to execute.
+
+        Returns:
+            The agent's response text.
+        """
+        import asyncio
+
+        logger.info(
+            "Processing cron task for user %s: %s",
+            user_id,
+            instructions[:100] if len(instructions) > 100 else instructions,
+        )
+
+        # Create a fresh agent WITHOUT caching (isolated)
+        agent = self._agent_creator.create_agent(
+            user_id=user_id,
+            memory_context=None,
+            messages=[],  # Empty conversation - isolated
+            onboarding_context=None,
+        )
+
+        try:
+            # Execute in thread (same as normal processing)
+            result = await asyncio.to_thread(agent, instructions)
+            response = self._extract_response_text(result)
+
+            # Optionally save cron messages separately for audit (with is_cron=True)
+            # They won't be loaded in normal conversation due to exclude_cron=True
+            if self.conversation_dao:
+                session_id = self._get_session_id(user_id)
+                cron_session_id = f"cron_{session_id}_{uuid.uuid4().hex[:8]}"
+                await self.conversation_dao.save_message(
+                    user_id=user_id,
+                    session_id=cron_session_id,
+                    role="user",
+                    content=instructions,
+                    is_cron=True,
+                )
+                await self.conversation_dao.save_message(
+                    user_id=user_id,
+                    session_id=cron_session_id,
+                    role="assistant",
+                    content=response,
+                    is_cron=True,
+                )
+
+            logger.info(
+                "Cron task completed for user %s, response length: %d",
+                user_id,
+                len(response),
+            )
+            return response
+
+        except Exception as e:
+            logger.error(
+                "Cron task failed for user %s: %s",
+                user_id,
+                e,
+            )
+            # Return error message instead of raising - cron tasks should
+            # fail gracefully without stopping the scheduler
+            return f"Cron task encountered an error: {str(e)}"
 
     # ========================================================================
     # Personality/Prompt Building (kept for direct access)

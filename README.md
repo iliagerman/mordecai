@@ -302,6 +302,78 @@ Images: .png, .jpg, .jpeg, .gif, .webp
 - User-isolated storage directories
 - Automatic file cleanup
 
+### MCP Configuration (Model Context Protocol)
+
+Mordecai supports connecting to external MCP (Model Context Protocol) servers to extend the agent's capabilities with additional tools.
+
+#### MCP Server Configuration
+
+MCP servers are configured in `mcp_servers.json` at the repository root:
+
+```json
+{
+  "mcp": {
+    "homeserver-aws": {
+      "type": "remote",
+      "url": "http://mcp.homeserver/servers/1a7e56fb077f4f17aab0d9d2cff26b49/sse"
+    },
+    "homeserver-development": {
+      "type": "remote",
+      "url": "http://mcp.homeserver/servers/dc673fa141b642308c293d4bf9612023/sse"
+    }
+  }
+}
+```
+
+#### Per-User MCP Configuration
+
+Users can add their own MCP servers in `skills/{user_id}/mcp_servers.json`. These configs override global settings for that user:
+
+```json
+{
+  "mcp": {
+    "my-custom-server": {
+      "type": "remote",
+      "url": "http://localhost:3000/sse"
+    }
+  }
+}
+```
+
+#### MCP Tools
+
+The agent has built-in tools to manage MCP servers:
+
+| Tool | Description |
+| ---- | ----------- |
+| `mcp_add_server` | Add an MCP server for the current user |
+| `mcp_remove_server` | Remove an MCP server configuration |
+| `mcp_list_servers` | List all configured MCP servers |
+
+#### Usage Examples
+
+```
+User: List my MCP servers
+Agent: [shows configured servers with their URLs]
+
+User: Add an MCP server named "test-server" with type "remote" and URL "http://localhost:3000/sse"
+Agent: Added MCP server 'test-server'. Start a new conversation to use the new tools.
+
+User: Remove MCP server "test-server"
+Agent: Removed MCP server 'test-server'. Start a new conversation to apply changes.
+```
+
+#### Transport Types
+
+| Type | Description | Example |
+| ---- | ----------- | ------- |
+| `remote` | SSE transport for HTTP-based MCP servers | `http://localhost:3000/sse` |
+| `stdio` | Local process transport (future) | `python server.py` |
+
+#### Tool Prefixing
+
+MCP tools from different servers are automatically prefixed with the server name to avoid conflicts. For example, tools from `homeserver-aws` will be prefixed like `homeserver-aws_<tool_name>`.
+
 ### Memory Configuration (AgentCore)
 
 The platform uses AWS Bedrock AgentCore Memory for persistent memory across sessions. Memory is managed in two layers:

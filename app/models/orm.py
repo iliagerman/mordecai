@@ -12,6 +12,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -56,6 +57,11 @@ class UserModel(Base):
     )
     cron_tasks = relationship(
         "CronTaskModel",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    conversation_messages = relationship(
+        "ConversationMessageModel",
         back_populates="user",
         cascade="all, delete-orphan",
     )
@@ -227,4 +233,43 @@ class CronLockModel(Base):
         DateTime,
         nullable=False,
         default=datetime.utcnow,
+    )
+
+
+class ConversationMessageModel(Base):
+    """Conversation message ORM model.
+
+    Stores conversation messages for persistence and recovery.
+    Allows reconstruction of conversation state across restarts.
+    Cron task messages are stored separately (is_cron=True) so they don't
+    pollute the main user conversation when loaded.
+    """
+
+    __tablename__ = "conversation_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        String,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+    session_id = Column(String, nullable=False, index=True)  # For grouping by session
+    role = Column(String, nullable=False)  # 'user' or 'assistant'
+    content = Column(Text, nullable=False)
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        index=True,
+    )
+    is_cron = Column(Boolean, nullable=False, default=False)  # Flag for cron task messages
+
+    # Relationships
+    user = relationship("UserModel", back_populates="conversation_messages")
+
+    # Indexes for efficient queries
+    __table_args__ = (
+        Index("ix_conversation_user_session", "user_id", "session_id"),
+        Index("ix_conversation_user_created", "user_id", "created_at"),
     )
