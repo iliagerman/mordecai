@@ -12,7 +12,9 @@ Run with:
 """
 
 import asyncio
+import shutil
 import uuid
+from pathlib import Path
 
 import pytest
 from botocore.exceptions import ClientError
@@ -20,7 +22,6 @@ from botocore.exceptions import ClientError
 from app.config import AgentConfig
 from app.services.agent_service import AgentService
 from app.services.memory_service import MemoryService
-
 
 # Test user prefix to isolate test data from production
 TEST_USER_PREFIX = "integration_test_"
@@ -89,6 +90,86 @@ def test_user_id():
     user_id = f"{TEST_USER_PREFIX}{uuid.uuid4().hex[:8]}"
     print(f"\n[FIXTURE] Generated test_user_id: {user_id}")
     return user_id
+
+
+@pytest.fixture(autouse=True)
+def cleanup_scratchpad_test_users(memory_service):
+    """Clean up integration test user directories from scratchpad after tests."""
+    yield
+
+    # Cleanup scratchpad directories
+    scratchpad_users = Path("scratchpad/users")
+    if not scratchpad_users.exists():
+        return
+    for child in scratchpad_users.iterdir():
+        if child.is_dir() and child.name.startswith(TEST_USER_PREFIX):
+            try:
+                shutil.rmtree(child)
+                print(f"\n[CLEANUP] Removed {child}")
+            except Exception as e:
+                print(f"\n[CLEANUP] Failed to remove {child}: {e}")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def cleanup_memory_records(memory_service):
+    """Clean up AgentCore memory records for test users after all tests."""
+    yield
+
+    if not memory_service:
+        return
+
+    try:
+        client = memory_service._get_client()
+        memory_id = memory_service.memory_id
+    except Exception as e:
+        print(f"\n[CLEANUP] Failed to get memory client: {e}")
+        return
+
+    # Find all test user namespaces by searching with the test prefix
+    for namespace_prefix in ["/facts/", "/preferences/"]:
+        # Search for any records that might be from test users
+        # We use a broader search to find test-related records
+        try:
+            from botocore.exceptions import ClientError
+            # Search with empty query to get all records, then filter
+            response = client.gmdp_client.list_memory_namespaces(memoryId=memory_id)
+
+            for namespace in response.get("namespaces", []):
+                namespace_name = namespace.get("namespace", "")
+                # Check if this namespace belongs to an integration test user
+                if any(
+                    f"{namespace_prefix}{TEST_USER_PREFIX}" in namespace_name
+                    for namespace_prefix in ["/facts/", "/preferences/"]
+                ):
+                    # List and delete records in this namespace
+                    try:
+                        records_response = client.gmdp_client.search_memory_records(
+                            memoryId=memory_id,
+                            namespace=namespace_name,
+                            query="",
+                            maxResults=100
+                        )
+                        records = records_response.get("memoryRecords", [])
+                        for record in records:
+                            try:
+                                record_id = record.get("memoryRecordId")
+                                if record_id:
+                                    client.gmdp_client.delete_memory_record(
+                                        memoryId=memory_id,
+                                        memoryRecordId=record_id
+                                    )
+                            except Exception:
+                                pass
+                        if records:
+                            print(f"\n[CLEANUP] Deleted {len(records)} records from {namespace_name}")
+                    except ClientError as e:
+                        if "ResourceNotFoundException" not in str(e):
+                            print(f"\n[CLEANUP] Error cleaning {namespace_name}: {e}")
+        except ClientError as e:
+            if "ResourceNotFoundException" not in str(e):
+                print(f"\n[CLEANUP] Error listing namespaces: {e}")
+        except Exception as e:
+            print(f"\n[CLEANUP] Error during memory cleanup: {e}")
 
 
 @pytest.fixture

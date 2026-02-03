@@ -105,3 +105,6 @@ mcp_servers.json
 # Skills - ignore all except shared
 skills/*
 !skills/shared
+
+# Integration test artifacts
+scratchpad/users/integration_test_*
