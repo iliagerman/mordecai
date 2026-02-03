@@ -26,6 +26,7 @@ class MCPServerConfig:
         command: Command for stdio transport (local processes).
         args: Arguments for stdio transport command.
     """
+
     name: str
     server_type: str  # "remote" (SSE) or "stdio"
     url: str | None = None
@@ -100,6 +101,28 @@ def load_mcp_config(
             except Exception as e:
                 logger.warning("Failed to load user %s MCP config: %s", user_id, e)
 
+    return servers
+
+
+def load_mcp_config_file(config_path: Path) -> dict[str, MCPServerConfig]:
+    """Load MCP server configuration from a single file.
+
+    This is used for per-user mutations (add/remove) so we don't accidentally
+    materialize merged global servers into the user's override file.
+    """
+
+    servers: dict[str, MCPServerConfig] = {}
+    if not config_path.exists():
+        return servers
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    mcp_section = data.get("mcp", {})
+    if not isinstance(mcp_section, dict):
+        return servers
+
+    for name, server_data in mcp_section.items():
+        if isinstance(server_data, dict):
+            servers[name] = MCPServerConfig.from_dict(name, server_data)
     return servers
 
 

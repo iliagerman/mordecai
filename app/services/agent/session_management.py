@@ -190,7 +190,7 @@ class SessionLifecycleManager:
                             getattr(result, "error", None),
                         )
                 else:
-                    logger.warning(
+                    logger.debug(
                         "Memory service unavailable for user %s, skipping extraction before new session",
                         user_id,
                     )
@@ -426,7 +426,7 @@ class SessionLifecycleManager:
                         e,
                     )
             elif not self.memory_service:
-                logger.warning(
+                logger.debug(
                     "Memory service unavailable for user %s, skipping extraction",
                     user_id,
                 )

@@ -1,16 +1,31 @@
 {
-  "version": "2.0.0",
-  "tasks": [
-    {
-      "label": "run-real-tests",
-      "type": "shell",
-      "command": "just",
-      "args": ["run-real-tests"],
-      "problemMatcher": [],
-      "group": {
-        "kind": "test",
-        "isDefault": false
-      }
-    }
-  ]
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "run-real-tests",
+			"type": "shell",
+			"command": "just",
+			"args": [
+				"run-real-tests"
+			],
+			"problemMatcher": [],
+			"group": {
+				"kind": "test",
+				"isDefault": false
+			}
+		},
+		{
+			"label": "pytest: unit",
+			"type": "shell",
+			"command": "/Users/iliagerman/Work/personal_projects/mordecai/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"-q",
+				"tests/unit"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
 }

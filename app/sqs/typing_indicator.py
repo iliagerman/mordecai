@@ -132,3 +132,124 @@ class TypingIndicatorLoop:
             except asyncio.CancelledError:
                 pass
         logger.debug("Typing indicator stopped for chat %s", self.chat_id)
+
+
+class ProgressUpdateSender:
+    """Sender for progress updates during agent execution.
+
+    Wraps an async callback that accepts (chat_id, message) parameters.
+    """
+
+    def __init__(
+        self,
+        callback: Callable[[int, str], Awaitable[Any | None]],
+    ) -> None:
+        """Initialize the sender with a callback.
+
+        Args:
+            callback: Async function that takes (chat_id, message) and sends
+                the progress update to Telegram.
+        """
+        self.callback = callback
+
+    async def send_progress(
+        self, chat_id: int, message: str
+    ) -> Any | None:
+        """Send a progress update via the callback."""
+        return await self.callback(int(chat_id), message)
+
+
+class ProgressUpdateLoop:
+    """Background task that sends pending progress updates periodically.
+
+    The agent queues progress updates during execution in a background thread.
+    This loop periodically checks for and sends any queued updates to Telegram,
+    providing the user with real-time feedback during long-running operations.
+    """
+
+    # Default interval: 2 seconds (check frequently for updates)
+    DEFAULT_INTERVAL_SECONDS = 2.0
+
+    def __init__(
+        self,
+        sender: ProgressUpdateSender,
+        chat_id: int,
+        get_pending_messages: Callable[[], list[str]],
+        interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
+    ) -> None:
+        """Initialize the progress update loop.
+
+        Args:
+            sender: Object that can send progress updates via send_progress method.
+            chat_id: Telegram chat ID to send updates to.
+            get_pending_messages: Callable that returns pending progress messages.
+            interval_seconds: How often to check for and send pending progress updates.
+        """
+        self.sender = sender
+        self.chat_id = chat_id
+        self.get_pending_messages = get_pending_messages
+        self.interval_seconds = interval_seconds
+        self._task: asyncio.Task | None = None
+        self._stop_event = asyncio.Event()
+        self._sent_messages: set[str] = set()  # Track sent messages to avoid duplicates
+
+    async def start(self) -> None:
+        """Start the progress update loop."""
+        self._stop_event.clear()
+        self._sent_messages.clear()
+
+        async def _loop() -> None:
+            try:
+                while not self._stop_event.is_set():
+                    # Get pending messages (this also clears the queue)
+                    pending = self.get_pending_messages()
+
+                    # Send any new messages
+                    for message in pending:
+                        if message not in self._sent_messages:
+                            await self._send_progress(message)
+                            self._sent_messages.add(message)
+
+                    # Wait for next check or stop event
+                    try:
+                        await asyncio.wait_for(
+                            self._stop_event.wait(),
+                            timeout=self.interval_seconds,
+                        )
+                        break  # Stop event was set
+                    except asyncio.TimeoutError:
+                        # Timeout elapsed, check for more updates
+                        continue
+            except asyncio.CancelledError:
+                logger.debug("Progress update loop cancelled")
+            except Exception as e:
+                logger.warning("Progress update loop error: %s", e)
+
+        self._task = asyncio.create_task(_loop())
+
+    async def _send_progress(self, message: str) -> None:
+        """Send a progress update."""
+        try:
+            await self.sender.send_progress(self.chat_id, message)
+            logger.debug(
+                "Sent progress update to chat %s: %s",
+                self.chat_id,
+                message[:50],  # Truncate for log
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to send progress update to chat %s: %s",
+                self.chat_id,
+                e,
+            )
+
+    async def stop(self) -> None:
+        """Stop the progress update loop."""
+        self._stop_event.set()
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        logger.debug("Progress update loop stopped for chat %s", self.chat_id)

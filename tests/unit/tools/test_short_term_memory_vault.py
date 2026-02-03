@@ -47,9 +47,9 @@ def test_append_and_read_roundtrip():
         assert any("timezone: UTC" in x for x in parsed.facts)
         assert any("concise" in x for x in parsed.preferences)
 
-        # File is inside me/<user_id>/stm.md (note name: stm)
+        # File is inside users/<user_id>/stm.md (note name: stm)
         # macOS temp dirs may canonicalize to /private/var/...; compare resolved.
-        expected = (Path(tmp) / "me" / user_id / "stm.md").resolve()
+        expected = (Path(tmp) / "users" / user_id / "stm.md").resolve()
         assert expected == p.resolve()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -257,6 +257,11 @@ class ConversationMessageModel(Base):
     session_id = Column(String, nullable=False, index=True)  # For grouping by session
     role = Column(String, nullable=False)  # 'user' or 'assistant'
     content = Column(Text, nullable=False)
+    # Optional JSON-encoded structured content blocks for exact conversation reconstruction.
+    # This allows storing toolUse/toolResult blocks and other rich content formats.
+    # NOTE: Stored as TEXT for cross-dialect compatibility (SQLite/Postgres). DAOs
+    # are responsible for JSON encoding/decoding and redaction.
+    content_json = Column(Text, nullable=True)
     created_at = Column(
         DateTime,
         nullable=False,

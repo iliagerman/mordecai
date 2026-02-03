@@ -31,9 +31,6 @@ if TYPE_CHECKING:
     from app.services.memory_service import MemoryService
     from app.services.pending_skill_service import PendingSkillService
 
-from strands.tools.tools import PythonAgentTool
-from strands.types.tools import ToolFunc, ToolSpec
-
 from app.tools import (
     cron_tools as cron_tools_module,
 )
@@ -283,6 +280,7 @@ class AgentCreator:
         attachments: list[AttachmentInfo] | None = None,
         messages: list[Any] | None = None,
         onboarding_context: dict[str, str | None] | None = None,
+        *,
         for_cron_task: bool = False,
     ) -> Agent:
         """Create an agent instance.
@@ -294,22 +292,18 @@ class AgentCreator:
             messages: Previous conversation messages to restore context.
             onboarding_context: Optional onboarding context (soul.md, id.md content)
                 if this is the user's first interaction.
-            for_cron_task: If True, create an isolated agent for cron task execution.
-                Uses a fresh conversation manager and does not cache the agent.
 
         Returns:
             Configured Agent instance.
         """
-        # Check if any attachment is an image - if so, use vision model
-        has_image_attachment = (
-            attachments is not None
-            and any(att.is_image for att in attachments)
-        )
+        # Check if any attachment is an image - if so, use vision model when available.
+        has_image_attachment = bool(attachments) and any(att.is_image for att in attachments)
         model = self.create_model(use_vision=has_image_attachment)
         user_skills_dir = str(self.get_user_skills_dir(user_id))
 
         # Get or create conversation manager for this user
-        # For cron tasks, create a fresh isolated manager to avoid state corruption
+        # For cron tasks (and other ephemeral runs), create a fresh isolated manager
+        # to avoid corrupting the cached/main conversation state.
         if for_cron_task:
             conversation_manager = SlidingWindowConversationManager(
                 window_size=self.config.conversation_window_size,
@@ -402,17 +396,8 @@ class AgentCreator:
             file_read_env_module.file_read,
             file_write_env_module.file_write,
             set_agent_name_tool,
-            # Wrap send_file and send_progress as PythonAgentTool for proper registration
-            PythonAgentTool(
-                send_file_module.TOOL_SPEC["name"],
-                cast(ToolSpec, send_file_module.TOOL_SPEC),
-                cast(ToolFunc, send_file_module.send_file),
-            ),
-            PythonAgentTool(
-                send_progress_module.TOOL_SPEC["name"],
-                cast(ToolSpec, send_progress_module.TOOL_SPEC),
-                cast(ToolFunc, send_progress_module.send_progress),
-            ),
+            send_file_module.send_file,
+            send_progress_module.send_progress,
         ]
 
         # Built-in tools for persisting per-skill settings into secrets.yml
@@ -466,14 +451,11 @@ class AgentCreator:
             builtin_tools.append(download_skill_module.download_skill_to_pending)
 
         # Add image_reader tool if there's an image attachment (vision support)
-        # This allows the agent to analyze images when users send photos
-        has_image_attachment = (
-            attachments is not None
-            and any(att.is_image for att in attachments)
-        )
+        # This allows the agent to analyze images when users send photos.
         if has_image_attachment:
             try:
                 from strands_tools import image_reader as image_reader_module
+
                 builtin_tools.append(image_reader_module.image_reader)
                 logger.info("Added image_reader tool for vision processing")
             except (ImportError, AttributeError) as e:
@@ -485,37 +467,41 @@ class AgentCreator:
             from app.services.mcp.mcp_config import load_mcp_config
 
             repo_root = _find_repo_root(start=Path(__file__))
-            user_skills_dir = self.get_user_skills_dir(user_id)
+            user_skills_dir_path = self.get_user_skills_dir(user_id)
 
             servers = load_mcp_config(
                 repo_root=repo_root,
                 user_id=user_id,
-                user_skills_dir=user_skills_dir,
+                user_skills_dir=user_skills_dir_path,
             )
 
-            # Helper function to create MCP client for a specific server
-            def _create_mcp_client_for_server(name: str, server_type: str, url: str | None, command: str | None, args: list[str] | None):
-                """Create an MCPClient for a specific server configuration."""
+            def _create_mcp_client_for_server(
+                name: str,
+                server_type: str,
+                url: str | None,
+                command: str | None,
+                args: list[str] | None,
+            ):
                 from strands.tools.mcp import MCPClient
 
                 if server_type == "remote" and url:
                     from mcp.client.sse import sse_client
+
+                    return MCPClient(lambda: sse_client(url), prefix=name)
+                if server_type == "stdio" and command:
+                    from mcp import StdioServerParameters, stdio_client
+
                     return MCPClient(
-                        lambda: sse_client(url),
-                        prefix=name,
-                    )
-                elif server_type == "stdio" and command:
-                    from mcp import stdio_client, StdioServerParameters
-                    return MCPClient(
-                        lambda: stdio_client(StdioServerParameters(
-                            command=command,
-                            args=args or [],
-                        )),
+                        lambda: stdio_client(
+                            StdioServerParameters(
+                                command=command,
+                                args=args or [],
+                            )
+                        ),
                         prefix=name,
                     )
                 return None
 
-            # Create MCP clients for each configured server
             for server_name, server_config in servers.items():
                 try:
                     client = _create_mcp_client_for_server(
@@ -536,17 +522,19 @@ class AgentCreator:
                         e,
                     )
 
-            # Set up MCP manager tools context
+            # Expose MCP management tools to the agent.
             mcp_manager_module.set_mcp_manager_context(
                 self.config,
                 user_id,
                 repo_root,
             )
-            builtin_tools.extend([
-                mcp_manager_module.mcp_add_server,
-                mcp_manager_module.mcp_remove_server,
-                mcp_manager_module.mcp_list_servers,
-            ])
+            builtin_tools.extend(
+                [
+                    mcp_manager_module.mcp_add_server,
+                    mcp_manager_module.mcp_remove_server,
+                    mcp_manager_module.mcp_list_servers,
+                ]
+            )
 
         except ImportError as e:
             logger.warning("MCP support not available: %s", e)
@@ -595,9 +583,8 @@ class AgentCreator:
         else:
             logger.info("User %s: No skills loaded", user_id)
 
-        # Cache the agent so we can retrieve messages later
-        # IMPORTANT: Do NOT cache cron task agents - they must remain ephemeral
-        # to avoid corrupting the main conversation state
+        # Cache the agent so we can retrieve messages later.
+        # IMPORTANT: Do NOT cache cron/ephemeral agents.
         if not for_cron_task:
             self.cache_agent(user_id, agent)
 

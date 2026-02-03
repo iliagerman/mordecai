@@ -16,34 +16,17 @@ import logging
 from contextvars import ContextVar
 from typing import Any, Awaitable, Callable
 
-logger = logging.getLogger(__name__)
+try:
+    from strands import tool  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
 
-TOOL_SPEC = {
-    "name": "send_progress",
-    "description": (
-        "Send a short progress update to the user. Use this during long-running "
-        "operations to keep the user informed. Examples: 'Reading file...', "
-        "'Running analysis...', 'Processing data...', 'Almost done...'. "
-        "Keep updates brief (under 100 characters recommended). "
-        "Use present continuous tense (e.g., 'Processing...' not 'Processed'). "
-        "Only use for operations that take more than a few seconds."
-    ),
-    "inputSchema": {
-        "json": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "description": (
-                        "Short progress message (under 100 characters recommended). "
-                        "Use present continuous tense."
-                    ),
-                },
-            },
-            "required": ["message"],
-        }
-    },
-}
+    def tool(*_args, **_kwargs):
+        def decorator(func):
+            return func
+
+        return decorator
+
+logger = logging.getLogger(__name__)
 
 # Per-task callback reference - set by message processor before agent runs
 _progress_callback: ContextVar[Callable[[str], Awaitable[bool]] | None] = ContextVar(
@@ -68,26 +51,31 @@ def clear_progress_callback() -> None:
     _progress_callback.set(None)
 
 
-def send_progress(tool: dict, **kwargs: Any) -> dict:
+@tool(
+    name="send_progress",
+    description=(
+        "Send a short progress update to the user. Use this during long-running "
+        "operations to keep the user informed. Examples: 'Reading file...', "
+        "'Running analysis...', 'Processing data...', 'Almost done...'. "
+        "Keep updates brief (under 100 characters recommended). "
+        "Use present continuous tense (e.g., 'Processing...' not 'Processed'). "
+        "Only use for operations that take more than a few seconds."
+    ),
+)
+def send_progress(message: str) -> str:
     """Send a progress update to the user via Telegram.
 
     Args:
-        tool: Tool invocation data with toolUseId and input.
-        **kwargs: Additional context (unused).
+        message: Short progress message (under 100 characters recommended).
+            Use present continuous tense.
 
     Returns:
-        Tool result with success/error status.
+        Confirmation message.
     """
-    tool_use_id = tool["toolUseId"]
-    tool_input = tool.get("input", {})
-    message = tool_input.get("message", "").strip()
+    message = message.strip()
 
     if not message:
-        return {
-            "toolUseId": tool_use_id,
-            "status": "error",
-            "content": [{"text": "No message provided."}],
-        }
+        return "No message provided."
 
     # Truncate very long messages to avoid spam
     MAX_LENGTH = 200
@@ -97,24 +85,12 @@ def send_progress(tool: dict, **kwargs: Any) -> dict:
     # Check if callback is set
     callback = _progress_callback.get()
     if callback is None:
-        return {
-            "toolUseId": tool_use_id,
-            "status": "error",
-            "content": [{"text": "Progress updates not available in this context."}],
-        }
+        return "Progress updates not available in this context."
 
-    # The callback is async but we're in a sync context (agent runs in thread).
-    # We need to handle this by storing the message for later processing,
-    # or by using a queue mechanism.
-    #
-    # For now, we'll use a thread-safe pending queue similar to send_file.
+    # Queue the message for sending by the progress update loop
     _queue_progress_message(message)
 
-    return {
-        "toolUseId": tool_use_id,
-        "status": "success",
-        "content": [{"text": f"Progress update sent: {message}"}],
-    }
+    return f"Progress update: {message}"
 
 
 # ---------------------------------------------------------------------------
