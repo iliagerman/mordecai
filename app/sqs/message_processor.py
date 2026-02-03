@@ -24,9 +24,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from app.models.agent import AttachmentInfo
+from app.sqs.typing_indicator import TypingIndicatorLoop, TypingIndicatorSender
 from app.tools import send_file as send_file_module
 from app.tools import send_progress as send_progress_module
-from app.sqs.typing_indicator import TypingIndicatorLoop, TypingIndicatorSender
 
 try:
     from mypy_boto3_sqs import SQSClient  # type: ignore[reportMissingImports]
