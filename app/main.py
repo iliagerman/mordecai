@@ -198,7 +198,7 @@ class Application:
         self.log_dao = LogDAO(self.database)
         self.cron_dao = CronDAO(self.database)
         self.cron_lock_dao = CronLockDAO(self.database)
-        self.conversation_dao = ConversationDAO(self.database.get_session)
+        self.conversation_dao = ConversationDAO(self.database.session)
         logger.info("DAOs initialized")
 
         # Initialize services
