@@ -44,9 +44,17 @@ class MCPServerConfig:
         Returns:
             MCPServerConfig instance.
         """
+        explicit_type = data.get("type")
+        if explicit_type:
+            server_type = explicit_type
+        elif data.get("command"):
+            server_type = "stdio"
+        else:
+            server_type = "remote"
+
         return cls(
             name=name,
-            server_type=data.get("type", "remote"),
+            server_type=server_type,
             url=data.get("url"),
             command=data.get("command"),
             args=data.get("args"),

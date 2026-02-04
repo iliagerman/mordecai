@@ -79,6 +79,29 @@ class TestMCPServerConfig:
 
         assert config.server_type == "remote"
 
+    def test_from_dict_infers_stdio_when_command_present(self):
+        """Should infer stdio type when command is present but type is omitted."""
+        data = {
+            "command": "npx",
+            "args": ["-y", "vibe-kanban@latest", "--mcp"],
+        }
+        config = MCPServerConfig.from_dict("vibe_kanban", data)
+
+        assert config.server_type == "stdio"
+        assert config.command == "npx"
+        assert config.args == ["-y", "vibe-kanban@latest", "--mcp"]
+
+    def test_from_dict_explicit_type_overrides_inference(self):
+        """Should use explicit type even when command is present."""
+        data = {
+            "type": "remote",
+            "command": "npx",
+            "url": "http://example.com/sse",
+        }
+        config = MCPServerConfig.from_dict("mixed-server", data)
+
+        assert config.server_type == "remote"
+
     def test_from_dict_with_all_fields(self):
         """Should create MCPServerConfig with all fields."""
         data = {
