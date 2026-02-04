@@ -1,5 +1,7 @@
 # Mordecai
 
+<!-- (local-dev) README updated to document compose overrides and shared mounts. -->
+
 <!-- LOGO_PLACEHOLDER -->
 <img src="docs/images/logo.png" alt="Mordecai Logo" width="200">
 <!-- END_LOGO_PLACEHOLDER -->
@@ -168,6 +170,20 @@ docker-compose logs -f mordecai
 Notes:
 - `scratchpad/` is mounted into the container and is the **only** supported long-lived notes/memory store.
 - `workspace/` is for ephemeral artifacts and is auto-cleaned by the backend.
+
+##### Sharing Vibe-Kanban's SQLite directory (optional)
+
+If you're running Vibe-Kanban in a separate container and want Mordecai to have **direct read/write file I/O** access to Vibe-Kanban's persisted SQLite DB, this repo's `docker-compose.yml` can bind-mount the Vibe-Kanban data directory into Mordecai at the **same path**:
+
+- Vibe-Kanban data dir: `/home/ilia/.local/share/vibe-kanban/`
+- Vibe-Kanban DB file: `/home/ilia/.local/share/vibe-kanban/db.sqlite`
+
+To avoid creating **root-owned** files on the host, Mordecai is configured to run as your host UID/GID via `.env`:
+
+- `HOST_UID` (default `1000`)
+- `HOST_GID` (default `1000`)
+
+If you already have permission issues in that directory from prior runs, fix ownership on the host once, then restart the container.
 
 #### Manual Docker Build
 
