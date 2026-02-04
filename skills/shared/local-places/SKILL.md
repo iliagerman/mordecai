@@ -13,6 +13,9 @@ metadata:
       - GOOGLE_PLACES_API_KEY
     primaryEnv: GOOGLE_PLACES_API_KEY
 requires:
+  env:
+  - name: GOOGLE_PLACES_API_KEY
+    prompt: Google Places API key for the Local Places proxy
   pip:
   - fastapi
   - httpx

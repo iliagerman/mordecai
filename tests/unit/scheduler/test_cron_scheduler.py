@@ -168,7 +168,7 @@ class TestProperty6PostExecutionStateUpdates:
 
         # Create mock agent service that raises an exception
         mock_agent_service = AsyncMock()
-        mock_agent_service.process_message = AsyncMock(
+        mock_agent_service.process_cron_task = AsyncMock(
             side_effect=Exception("Agent execution failed")
         )
 

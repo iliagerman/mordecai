@@ -19,7 +19,9 @@ def get_all_skill_md_files() -> list[Path]:
     """Find all SKILL.md files in the tools directory."""
     if not SKILLS_DIR.exists():
         return []
-    return list(SKILLS_DIR.glob("**/SKILL.md"))
+    all_files = list(SKILLS_DIR.glob("**/SKILL.md"))
+    # Exclude pending/ directories as these are work-in-progress skills
+    return [f for f in all_files if "/pending/" not in str(f)]
 
 
 def parse_frontmatter(content: str) -> dict:

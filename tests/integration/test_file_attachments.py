@@ -501,30 +501,34 @@ class TestFileCleanup:
 
         Requirements: 4.6, 10.5
         """
-        user_id = "cleanup_test_user"
-        temp_dir = file_service.get_user_temp_dir(user_id)
+        # Create a user directory with only old files (will be deleted entirely)
+        old_user_id = "cleanup_test_user_old"
+        old_temp_dir = file_service.get_user_temp_dir(old_user_id)
 
-        # Create multiple test files
-        old_file1 = temp_dir / "old_file1.txt"
-        old_file2 = temp_dir / "old_file2.txt"
-        recent_file = temp_dir / "recent_file.txt"
+        old_file1 = old_temp_dir / "old_file1.txt"
+        old_file2 = old_temp_dir / "old_file2.txt"
 
         old_file1.write_text("Old content 1")
         old_file2.write_text("Old content 2")
-        recent_file.write_text("Recent content")
 
         # Set old files to 2 hours ago
         old_time = time.time() - (2 * 3600)
         os.utime(old_file1, (old_time, old_time))
         os.utime(old_file2, (old_time, old_time))
 
+        # Create a user directory with recent files (will be preserved)
+        recent_user_id = "cleanup_test_user_recent"
+        recent_temp_dir = file_service.get_user_temp_dir(recent_user_id)
+        recent_file = recent_temp_dir / "recent_file.txt"
+        recent_file.write_text("Recent content")
+
         # Run cleanup with 1 hour max age
         deleted_count = await file_service.cleanup_old_files(max_age_hours=1)
 
-        # Verify old files deleted, recent file preserved
+        # Verify old user directory was deleted, recent directory preserved
         assert deleted_count >= 2
-        assert not old_file1.exists()
-        assert not old_file2.exists()
+        assert not old_temp_dir.exists()
+        assert recent_temp_dir.exists()
         assert recent_file.exists()
 
     @pytest.mark.asyncio
@@ -535,26 +539,29 @@ class TestFileCleanup:
 
         Requirements: 10.5
         """
-        user_id = "cleanup_work_user"
-        work_dir = file_service.get_user_working_dir(user_id)
-
-        # Create test files in working directory
-        old_work_file = work_dir / "old_work.txt"
-        recent_work_file = work_dir / "recent_work.txt"
-
+        # Create a user directory with only old files in working dir
+        old_user_id = "cleanup_work_user_old"
+        old_work_dir = file_service.get_user_working_dir(old_user_id)
+        old_work_file = old_work_dir / "old_work.txt"
         old_work_file.write_text("Old work content")
-        recent_work_file.write_text("Recent work content")
 
         # Set old file to 2 hours ago
         old_time = time.time() - (2 * 3600)
         os.utime(old_work_file, (old_time, old_time))
 
+        # Create a user directory with recent files in working dir
+        recent_user_id = "cleanup_work_user_recent"
+        recent_work_dir = file_service.get_user_working_dir(recent_user_id)
+        recent_work_file = recent_work_dir / "recent_work.txt"
+        recent_work_file.write_text("Recent work content")
+
         # Run cleanup
         deleted_count = await file_service.cleanup_old_files(max_age_hours=1)
 
-        # Verify
+        # Verify old user directory was deleted, recent directory preserved
         assert deleted_count >= 1
-        assert not old_work_file.exists()
+        assert not old_work_dir.exists()
+        assert recent_work_dir.exists()
         assert recent_work_file.exists()
 
     @pytest.mark.asyncio

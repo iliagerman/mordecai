@@ -7,15 +7,22 @@ We want deterministic behavior:
 - On mac/local dev, when container root is absent, keep the configured path.
 
 These tests do not hit the network and do not require Docker.
+
+NOTE: The container-specific vault root resolution behavior was removed in favor of
+always using the repo-local scratchpad. These tests are skipped until/unless the
+feature is re-implemented.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path  # noqa: F401 - needed for skipped tests
+
+import pytest
 
 from app.config import AgentConfig
 
 
+@pytest.mark.skip(reason="Container-specific vault root resolution is no longer implemented")
 def test_obsidian_vault_root_env_override_wins(tmp_path, monkeypatch):
     container_root = tmp_path / "container_vault"
     container_root.mkdir(parents=True)
@@ -35,9 +42,10 @@ def test_obsidian_vault_root_env_override_wins(tmp_path, monkeypatch):
     # Do not pass obsidian_vault_root explicitly; allow BaseSettings env loading.
     cfg = AgentConfig(telegram_bot_token="test-token")
     assert cfg.obsidian_vault_root is not None
-    assert Path(cfg.obsidian_vault_root).resolve() == env_vault.resolve()
+    assert cfg.obsidian_vault_root == env_vault.resolve()
 
 
+@pytest.mark.skip(reason="Container-specific vault root resolution is no longer implemented")
 def test_container_root_is_used_when_configured_path_missing(tmp_path, monkeypatch):
     container_root = tmp_path / "container_vault"
     container_root.mkdir(parents=True)
@@ -51,14 +59,17 @@ def test_container_root_is_used_when_configured_path_missing(tmp_path, monkeypat
 
     cfg = AgentConfig(
         telegram_bot_token="test-token",
-        # Common host path used in docker-compose; it will not exist in this test runtime.
-        obsidian_vault_root="/home/ilia/obsidian-vaults",
+        # Use a path that will not exist in this test runtime.
+        # (Historically this pointed at an external Obsidian vault; this deployment
+        # uses the repo-local scratchpad instead.)
+        obsidian_vault_root="/nonexistent/scratchpad",
     )
 
     assert cfg.obsidian_vault_root is not None
-    assert Path(cfg.obsidian_vault_root).resolve() == container_root.resolve()
+    assert cfg.obsidian_vault_root == container_root.resolve()
 
 
+@pytest.mark.skip(reason="Container-specific vault root resolution is no longer implemented")
 def test_configured_path_is_kept_when_it_exists(tmp_path, monkeypatch):
     existing = tmp_path / "my_vault"
     existing.mkdir(parents=True)
@@ -76,4 +87,4 @@ def test_configured_path_is_kept_when_it_exists(tmp_path, monkeypatch):
 
     cfg = AgentConfig(telegram_bot_token="test-token", obsidian_vault_root=str(existing))
     assert cfg.obsidian_vault_root is not None
-    assert Path(cfg.obsidian_vault_root).resolve() == existing.resolve()
+    assert cfg.obsidian_vault_root == existing.resolve()

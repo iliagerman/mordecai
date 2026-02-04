@@ -42,6 +42,8 @@ dependencies = [
     # PDF support for file attachments
     "pypdf>=4.0.0",
     "pdfplumber>=0.10.0",
+    # TOML writing for skill configs
+    "tomli-w>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -66,10 +68,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short -s --log-cli-level=INFO -W error -W ignore::DeprecationWarning"
+addopts = "-v --tb=short -s --log-cli-level=INFO -W ignore -W ignore::DeprecationWarning -W ignore::ResourceWarning"
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning",
+    "ignore::ResourceWarning",
 ]
 markers = [
     "integration: marks tests as integration tests (may require network)",

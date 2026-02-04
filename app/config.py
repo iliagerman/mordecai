@@ -239,7 +239,7 @@ def _write_toml_config(file_path: Path, config_data: dict) -> None:
             # Himalaya-style email account config
             account_name = config_data.get("display_name", "default").lower().replace(" ", "-")
             lines.append(f"[accounts.{account_name}]")
-            lines.append(f"default = true")
+            lines.append("default = true")
 
             if "email" in config_data:
                 lines.append(f'email = "{config_data["email"]}"')
@@ -251,12 +251,12 @@ def _write_toml_config(file_path: Path, config_data: dict) -> None:
             # IMAP backend (for reading emails)
             if "imap" in config_data:
                 imap = config_data["imap"]
-                lines.append(f'backend = "imap"')
+                lines.append('backend = "imap"')
                 lines.append("")
                 lines.append(f"[accounts.{account_name}.imap]")
                 lines.append(f'host = "{imap.get("host", "")}"')
                 lines.append(f"port = {imap.get('port', 993)}")
-                lines.append(f'encryption = "tls"')
+                lines.append('encryption = "tls"')
                 lines.append(f'login = "{imap.get("login", "")}"')
                 lines.append("")
                 lines.append(f"[accounts.{account_name}.imap.passwd]")
@@ -266,12 +266,12 @@ def _write_toml_config(file_path: Path, config_data: dict) -> None:
             # SMTP backend (for sending emails)
             if "smtp" in config_data:
                 smtp = config_data["smtp"]
-                lines.append(f'message.send.backend = "smtp"')
+                lines.append('message.send.backend = "smtp"')
                 lines.append("")
                 lines.append(f"[accounts.{account_name}.smtp]")
                 lines.append(f'host = "{smtp.get("host", "")}"')
                 lines.append(f"port = {smtp.get('port', 587)}")
-                lines.append(f'encryption = "start-tls"')
+                lines.append('encryption = "start-tls"')
                 lines.append(f'login = "{smtp.get("login", "")}"')
                 lines.append("")
                 lines.append(f"[accounts.{account_name}.smtp.passwd]")
@@ -859,13 +859,13 @@ def refresh_runtime_env_from_secrets(
                     out_name = f"{skill}__{dest_name}"
                 dest = user_dir / out_name
 
-                def _replace(match: re.Match) -> str:
+                def _replace(match: re.Match, _replacements: dict[str, str] = replacements) -> str:
                     key = (match.group(1) or "").strip().upper()
                     if not key:
                         return match.group(0)
-                    if key not in replacements:
+                    if key not in _replacements:
                         return match.group(0)
-                    return replacements[key]
+                    return _replacements[key]
 
                 rendered = re.sub(r"\[([A-Z0-9_]+)\]", _replace, raw)
 
@@ -1242,6 +1242,18 @@ class AgentConfig(BaseSettings):
             # 2) Resolve relative paths against the repository root rather than CWD.
             repo_root = _find_repo_root(start=Path(__file__))
 
+            # Normalize temp + working folder roots (workspace artifacts are ephemeral;
+            # scratchpad is long-lived and handled separately).
+            temp_base = Path(self.temp_files_base_dir).expanduser()
+            if not temp_base.is_absolute():
+                temp_base = repo_root / temp_base
+            self.temp_files_base_dir = str(temp_base.resolve())
+
+            work_base = Path(self.working_folder_base_dir).expanduser()
+            if not work_base.is_absolute():
+                work_base = repo_root / work_base
+            self.working_folder_base_dir = str(work_base.resolve())
+
             skills_base = Path(self.skills_base_dir).expanduser()
             if not skills_base.is_absolute():
                 skills_base = repo_root / skills_base
@@ -1259,9 +1271,17 @@ class AgentConfig(BaseSettings):
                     tp = repo_root / tp
                 self.user_skills_dir_template = str(tp)
 
-            # NOTE: This deployment intentionally constrains all user-specific notes/
-            # memory artifacts to the repo-local scratchpad.
-            self.obsidian_vault_root = str((repo_root / SCRATCHPAD_DIRNAME).resolve())
+            # Normalize obsidian_vault_root: resolve relative paths against repo_root,
+            # but allow explicit configuration to override the default scratchpad location.
+            vault = (
+                Path(self.obsidian_vault_root).expanduser() if self.obsidian_vault_root else None
+            )
+            if vault:
+                if not vault.is_absolute():
+                    vault = repo_root / vault
+                self.obsidian_vault_root = str(vault.resolve())
+            else:
+                self.obsidian_vault_root = str((repo_root / SCRATCHPAD_DIRNAME).resolve())
         except Exception:
             # Be conservative: never fail config construction due to normalization.
             return

@@ -310,6 +310,41 @@ class TestFileCleanupByAge:
         # File should still exist
         assert test_file.exists()
 
+    @pytest.mark.asyncio
+    async def test_nested_dirs_deleted_when_stale(self, file_service: FileService):
+        """Nested directories under temp/workspace are deleted when the newest file is stale.
+
+        This matches the intended behavior for workspace artifacts: if a user's
+        working folder hasn't changed for > retention, delete the whole tree.
+        """
+
+        user_id = "testuser"
+        temp_dir = file_service.get_user_temp_dir(user_id)
+        work_dir = file_service.get_user_working_dir(user_id)
+
+        # Create nested content under both bases
+        nested_temp = temp_dir / "a" / "b"
+        nested_work = work_dir / "x" / "y"
+        nested_temp.mkdir(parents=True, exist_ok=True)
+        nested_work.mkdir(parents=True, exist_ok=True)
+
+        old_temp_file = nested_temp / "old.txt"
+        old_work_file = nested_work / "old.txt"
+        old_temp_file.write_text("temp")
+        old_work_file.write_text("work")
+
+        # Make the files old enough to be deleted
+        old_time = time.time() - (2 * 3600)
+        os.utime(old_temp_file, (old_time, old_time))
+        os.utime(old_work_file, (old_time, old_time))
+
+        deleted_count = await file_service.cleanup_old_files(max_age_hours=1)
+        assert deleted_count >= 2
+
+        # Entire per-user dirs should be gone (deleted as a unit)
+        assert not temp_dir.exists()
+        assert not work_dir.exists()
+
 
 # ============================================================================
 # Property 16: Working folder cleared on new session

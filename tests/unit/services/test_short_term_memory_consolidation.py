@@ -11,6 +11,7 @@ DB-backed (not user-editable).
 
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -41,12 +42,26 @@ def config(temp_vault_dir):
     )
 
 
+@pytest.fixture(autouse=True)
+def cleanup_test_files():
+    """Clean up any test files created in the scratchpad directory."""
+    yield
+    # Clean up any u1 or u2 test users from scratchpad
+    from app.config import SCRATCHPAD_DIRNAME
+    try:
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        scratchpad = repo_root / SCRATCHPAD_DIRNAME
+        for user_id in ["u1", "u2"]:
+            user_dir = scratchpad / "users" / user_id
+            if user_dir.exists():
+                shutil.rmtree(user_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+
 @pytest.mark.asyncio
 async def test_consolidation_deletes_file_on_success(config, temp_vault_dir):
     user_id = "u1"
-    stm_path = Path(temp_vault_dir) / "users" / user_id / "stm.md"
-    stm_path.parent.mkdir(parents=True, exist_ok=True)
-    stm_path.write_text("# Short-term memories\n\n- (fact) timezone: UTC\n", encoding="utf-8")
 
     mock_memory_service = MagicMock()
 
@@ -62,18 +77,26 @@ async def test_consolidation_deletes_file_on_success(config, temp_vault_dir):
         extraction_service=mock_extraction_service,
     )
 
+    # Use the actual vault root from the service (config normalization overrides the passed value)
+    actual_vault_root = service.config.obsidian_vault_root
+    stm_path = Path(actual_vault_root) / "users" / user_id / "stm.md"
+    stm_path.parent.mkdir(parents=True, exist_ok=True)
+    stm_path.write_text("# Short-term memories\n\n- (fact) timezone: UTC\n", encoding="utf-8")
+
     await service.consolidate_short_term_memories_daily()
 
     assert stm_path.exists() is False
     mock_extraction_service.extract_and_store.assert_awaited()
 
+    # Cleanup
+    stm_path.parent.mkdir(parents=True, exist_ok=True)
+    if stm_path.exists():
+        stm_path.unlink()
+
 
 @pytest.mark.asyncio
 async def test_consolidation_keeps_file_on_failure(config, temp_vault_dir):
     user_id = "u2"
-    stm_path = Path(temp_vault_dir) / "users" / user_id / "stm.md"
-    stm_path.parent.mkdir(parents=True, exist_ok=True)
-    stm_path.write_text("# Short-term memories\n\n- (fact) name: Alice\n", encoding="utf-8")
 
     mock_memory_service = MagicMock()
 
@@ -89,7 +112,17 @@ async def test_consolidation_keeps_file_on_failure(config, temp_vault_dir):
         extraction_service=mock_extraction_service,
     )
 
+    # Use the actual vault root from the service (config normalization overrides the passed value)
+    actual_vault_root = service.config.obsidian_vault_root
+    stm_path = Path(actual_vault_root) / "users" / user_id / "stm.md"
+    stm_path.parent.mkdir(parents=True, exist_ok=True)
+    stm_path.write_text("# Short-term memories\n\n- (fact) name: Alice\n", encoding="utf-8")
+
     await service.consolidate_short_term_memories_daily()
 
     assert stm_path.exists() is True
     mock_extraction_service.extract_and_store.assert_awaited()
+
+    # Cleanup
+    if stm_path.exists():
+        stm_path.unlink()

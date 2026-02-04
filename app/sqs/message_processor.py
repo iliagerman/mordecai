@@ -510,6 +510,16 @@ class MessageProcessor:
 
                         send_progress_module.set_progress_callback(progress_cb)
 
+                        # Send an immediate one-shot progress update so the user
+                        # gets a fast acknowledgment even if the agent/tools take
+                        # minutes (e.g., transcript fetching).
+                        try:
+                            initial = progress_cbk(chat_id, "Working on it…")
+                            if asyncio.iscoroutine(initial):
+                                await initial
+                        except Exception:
+                            logger.debug("Failed to send initial progress ack", exc_info=True)
+
                         # Start progress update loop AFTER callback is set
                         # Pass a lambda that captures the current context
                         progress_update_sender = ProgressUpdateSender(progress_cbk)

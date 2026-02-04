@@ -11,6 +11,10 @@ metadata:
         "primaryEnv": "OPENAI_API_KEY",
       },
   }
+requires:
+  env:
+  - name: OPENAI_API_KEY
+    prompt: OpenAI API key for audio transcription
 ---
 
 # OpenAI Whisper API (curl)

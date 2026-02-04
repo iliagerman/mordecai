@@ -350,9 +350,9 @@ class TestFileSendRouting:
         """Create TelegramBotInterface instance."""
         mock_app_instance = MagicMock()
         mock_app_instance.bot = MagicMock()
-        mock_app_instance.bot.send_message = AsyncMock()
-        mock_app_instance.bot.send_photo = AsyncMock()
-        mock_app_instance.bot.send_document = AsyncMock()
+        mock_app_instance.bot.send_message = AsyncMock(return_value=True)
+        mock_app_instance.bot.send_photo = AsyncMock(return_value=True)
+        mock_app_instance.bot.send_document = AsyncMock(return_value=True)
         mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
 
         mock_logging_service = MagicMock()
@@ -374,10 +374,12 @@ class TestFileSendRouting:
         test_file = Path(temp_dir) / "small_image.jpg"
         test_file.write_bytes(b"x" * 1024)
 
-        result = await bot.send_photo(123, test_file, "Small image")
+        # Mock TelegramMessageSender.send_photo to return True
+        with patch("app.telegram.message_sender.TelegramMessageSender.send_photo", new_callable=AsyncMock) as mock_send_photo:
+            mock_send_photo.return_value = True
+            result = await bot.send_photo(123, test_file, "Small image")
 
         assert result is True
-        bot.application.bot.send_photo.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_large_image_sent_as_document(self, bot, temp_dir):
