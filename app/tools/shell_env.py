@@ -26,6 +26,12 @@ from app.observability.health_state import mark_progress
 from app.observability.trace_context import get_trace_id
 from app.observability.trace_logging import trace_event
 
+# Progress marker patterns for parsing stderr
+_PROGRESS_MARKER_PREFIX = ">>>PROGRESS:"
+_INFO_MARKER_PREFIX = ">>>INFO:"
+_ERROR_MARKER_PREFIX = ">>>ERROR:"
+_PROGRESS_PATTERN = re.compile(r"^>>>(PROGRESS|INFO|ERROR):\s*(.+)$", re.MULTILINE)
+
 try:
     from strands import tool  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover
@@ -364,6 +370,44 @@ def _maybe_prefix_himalaya_config(command: str) -> str:
     return cmd
 
 
+def _parse_and_forward_progress_markers(stderr_line: str) -> str:
+    """Parse stderr line for progress markers and forward to user.
+
+    Detects patterns like:
+    - >>>PROGRESS: Fetching video info...
+    - >>>INFO: Video: My Video Title
+    - >>>ERROR: Failed to fetch transcript
+
+    Returns the line with markers stripped (so they don't appear in tool output),
+    while forwarding the messages via send_progress.
+    """
+    if not stderr_line:
+        return stderr_line
+
+    stripped = stderr_line.strip()
+
+    # Check for progress markers
+    for marker_type, prefix in [
+        ("PROGRESS", _PROGRESS_MARKER_PREFIX),
+        ("INFO", _INFO_MARKER_PREFIX),
+        ("ERROR", _ERROR_MARKER_PREFIX),
+    ]:
+        if stripped.startswith(prefix):
+            message = stripped[len(prefix):].strip()
+            if message:
+                # Try to forward via send_progress module
+                try:
+                    from app.tools import send_progress as send_progress_module
+                    send_progress_module._queue_progress_message(message)
+                except Exception:
+                    # If send_progress isn't available, just log it
+                    pass
+            # Strip the marker from output so it doesn't confuse the agent
+            return ""
+
+    return stderr_line
+
+
 def _safe_shell_run(
     *,
     command: str,
@@ -430,7 +474,16 @@ def _safe_shell_run(
                     break
 
                 nonlocal stdout_len, stderr_len
-                if which == "stdout":
+
+                # For stderr, parse and forward progress markers
+                # This strips the markers from output while sending to user
+                if which == "stderr":
+                    processed_line = _parse_and_forward_progress_markers(line)
+                    # Only append if not stripped (marker was found and removed)
+                    if processed_line:
+                        stderr_len = _append_tail(chunks=stderr_chunks, cur_len=stderr_len, text=processed_line)
+                    # Continue to mark progress even if line was stripped
+                elif which == "stdout":
                     stdout_len = _append_tail(chunks=stdout_chunks, cur_len=stdout_len, text=line)
                 else:
                     stderr_len = _append_tail(chunks=stderr_chunks, cur_len=stderr_len, text=line)
@@ -589,17 +642,25 @@ def _safe_shell_run(
     stderr_t = _truncate(stderr)
 
     if timed_out:
+        stdout_len = len(stdout_t or "")
         msg = (
             f"Command timed out after {timeout_seconds}s. "
+            f"Partial output ({stdout_len} chars) is available in stdout. "
             "If this is expected, pass a larger timeout_seconds from the skill."
         )
-        content_text = (stderr_t or "") + ("\n" if stderr_t else "") + msg
+        # Put stdout FIRST so the agent sees the actual data before the timeout message
+        # This helps the agent use partial results instead of being confused by the error
+        content_text = (stdout_t or "") + ("\n\n" if stdout_t else "") + msg
+        if stderr_t:
+            content_text += "\n\nstderr: " + stderr_t
         return {
             "status": "error",
             "returncode": returncode,
             "stdout": stdout_t,
-            "stderr": content_text,
+            "stderr": msg,
             "timed_out": True,
+            "partial_stdout_available": bool(stdout_t),  # Flag for agent to check
+            "partial_stdout_length": stdout_len,
             "duration_ms": dt_ms,
             "content": [{"text": content_text}],
         }
