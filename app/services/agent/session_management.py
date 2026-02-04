@@ -54,6 +54,7 @@ class SessionLifecycleManager:
         user_agents: dict,
         get_conversation_history: callable,
         create_agent: callable,
+        conversation_dao: Any | None = None,
     ):
         """Initialize the session manager.
 
@@ -77,16 +78,20 @@ class SessionLifecycleManager:
         self.extraction_service = extraction_service
         self.memory_service = memory_service
         self.file_service = file_service
+
         self._session_manager = session_manager
         self._agent_name_registry = agent_name_registry
+
         self._conversation_history = conversation_history
         self._message_counter = message_counter
         self._extraction_lock = extraction_lock
         self._obsidian_stm_cache = obsidian_stm_cache
+
         self._user_conversation_managers = user_conversation_managers
         self._user_agents = user_agents
         self._get_conversation_history = get_conversation_history
         self._create_agent = create_agent
+        self.conversation_dao = conversation_dao
 
     def get_session_id(self, user_id: str) -> str:
         """Get or create a session ID for a user."""
@@ -316,6 +321,25 @@ class SessionLifecycleManager:
         # Always clear session and reset count (Requirement 6.2, 6.4)
         self._clear_session_memory(user_id)
         self.reset_message_count(user_id)
+
+        # Workaround: after /new, DB-backed session recovery can mistakenly pull the
+        # latest *older* session_id if no messages exist yet for the new session.
+        # Persist a minimal "New session started" assistant message into the new
+        # session_id so the DB latest-session query resolves to this fresh session.
+        try:
+            convo_dao = getattr(self, "conversation_dao", None)
+            if convo_dao is not None:
+                new_session_id = self.get_session_id(user_id)
+                await convo_dao.save_message(
+                    user_id=user_id,
+                    session_id=new_session_id,
+                    role="assistant",
+                    content="New session started!",
+                    is_cron=False,
+                    created_at=datetime.utcnow(),
+                )
+        except Exception:
+            pass
 
         # Clear working folder on new session (Requirement 10.4)
         if self.file_service is not None:
