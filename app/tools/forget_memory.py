@@ -31,9 +31,9 @@ class _MemoryServiceProtocol(Protocol):
         user_id: str,
         query: str,
         memory_type: str = "all",
-        similarity_threshold: float = 0.7,
+        similarity_threshold: float = 0.0,
         dry_run: bool = True,
-        max_matches: int = 25,
+        max_matches: int = 100,
     ) -> ForgetMemoryResult: ...
 
 
@@ -58,15 +58,16 @@ def set_memory_context(memory_service: _MemoryServiceProtocol, user_id: str) -> 
         "Forget (delete) incorrect/outdated long-term memories. "
         "Use this when you discover a stored fact/preference is wrong and should be removed. "
         "By default this is a dry-run: it will list matches without deleting. "
-        "Set dry_run=false to actually delete matching records."
+        "Set dry_run=false to actually delete matching records. "
+        "Use query='*' (with dry_run=false) to delete ALL memories for a user."
     ),
 )
 def forget_memory(
     query: str,
     memory_type: Literal["all", "facts", "preferences"] = "all",
-    similarity_threshold: float = 0.7,
+    similarity_threshold: float = 0.0,
     dry_run: bool = True,
-    max_matches: int = 10,
+    max_matches: int = 100,
 ) -> str:
     """Find and optionally delete memory records similar to a query."""
 
