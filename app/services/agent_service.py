@@ -202,6 +202,7 @@ class AgentService:
             user_agents=self._user_agents,
             get_conversation_history=self._get_conversation_history,
             create_agent=self._create_agent,
+            conversation_dao=self.conversation_dao,
         )
 
         self._agent_creator = AgentCreator(
