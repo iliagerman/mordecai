@@ -134,49 +134,40 @@ uv run uvicorn app.main:get_fastapi_app --host 0.0.0.0 --port 8000 --factory
 
 ## Deployment
 
-### Docker Deployment (Recommended)
+### Notes storage and retention
 
-#### Prerequisites
+- `scratchpad/` is **long-lived** and is where the agent stores per-user notes/memory artifacts.
+- `workspace/` is **ephemeral** and is only for artifacts (images/scripts/etc.) that are meant to be returned to the user.
+  - The backend runs an hourly cleanup job that deletes stale `workspace/<USER_ID>/` and `temp_files/<USER_ID>/` directories when they have not changed for 24 hours.
 
-- Docker Engine 20.10+
-- Docker Compose 2.0+
+### Docker Deployment
 
-#### Quick Deploy with Docker Compose
+Docker Compose is used for server deployments in this repo.
+
+#### Deploy with Docker Compose
+
+1. Prepare configuration files:
 
 ```bash
-# 1. Prepare configuration files
 cp config.example.json config.json
 cp secrets.yml_example secrets.yml  # Edit with your secrets
-
-# 2. Build and start all services
-docker-compose up -d
-
-# 3. View logs
-docker-compose logs -f mordecai
-
-# 4. Stop services
-docker-compose down
 ```
 
-The Docker Compose setup includes:
-- **Mordecai container** - Main application
-- **LocalStack container** - Local AWS SQS emulation
-- **Persistent volumes** - Database, sessions, and skills data
-
-#### Configuration for Docker
-
-Environment variables in `docker-compose.yml` override config defaults:
+2. Start services:
 
 ```bash
-# .env file for Docker Compose
-AGENT_API_PORT=8000
-SKIP_MIGRATIONS=false
+docker-compose up -d
 ```
 
-Mount required volumes in `docker-compose.yml`:
-- `./config.json:/app/config.json:ro` - Configuration
-- `./secrets.yml:/app/secrets.yml:ro` - Secrets
-- `./skills:/app/skills:rw` - Skills directory
+3. View logs:
+
+```bash
+docker-compose logs -f mordecai
+```
+
+Notes:
+- `scratchpad/` is mounted into the container and is the **only** supported long-lived notes/memory store.
+- `workspace/` is for ephemeral artifacts and is auto-cleaned by the backend.
 
 #### Manual Docker Build
 
@@ -189,8 +180,6 @@ docker run -d \
   --name mordecai \
   -v $(pwd)/config.json:/app/config.json:ro \
   -v $(pwd)/secrets.yml:/app/secrets.yml:ro \
-  -v mordecai-db:/app/data \
-  -v mordecai-sessions:/app/sessions \
   -v $(pwd)/skills:/app/skills:rw \
   -p 8000:8000 \
   mordecai:latest
@@ -344,11 +333,11 @@ Users can add their own MCP servers in `skills/{user_id}/mcp_servers.json`. Thes
 
 The agent has built-in tools to manage MCP servers:
 
-| Tool | Description |
-| ---- | ----------- |
-| `mcp_add_server` | Add an MCP server for the current user |
-| `mcp_remove_server` | Remove an MCP server configuration |
-| `mcp_list_servers` | List all configured MCP servers |
+| Tool                | Description                            |
+| ------------------- | -------------------------------------- |
+| `mcp_add_server`    | Add an MCP server for the current user |
+| `mcp_remove_server` | Remove an MCP server configuration     |
+| `mcp_list_servers`  | List all configured MCP servers        |
 
 #### Usage Examples
 
@@ -365,10 +354,10 @@ Agent: Removed MCP server 'test-server'. Start a new conversation to apply chang
 
 #### Transport Types
 
-| Type | Description | Example |
-| ---- | ----------- | ------- |
+| Type     | Description                              | Example                     |
+| -------- | ---------------------------------------- | --------------------------- |
 | `remote` | SSE transport for HTTP-based MCP servers | `http://localhost:3000/sse` |
-| `stdio` | Local process transport (future) | `python server.py` |
+| `stdio`  | Local process transport (future)         | `python server.py`          |
 
 #### Tool Prefixing
 

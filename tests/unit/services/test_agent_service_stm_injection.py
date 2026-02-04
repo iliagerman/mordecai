@@ -7,8 +7,8 @@ from app.services.agent_service import AgentService
 
 def test_build_system_prompt_injects_obsidian_stm(tmp_path: Path):
     vault = tmp_path / "vault"
-    (vault / "me" / "u1").mkdir(parents=True)
-    (vault / "me" / "u1" / "stm.md").write_text(
+    (vault / "users" / "u1").mkdir(parents=True)
+    (vault / "users" / "u1" / "stm.md").write_text(
         "# STM\n\n## Session summary: s1\n- created_at: 2026-01-31T00:00:00Z\n\n- Did X\n",
         encoding="utf-8",
     )

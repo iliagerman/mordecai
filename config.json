@@ -9,7 +9,7 @@
   "localstack_endpoint": "http://localhost:4566",
   "database_url": "sqlite+aiosqlite:///./agent.db",
   "session_storage_dir": "./sessions",
-  "obsidian_vault_root": "~/obsidian-vaults",
+  "obsidian_vault_root": "./scratchpad",
   "skills_base_dir": "./skills",
   "max_conversation_messages": 30,
   "extraction_timeout_seconds": 30,

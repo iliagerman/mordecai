@@ -28,6 +28,7 @@ def config(tmp_path):
         temp_files_base_dir=str(tmp_path),
         working_folder_base_dir=str(tmp_path),
         allowed_users=["testuser"],
+        enable_file_attachments=True,
     )
 
 
@@ -143,11 +144,11 @@ async def test_handle_audio_downloads_and_enqueues(handlers):
 @pytest.mark.asyncio
 async def test_bot_registers_voice_handler(config):
     # Verify _setup_handlers wires VOICE so updates are not ignored.
-    with patch("app.telegram.bot.Application") as mock_app:
+    with patch("telegram.ext._applicationbuilder.ApplicationBuilder.build") as mock_build:
         mock_app_instance = MagicMock()
         mock_app_instance.bot = MagicMock()
         mock_app_instance.bot.send_message = AsyncMock()
-        mock_app.builder.return_value.token.return_value.build.return_value = mock_app_instance
+        mock_build.return_value = mock_app_instance
 
         TelegramBotInterface(
             config=config,
@@ -158,11 +159,15 @@ async def test_bot_registers_voice_handler(config):
             skill_service=MagicMock(),
         )
 
-        # Find at least one MessageHandler that uses filters.VOICE.
-        from telegram.ext import MessageHandler, filters
+        # Verify that add_handler was called with filters.VOICE
+        from telegram.ext import filters
 
-        handlers = [call.args[0] for call in mock_app_instance.add_handler.call_args_list]
-        voice_handlers = [
-            h for h in handlers if isinstance(h, MessageHandler) and h.filters == filters.VOICE
-        ]
-        assert voice_handlers, "VOICE handler was not registered"
+        voice_handler_calls = []
+        for call_args in mock_app_instance.add_handler.call_args_list:
+            if call_args.args:
+                handler = call_args.args[0]
+                # Check if this handler uses filters.VOICE
+                if hasattr(handler, 'filters') and handler.filters == filters.VOICE:
+                    voice_handler_calls.append(call_args)
+
+        assert voice_handler_calls, "VOICE handler was not registered"

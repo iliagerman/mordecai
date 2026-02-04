@@ -132,10 +132,7 @@ class FileService:
         if file_size > max_bytes:
             return FileValidationResult(
                 valid=False,
-                error_message=(
-                    f"File too large. Maximum size is "
-                    f"{self.config.max_file_size_mb}MB"
-                ),
+                error_message=(f"File too large. Maximum size is {self.config.max_file_size_mb}MB"),
             )
 
         # Check extension
@@ -144,10 +141,7 @@ class FileService:
             allowed = ", ".join(sorted(self.config.allowed_file_extensions))
             return FileValidationResult(
                 valid=False,
-                error_message=(
-                    f"File type '{ext}' not supported. "
-                    f"Allowed types: {allowed}"
-                ),
+                error_message=(f"File type '{ext}' not supported. Allowed types: {allowed}"),
             )
 
         # Sanitize filename
@@ -308,6 +302,7 @@ class FileService:
                     item.unlink()
                 elif item.is_dir():
                     import shutil
+
                     shutil.rmtree(item)
             logger.info("Cleared working folder for user %s", user_id)
 
@@ -336,36 +331,121 @@ class FileService:
             - 4.6: Clean up temporary files after retention period
             - 10.5: Delete files older than 24 hours from working folders
         """
+        import os
+        import shutil
         import time
 
         deleted_count = 0
         max_age_seconds = max_age_hours * 3600
         current_time = time.time()
 
-        # Clean temp directories
-        for user_dir in self._temp_base.iterdir():
-            if user_dir.is_dir():
-                for file_path in user_dir.iterdir():
-                    if file_path.is_file():
-                        age = current_time - file_path.stat().st_mtime
-                        if age > max_age_seconds:
-                            file_path.unlink()
-                            deleted_count += 1
+        def _count_files_in_tree(root: Path) -> int:
+            count = 0
+            for _, _, files in os.walk(root):
+                count += len(files)
+            return count
 
-        # Clean working directories
-        for user_dir in self._work_base.iterdir():
-            if user_dir.is_dir():
-                for file_path in user_dir.iterdir():
-                    if file_path.is_file():
-                        age = current_time - file_path.stat().st_mtime
-                        if age > max_age_seconds:
-                            file_path.unlink()
-                            deleted_count += 1
+        def _newest_mtime_in_tree(root: Path) -> float:
+            """Return the newest mtime across root + all descendants.
+
+            We use this to treat the user's temp/working directory as a single
+            unit: if it hasn't changed for > max_age_seconds, delete the whole
+            directory (including nested folders).
+            """
+
+            newest_dir_mtime = 0.0
+            newest_file_mtime = 0.0
+            saw_file = False
+
+            try:
+                newest_dir_mtime = root.stat().st_mtime
+            except Exception:
+                newest_dir_mtime = 0.0
+
+            for dirpath, dirnames, filenames in os.walk(root):
+                # Directory mtimes are only used as a fallback when the tree
+                # contains no files at all.
+                try:
+                    newest_dir_mtime = max(newest_dir_mtime, Path(dirpath).stat().st_mtime)
+                except Exception:
+                    pass
+
+                for name in filenames:
+                    saw_file = True
+                    p = Path(dirpath) / name
+                    try:
+                        newest_file_mtime = max(newest_file_mtime, p.stat().st_mtime)
+                    except Exception:
+                        # Best-effort: ignore unreadable entries
+                        pass
+
+                _ = dirnames
+
+            return newest_file_mtime if saw_file else newest_dir_mtime
+
+        def _cleanup_base_dir(base: Path, *, label: str) -> int:
+            nonlocal deleted_count
+
+            if not base.exists() or not base.is_dir():
+                return 0
+
+            # Clean any stray files directly under the base dir.
+            for item in base.iterdir():
+                if not item.is_file():
+                    continue
+                try:
+                    age = current_time - item.stat().st_mtime
+                    if age > max_age_seconds:
+                        item.unlink()
+                        deleted_count += 1
+                except Exception:
+                    logger.debug("Failed to delete stale file under %s: %s", label, item)
+
+            # Clean per-user directories:
+            # 1. Delete whole dir if it hasn't changed for > max_age (faster cleanup)
+            # 2. Otherwise, clean individual old files within the directory
+            for user_dir in base.iterdir():
+                if not user_dir.is_dir():
+                    continue
+
+                try:
+                    newest_mtime = _newest_mtime_in_tree(user_dir)
+                    age = current_time - newest_mtime
+                    if age > max_age_seconds:
+                        # Entire directory is old, delete it all at once
+                        files_removed = _count_files_in_tree(user_dir)
+                        shutil.rmtree(user_dir, ignore_errors=False)
+                        deleted_count += files_removed
+                    else:
+                        # Directory has recent files, but still clean individual old files
+                        for root, dirs, files in os.walk(user_dir):
+                            for name in files:
+                                try:
+                                    file_path = Path(root) / name
+                                    file_age = current_time - file_path.stat().st_mtime
+                                    if file_age > max_age_seconds:
+                                        file_path.unlink()
+                                        deleted_count += 1
+                                except Exception:
+                                    logger.debug(
+                                        "Failed to delete old file in %s: %s", label, file_path
+                                    )
+                            # Don't traverse into nested user directories to avoid double-cleanup
+                            dirs.clear()
+                except Exception:
+                    logger.debug("Failed to cleanup %s dir: %s", label, user_dir)
+
+            return deleted_count
+
+        _cleanup_base_dir(self._temp_base, label="temp")
+        _cleanup_base_dir(self._work_base, label="workspace")
 
         logger.info(
-            "Cleanup: deleted %d files older than %d hours",
+            "Cleanup: deleted %d files older than %d hours (temp=%s workspace=%s)",
             deleted_count,
             max_age_hours,
+            str(self._temp_base),
+            str(self._work_base),
         )
 
         return deleted_count

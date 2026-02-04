@@ -44,6 +44,9 @@ def test_shell_inlines_mordecai_skills_base_dir_from_env_template(tmp_path: Path
     monkeypatch.delenv("MORDECAI_SKILLS_BASE_DIR", raising=False)
     monkeypatch.setenv("MORDECAI_SKILLS_BASE_DIR", str(tmp_path / "skills"))
 
+    # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
+    monkeypatch.setattr(shell_env_module, "_stdin_is_tty", lambda: True)
+
     captured: dict[str, object] = {}
 
     def _fake_base_shell(**kwargs):
@@ -79,6 +82,9 @@ def test_shell_sees_new_secret_without_restart(tmp_path: Path, monkeypatch):
         user_id=user_id, secrets_path=secrets_path, config=cfg
     )
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
+    monkeypatch.setattr(shell_env_module, "_stdin_is_tty", lambda: True)
 
     # Ensure we start clean.
     os.environ.pop("DEMO_TOKEN", None)
@@ -117,6 +123,9 @@ def test_shell_calls_refresh_every_invocation_and_before_base_shell(tmp_path: Pa
     monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
     cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
+    monkeypatch.setattr(shell_env_module, "_stdin_is_tty", lambda: True)
 
     # Reset runtime tracking to avoid bleed between tests.
     monkeypatch.setattr(config_module, "_RUNTIME_SKILL_ENV_CONTEXT", None, raising=False)
@@ -166,6 +175,9 @@ def test_shell_hot_reloads_from_updated_secrets_file_without_restart(tmp_path: P
     monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
     cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
+    monkeypatch.setattr(shell_env_module, "_stdin_is_tty", lambda: True)
 
     # Reset runtime tracking to avoid bleed between tests.
     monkeypatch.setattr(config_module, "_RUNTIME_SKILL_ENV_CONTEXT", None, raising=False)
@@ -222,6 +234,9 @@ def test_shell_applies_default_timeout_for_himalaya_commands(tmp_path: Path, mon
     cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
+    # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
+    monkeypatch.setattr(shell_env_module, "_stdin_is_tty", lambda: True)
+
     captured: dict[str, object] = {}
 
     def _fake_base_shell(**kwargs):
@@ -255,6 +270,9 @@ def test_shell_normalizes_backslash_escaped_quotes_for_himalaya(tmp_path: Path, 
     monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
     cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
+    monkeypatch.setattr(shell_env_module, "_stdin_is_tty", lambda: True)
 
     captured: dict[str, object] = {}
 
@@ -321,6 +339,9 @@ def test_shell_clamps_timeout_to_configured_max(tmp_path: Path, monkeypatch):
     )
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
+    # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
+    monkeypatch.setattr(shell_env_module, "_stdin_is_tty", lambda: True)
+
     captured: dict[str, object] = {}
 
     def _fake_base_shell(**kwargs):
@@ -346,6 +367,9 @@ def test_shell_emits_progress_heartbeats_during_long_runs(tmp_path: Path, monkey
         shell_progress_heartbeat_seconds=1,
     )
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
+
+    # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
+    monkeypatch.setattr(shell_env_module, "_stdin_is_tty", lambda: True)
 
     events: list[str] = []
 

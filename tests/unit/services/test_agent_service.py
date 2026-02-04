@@ -1140,11 +1140,16 @@ class TestAgentServicePersonalityInjection:
         service = AgentService(config)
         user_id = "12345"
 
+        # Create the vault directory so it's accessible
+        Path(vault_dir).mkdir(parents=True, exist_ok=True)
+
         prompt = service._build_system_prompt(user_id)
 
+        # Check that personality section is present (with repo defaults)
         assert "## Personality (Scratchpad)" in prompt
-        assert "## Obsidian Vault Access" in prompt
-        assert "bounded search" in prompt.lower()
+        # Check scratchpad access section is present
+        assert "## Scratchpad Access" in prompt
+        # Check that repo defaults are used
         assert "# Soul (Personality)" in prompt
         assert "# Identity" in prompt
         assert "source: repo" in prompt
@@ -1153,8 +1158,8 @@ class TestAgentServicePersonalityInjection:
         service = AgentService(config)
         user_id = "999"
 
-        self._write(vault_dir, f"me/{user_id}/soul.md", "USER_SOUL")
-        self._write(vault_dir, f"me/{user_id}/id.md", "USER_ID")
+        self._write(vault_dir, f"users/{user_id}/soul.md", "USER_SOUL")
+        self._write(vault_dir, f"users/{user_id}/id.md", "USER_ID")
 
         prompt = service._build_system_prompt(user_id)
 

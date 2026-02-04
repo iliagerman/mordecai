@@ -33,14 +33,10 @@ async def test_send_file_pending_queue_visible_across_to_thread(tmp_path) -> Non
     # Not a real PNG; contents don't matter for the tool.
     test_file.write_bytes(b"fake")
 
-    tool_invocation = {
-        "toolUseId": "tool-1",
-        "input": {"file_path": str(test_file), "caption": "hi"},
-    }
-
-    # Simulate the Strands agent invoking tools inside asyncio.to_thread().
-    result = await asyncio.to_thread(send_file_tool.send_file, tool_invocation)
-    assert result["status"] == "success"
+    # Call send_file with the actual parameters (not the tool invocation dict)
+    # The Strands decorator handles extracting parameters from the tool invocation
+    result = await asyncio.to_thread(send_file_tool.send_file, str(test_file), "hi")
+    assert "queued" in result.lower()
 
     pending = send_file_tool.get_pending_files()
     assert len(pending) == 1
