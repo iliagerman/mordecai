@@ -252,14 +252,14 @@ deploy:
         set -euo pipefail
         cd ${REMOTE_DIR}
         echo '🛑 Stopping Docker Compose...'
-        docker compose down
+        docker compose -f docker-compose.yml -f docker-compose.vibe-kanban.yml down
         echo '📥 Pulling latest changes...'
         git pull
         echo '🚀 Starting Docker Compose...'
-        docker compose up -d --build 
+        docker compose -f docker-compose.yml -f docker-compose.vibe-kanban.yml up -d --build
         echo '⏳ Waiting for services to be healthy...'
         sleep 5
-        docker compose ps
+        docker compose -f docker-compose.yml -f docker-compose.vibe-kanban.yml ps
     "
 
     echo "✅ Deployment complete!"
@@ -281,16 +281,16 @@ deploy-hard-reset:
         set -euo pipefail
         cd ${REMOTE_DIR}
         echo '🛑 Stopping Docker Compose and removing volumes...'
-        docker compose down -v
+        docker compose -f docker-compose.yml -f docker-compose.vibe-kanban.yml down -v
         echo '🗑️  Removing splintermaster skill directory...'
         rm -rf ${SPLINTERMASTER_PATH} || sudo rm -rf ${SPLINTERMASTER_PATH}
         echo '📥 Pulling latest changes...'
         git pull
         echo '🚀 Starting Docker Compose...'
-        docker compose up -d --build 
+        docker compose -f docker-compose.yml -f docker-compose.vibe-kanban.yml up -d --build
         echo '⏳ Waiting for services to be healthy...'
         sleep 5
-        docker compose ps
+        docker compose -f docker-compose.yml -f docker-compose.vibe-kanban.yml ps
     "
 
     echo "✅ Hard reset deployment complete!"

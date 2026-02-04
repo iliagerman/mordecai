@@ -9,7 +9,7 @@ triggers:
   - "video transcript"
   - "youtube summary"
   - "analyze video"
-metadata: {"clawdbot":{"emoji":"📺","install":[{"id":"pip","kind":"pip","package":"yt-dlp","bins":["yt-dlp"],"label":"Install yt-dlp (pip)"}]}}
+metadata: {"clawdbot":{"emoji":"📺","install":[{"id":"pip","kind":"pip","package":"yt-dlp","bins":["yt-dlp"],"label":"Install yt-dlp (pip)"},{"id":"pip","kind":"pip","package":"youtube-transcript-api","label":"Install youtube-transcript-api (pip)"}]}}
 ---
 
 # YouTube Watcher
@@ -23,7 +23,8 @@ Fetch transcripts from YouTube videos to enable summarization, QA, and content e
 1. The script is located at `scripts/get_transcript.py` inside this skill directory
 2. There is NO file named `youtube_watcher.py` — do not attempt to run it
 3. You MUST pass a YouTube URL as the first argument to the script
-4. The script now auto-installs yt-dlp if missing
+4. The script uses a **hybrid approach**: tries fast API first, falls back to yt-dlp if needed
+5. Both dependencies auto-install if missing
 
 **Correct command format:**
 ```bash
@@ -47,10 +48,16 @@ Retrieve the text transcript of a video.
 python3 {baseDir}/scripts/get_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-**Important:** For long videos, this command may take 2-5 minutes to complete. Always pass `timeout_seconds=300` (or higher) to avoid timeouts:
+**Hybrid Approach:** The script first tries `youtube-transcript-api` (typically 1-2 seconds). If that fails, it falls back to `yt-dlp` (slower but more reliable).
+
+**Timeout:** For long videos (>30 min), use `--timeout` or the script will auto-calculate based on video length:
 
 ```bash
-timeout_seconds=300 python3 {baseDir}/scripts/get_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID"
+# Auto timeout (recommended)
+python3 {baseDir}/scripts/get_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# Custom timeout
+python3 {baseDir}/scripts/get_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID" --timeout 600
 ```
 
 ### Progress Updates
@@ -98,15 +105,18 @@ The script now outputs progress updates to stderr that you can monitor:
 |-------|-------|----------|
 | `youtube_watcher.py: No such file or directory` | You're using the wrong filename | Use `scripts/get_transcript.py` instead |
 | `the following arguments are required: url` | You forgot to pass the YouTube URL | Add the URL as the first argument |
-| `command timed out` | Video is long and default timeout too short | Use `timeout_seconds=300` or higher |
-| `yt-dlp: command not found` | `yt-dlp` is not installed | Script will auto-install via pip |
+| `command timed out` | Video is very long, timeout exceeded | Re-run with `--timeout 1200` or higher |
+| `API method failed, falling back to yt-dlp` | Fast API unavailable, using slow method | Normal fallback, will take longer |
+| `No transcript available via API` | API couldn't fetch, using yt-dlp fallback | Normal fallback, will take longer |
 | `This video does not have subtitles` | Video has no captions/transcript | Inform the user the video cannot be transcribed |
 | `>>>ERROR: Failed to fetch transcript` | Video is private, region-locked, or unavailable | Inform the user of the issue |
 
 ## Notes
 
-- **Auto-installation:** yt-dlp will be automatically installed via pip if missing
+- **Hybrid approach:** Tries fast `youtube-transcript-api` first (~1-2 sec), falls back to `yt-dlp` if needed (~5-30 sec)
+- **Auto-installation:** Both dependencies auto-install via pip if missing
+- **No credentials required:** Works with public YouTube videos without API keys
 - Works with videos that have closed captions (CC) or auto-generated subtitles
 - If a video has no subtitles, the script will fail with exit code 4
-- **Timeout:** YouTube transcript fetching can be slow. Always use `timeout_seconds=300` (5 minutes) or higher to avoid command timeouts, especially for long videos
+- **Dynamic timeout:** Automatically calculates timeout based on video length (max 15 min)
 - **Progress:** Monitor stderr for `>>>PROGRESS:` messages to keep user informed
