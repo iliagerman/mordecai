@@ -414,11 +414,13 @@ def upsert_skill_env_vars(
     env_vars: dict[str, str],
     user_id: str | None = None,
 ) -> dict[str, Any]:
-    """Upsert skill env vars into secrets.yml.
+    """Upsert skill env vars into secrets.yml using flat format.
 
     Writes to:
-      skills.<skill_name>.env                 (if user_id is None)
-      skills.<skill_name>.users.<user_id>.env (if user_id is provided)
+      skills.<KEY>                 (flat format, all env vars at top level of skills:)
+
+    The skill_name parameter is kept for API compatibility but is not used
+    in the flat format (all keys go directly under skills:).
     """
     secrets = load_raw_secrets(secrets_path)
 
@@ -427,35 +429,11 @@ def upsert_skill_env_vars(
         secrets["skills"] = {}
         skills = secrets["skills"]
 
-    skill_block = skills.setdefault(skill_name, {})
-    if not isinstance(skill_block, dict):
-        skills[skill_name] = {}
-        skill_block = skills[skill_name]
-
-    target_block: dict[str, Any]
-    if user_id is None:
-        target_block = skill_block
-    else:
-        users_block = skill_block.setdefault("users", {})
-        if not isinstance(users_block, dict):
-            skill_block["users"] = {}
-            users_block = skill_block["users"]
-
-        user_block = users_block.setdefault(str(user_id), {})
-        if not isinstance(user_block, dict):
-            users_block[str(user_id)] = {}
-            user_block = users_block[str(user_id)]
-        target_block = user_block
-
-    env_block = target_block.setdefault("env", {})
-    if not isinstance(env_block, dict):
-        target_block["env"] = {}
-        env_block = target_block["env"]
-
+    # Flat format: write env vars directly under skills:
     for k, v in env_vars.items():
         if v is None:
             continue
-        env_block[str(k)] = str(v)
+        skills[str(k)] = str(v)
 
     save_raw_secrets(secrets_path, secrets)
     return secrets
@@ -547,35 +525,25 @@ def get_skill_env_vars(
     skill_name: str,
     user_id: str | None = None,
 ) -> dict[str, str]:
-    """Return merged (global + per-user override) env vars for a skill."""
+    """Return all env vars from the flat skills: section.
+
+    In flat format, all env vars are directly under skills: as key-value pairs.
+    The skill_name and user_id parameters are kept for API compatibility.
+    """
     skills = secrets.get("skills")
     if not isinstance(skills, dict):
         return {}
 
-    skill_block = skills.get(skill_name)
-    if not isinstance(skill_block, dict):
-        return {}
-
     merged: dict[str, str] = {}
 
-    base_env = skill_block.get("env")
-    if isinstance(base_env, dict):
-        for k, v in base_env.items():
-            if v is None:
-                continue
-            merged[str(k)] = str(v)
-
-    if user_id is not None:
-        users = skill_block.get("users")
-        if isinstance(users, dict):
-            user_block = users.get(str(user_id))
-            if isinstance(user_block, dict):
-                user_env = user_block.get("env")
-                if isinstance(user_env, dict):
-                    for k, v in user_env.items():
-                        if v is None:
-                            continue
-                        merged[str(k)] = str(v)
+    # Flat format: all non-dict values in skills: are env vars
+    for k, v in skills.items():
+        if v is None:
+            continue
+        # Skip nested dicts (legacy structured format or other config)
+        if isinstance(v, dict):
+            continue
+        merged[str(k)] = str(v)
 
     return merged
 
@@ -670,26 +638,16 @@ def refresh_runtime_env_from_secrets(
             pass
         return {"ok": True, "applied": 0, "skills": []}
 
-    # If the user context changed, force a full refresh to ensure the environment
-    # is correct and we can safely clear keys from the previous user.
-    effective_skill_names = None if (skill_names is None or context_changed) else skill_names
-    names = list(skills.keys()) if effective_skill_names is None else effective_skill_names
+    # With flat format, we get all env vars at once (no per-skill iteration needed)
+    # get_skill_env_vars returns all non-dict values from skills: section
+    desired_env: dict[str, str] = get_skill_env_vars(secrets=merged_secrets, skill_name="", user_id=user_id)
 
-    # Compute desired env for the skills we're refreshing.
-    desired_env: dict[str, str] = {}
-    new_keys_by_skill: dict[str, set[str]] = {}
-    applied_skills: list[str] = []
+    # Track all the keys we're managing for cleanup on user switch
+    new_keys_by_skill: dict[str, set[str]] = {"_all": set(desired_env.keys())}
+    applied_skills: list[str] = ["_all"]
 
-    for name in names:
-        env_vars = get_skill_env_vars(secrets=merged_secrets, skill_name=name, user_id=user_id)
-        if not env_vars:
-            new_keys_by_skill[name] = set()
-            continue
-        desired_env.update(env_vars)
-        new_keys_by_skill[name] = set(env_vars.keys())
-        applied_skills.append(name)
-
-    full_refresh = effective_skill_names is None
+    # With flat format, always do full refresh (all env vars at once)
+    full_refresh = True
 
     # On full refresh (including any user switch), remove keys we previously
     # injected that are not desired for the current context.
@@ -697,6 +655,16 @@ def refresh_runtime_env_from_secrets(
         for k in list(_RUNTIME_SKILL_ENV_MANAGED_KEYS):
             if k not in desired_env:
                 os.environ.pop(k, None)
+
+    # For template materialization, get list of skill directories
+    names: list[str] = []
+    if user_id is not None and config is not None:
+        try:
+            user_dir = resolve_user_skills_dir(config, user_id, create=True)
+            if user_dir.exists() and user_dir.is_dir():
+                names = [d.name for d in user_dir.iterdir() if d.is_dir() and not d.name.startswith('_')]
+        except Exception:
+            pass
 
     # ------------------------------------------------------------
     # Materialize per-user example-based config templates.
