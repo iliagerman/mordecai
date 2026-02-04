@@ -725,10 +725,7 @@ class MessageProcessor:
                             "Empty or None response for message %s; sending fallback message",
                             message_id,
                         )
-                    # Allow out-of-order heavy jobs while still letting users identify
-                    # which reply maps to which inbound message.
-                    tagged = f"[job {message_id[:8]}] {response}"
-                    callback_result = self.response_callback(parsed.chat_id, tagged)
+                    callback_result = self.response_callback(parsed.chat_id, response)
                     # Handle async callbacks
                     if asyncio.iscoroutine(callback_result):
                         await callback_result

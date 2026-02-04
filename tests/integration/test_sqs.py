@@ -301,12 +301,10 @@ class TestMessageConsumptionAndRouting:
         await processor._process_queue(queue_url)
 
         # Verify callback was invoked with correct args
-        # The response now includes a [job <id>] prefix
         callback.assert_called_once()
         actual_chat_id, actual_response = callback.call_args[0]
         assert actual_chat_id == chat_id
-        assert actual_response.endswith("Test response")
-        assert actual_response.startswith("[job ")
+        assert actual_response == "Test response"
 
     async def test_malformed_message_deleted(
         self, sqs_client, queue_manager, mock_agent_service, cleanup_queues
