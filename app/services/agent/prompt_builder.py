@@ -79,6 +79,7 @@ class SystemPromptBuilder:
         prompt += self._working_folder_section(user_id)
 
         prompt += self._progress_updates_section()
+        prompt += self._shell_timeout_handling_section()
 
         if self.has_cron:
             prompt += self._scheduling_section()
@@ -438,6 +439,23 @@ class SystemPromptBuilder:
             "- Don't send progress for instant operations\n"
             "- Don't spam with too many updates (2-3 max per task)\n"
             "- If an error occurs, mention it in your final response\n\n"
+        )
+
+    def _shell_timeout_handling_section(self) -> str:
+        return (
+            "## Shell Command Timeout Handling\n\n"
+            "**When a shell command times out (returns `timed_out: True`):**\n\n"
+            "1. **Check for partial output**: The `stdout` field may contain useful data that was retrieved before the timeout. Look for `partial_stdout_available: true` or `partial_stdout_length`.\n\n"
+            "2. **Use whatever data is available**: Don't discard partial results - use the stdout content to help the user.\n\n"
+            "3. **Inform the user**: Explain what happened:\n"
+            "   - 'The command timed out after X seconds'\n"
+            "   - 'I was able to retrieve Y characters of the transcript/data'\n"
+            "   - 'Here's what I found from the partial output...'\n\n"
+            "4. **Suggest retry with larger timeout**: If appropriate, tell the user they can retry with `timeout_seconds=600` or higher.\n\n"
+            "**Example response:**\n"
+            "- 'The transcript fetch timed out after 5 minutes, but I was able to retrieve about 8,000 characters. Here's a summary of what I found...'\n\n"
+            "**Example response:**\n"
+            "- 'The video is quite long (45 minutes) and the transcript fetch timed out. Try asking again with a note to use a longer timeout.'\n\n"
         )
 
     def _scheduling_section(self) -> str:

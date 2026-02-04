@@ -711,8 +711,20 @@ class MessageProcessor:
                 )
 
             # Send response via callback if provided
-            if self.response_callback and response:
+            if self.response_callback:
                 try:
+                    # Ensure we always have a response to send (even if empty/None)
+                    # This prevents silent failures where the user gets no feedback
+                    if not response:
+                        response = (
+                            "I processed your request but couldn't generate a response. "
+                            "This might be due to a timeout, command failure, or an internal issue. "
+                            "Please try again or rephrase your request."
+                        )
+                        logger.warning(
+                            "Empty or None response for message %s; sending fallback message",
+                            message_id,
+                        )
                     # Allow out-of-order heavy jobs while still letting users identify
                     # which reply maps to which inbound message.
                     tagged = f"[job {message_id[:8]}] {response}"
