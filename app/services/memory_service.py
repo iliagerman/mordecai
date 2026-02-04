@@ -901,7 +901,7 @@ class MemoryService:
         return merged
 
     def _find_similar_records(
-        self, user_id: str, query: str, similarity_threshold: float = 0.7
+        self, user_id: str, query: str, similarity_threshold: float = 0.0
     ) -> list[dict]:
         """Find memory records similar to a query.
 
@@ -910,8 +910,8 @@ class MemoryService:
 
         Args:
             user_id: User's ID (actor_id in memory).
-            query: Search query to find similar records.
-            similarity_threshold: Minimum relevance score (0-1).
+            query: Search query to find similar records. Use '*' to get all records.
+            similarity_threshold: Minimum relevance score (0-1). Defaults to 0.0.
 
         Returns:
             List of record dicts with memoryRecordId, text, score.
@@ -927,18 +927,28 @@ class MemoryService:
 
         # Search both facts and preferences
         namespaces = [f"/facts/{user_id}", f"/preferences/{user_id}"]
+        is_wildcard = query.strip() == "*"
 
         for namespace in namespaces:
             try:
-                response = client.gmdp_client.retrieve_memory_records(
-                    memoryId=memory_id,
-                    namespace=namespace,
-                    searchCriteria={"searchQuery": query, "topK": 10},
-                )
+                if is_wildcard:
+                    # For wildcard, list all records (no search query, higher topK)
+                    response = client.gmdp_client.retrieve_memory_records(
+                        memoryId=memory_id,
+                        namespace=namespace,
+                        searchCriteria={"searchQuery": "", "topK": 100},
+                    )
+                else:
+                    response = client.gmdp_client.retrieve_memory_records(
+                        memoryId=memory_id,
+                        namespace=namespace,
+                        searchCriteria={"searchQuery": query, "topK": 50},
+                    )
 
                 for summary in response.get("memoryRecordSummaries", []):
                     score = summary.get("score", 0)
-                    if score >= similarity_threshold:
+                    # For wildcard, accept all records; otherwise filter by threshold
+                    if is_wildcard or score >= similarity_threshold:
                         record_id = summary.get("memoryRecordId")
                         content = summary.get("content", {})
                         text = content.get("text", "")
@@ -998,9 +1008,9 @@ class MemoryService:
         user_id: str,
         query: str,
         memory_type: str = "all",
-        similarity_threshold: float = 0.7,
+        similarity_threshold: float = 0.0,
         dry_run: bool = True,
-        max_matches: int = 25,
+        max_matches: int = 100,
     ) -> ForgetMemoryResult:
         """Delete AgentCore memory records similar to a query.
 
