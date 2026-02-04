@@ -1,0 +1,16 @@
+# Compose overrides to give Mordecai direct read/write access to Vibe-Kanban's persisted data directory.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.vibe-kanban.yml up -d
+
+services:
+  mordecai:
+    # Run as host UID/GID to avoid creating root-owned files in bind mounts.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+
+    # Ensure HOME is writable when running as a numeric UID without an /etc/passwd entry.
+    environment:
+      HOME: /app/workspace
+
+    # Mount Vibe-Kanban persistence at the exact same path used by the vibe-kanban container.
+    volumes:
+      - /home/ilia/.local/share/vibe-kanban:/home/ilia/.local/share/vibe-kanban:rw
