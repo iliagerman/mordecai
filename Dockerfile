@@ -88,8 +88,11 @@ FROM base AS application
 # Set working directory
 WORKDIR /app
 
-# Create directories for volumes
-RUN mkdir -p /app/data /app/sessions /app/skills /app/skills/shared /app/tools
+# Create directories for volumes with permissions that allow non-root users to write
+# (needed when running container as host UID via docker-compose `user:` directive)
+RUN mkdir -p /app/data /app/sessions /app/skills /app/skills/shared /app/tools /app/temp_files \
+    && chmod 777 /app/data /app/sessions /app/temp_files \
+    && chmod 775 /app/skills /app/tools
 
 # Copy dependency files first (for better caching)
 COPY pyproject.toml ./

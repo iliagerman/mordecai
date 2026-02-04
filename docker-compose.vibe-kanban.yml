@@ -8,8 +8,10 @@ services:
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
 
     # Ensure HOME is writable when running as a numeric UID without an /etc/passwd entry.
+    # Also configure temp_files to use the writable workspace mount (not /app/temp_files).
     environment:
       HOME: /app/workspace
+      AGENT_TEMP_FILES_BASE_DIR: /app/workspace/.temp
 
     # Mount Vibe-Kanban persistence at the exact same path used by the vibe-kanban container.
     volumes:

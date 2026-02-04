@@ -1,4 +1,5 @@
 # =============================================================================
+# NOTE: This compose file may be extended with local overrides (see README).
 # Mordecai - Docker Compose Configuration
 # =============================================================================
 # Orchestrates the application with proper volume mounts, health checks,
@@ -32,6 +33,10 @@ services:
       dockerfile: Dockerfile
     container_name: mordecai
 
+    # Run as the host user so shared bind mounts (e.g. vibe-kanban sqlite) remain writable
+    # and we don't create root-owned files on the host.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+
     # Wait for LocalStack to be healthy before starting
     depends_on:
       localstack:
@@ -46,6 +51,7 @@ services:
       # Configuration files (read-only)
       - ./secrets.yml:/app/secrets.yml:ro
       - ./config.json:/app/config.json:ro
+      - ./mcp_servers.json:/app/mcp_servers.json:ro
       # Himalaya email config
       # - ./skills/shared/himalaya/himalaya.toml:/root/.config/himalaya/config.toml:ro
       # Skills directory (read-write for plugin persistence)
@@ -57,8 +63,17 @@ services:
       - agent-db:/app/data
       - agent-sessions:/app/sessions
 
+      # Shared Vibe-Kanban persistence (mounted at the exact same path used by the vibe-kanban container)
+      - /home/ilia/.local/share/vibe-kanban:/home/ilia/.local/share/vibe-kanban:rw
+
     # Environment variables
     environment:
+      # Ensure HOME is writable when running as a non-root numeric UID
+      - HOME=/app/workspace
+      # Default temp_files_base_dir resolves to /app/temp_files which is not writable when running as non-root.
+      # Keep temp files under the workspace bind mount instead.
+      - AGENT_TEMP_FILES_BASE_DIR=/app/workspace/temp_files
+      - AGENT_WORKING_FOLDER_BASE_DIR=/app/workspace
       # Database URL - use absolute path to ensure it's in the mounted volume
       - AGENT_DATABASE_URL=sqlite+aiosqlite:////app/data/agent.db
       - AGENT_SESSION_STORAGE_DIR=/app/sessions
