@@ -94,6 +94,7 @@ Thumbs.db
 settings.local.json
 # Project specific
 agent.db
+workspace/
 splintermaster
 temp_files
 himalaya.toml
