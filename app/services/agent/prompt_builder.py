@@ -299,10 +299,23 @@ class SystemPromptBuilder:
             '- `shell(command="...")` - Run bash/shell commands\n'
             '- `file_read(path="...", mode="view")` - Read files\n'
             "- `file_write(...)` - Write files\n\n"
-            "**To use a skill:**\n"
-            "1. file_read the SKILL.md ONCE\n"
-            "2. Extract the bash commands from the instructions\n"
-            '3. Run them with shell(command="the bash command")\n\n'
+            "**⚠️ MANDATORY: ALWAYS Read SKILL.md Before Using a Skill ⚠️**\n\n"
+            "You CANNOT use a skill until you have read its SKILL.md file.\n"
+            "- Do NOT guess the command name from the skill name (e.g., 'tavily_search' skill ≠ 'tavily' CLI)\n"
+            "- Do NOT assume a Python venv or CLI exists\n"
+            "- Do NOT skip reading SKILL.md - you will likely use the wrong command\n\n"
+            "**What NOT to do (these will FAIL):**\n"
+            '- ❌ Guessing: `shell(command="tavily search ...")` - WRONG!\n'
+            '- ❌ Assuming Python: `source .venv/bin/activate && tavily ...` - WRONG!\n'
+            '- ❌ Making up commands based on skill name - WRONG!\n\n'
+            "**What TO do (the ONLY correct way):**\n"
+            "1. ✅ FIRST: `file_read(path=\"<SKILL_PATH>/SKILL.md\", mode=\"view\")`\n"
+            "2. ✅ THEN: Extract the exact bash command pattern from SKILL.md\n"
+            "3. ✅ FINALLY: Run the exact command with shell()\n\n"
+            "**Example - Using the tavily_search skill:**\n"
+            '- Step 1: `file_read(path="/app/skills/splintermaster/tavily-search/SKILL.md", mode="view")`\n'
+            '- Step 2: See from SKILL.md: `node ${MORDECAI_SKILLS_BASE_DIR}/[USER]/tavily-search/scripts/search.mjs \"query\"`\n'
+            '- Step 3: `shell(command="node /app/skills/splintermaster/tavily-search/scripts/search.mjs \\"NVIDIA stock\\"")`\n\n'
             "IMPORTANT: Do NOT claim that a file/config exists or is correctly configured unless you have verified it.\n"
             "- Verification options: successful file_read that returns content, or shell preflight like `test -f <path>` / `command -v <bin>`.\n"
             "- If a file_read tool call returns empty content / no content, treat it as NOT verified.\n\n"
