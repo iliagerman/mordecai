@@ -240,6 +240,7 @@ class AgentService:
             conversation_dao=self.conversation_dao,
             deterministic_skill_runner=self._deterministic_skill_runner,
         )
+        self._message_processor._set_session_id = self._session_manager.set
 
         self._attachment_handler = AttachmentHandler(
             config=config,

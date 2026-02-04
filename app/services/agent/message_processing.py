@@ -130,6 +130,7 @@ class MessageProcessor:
         self._trigger_extraction_and_clear = trigger_extraction_and_clear
         self._conversation_dao = conversation_dao
         self._deterministic_skill_runner = deterministic_skill_runner
+        self._set_session_id: Callable[[str, str], None] | None = None
 
     def _job_thread_ids(self, *, user_id: str) -> tuple[str, str, str, str]:
         """Compute identifiers for main thread + per-job thread.
@@ -143,12 +144,22 @@ class MessageProcessor:
         job_thread_id = f"{main_thread_id}__job__{short}"
         return main_thread_id, token, short, job_thread_id
 
-    async def _load_main_thread_snapshot(self, *, user_id: str, main_thread_id: str) -> list[dict]:
+    async def _load_main_thread_snapshot(
+        self,
+        *,
+        user_id: str,
+        main_thread_id: str,
+    ) -> tuple[list[dict], str]:
         """Load recent messages for context, stripped to **text-only** blocks.
 
         Critical: we never seed a new agent with toolUse/toolResult blocks.
         Those blocks can become inconsistent under parallelism or after
         tool timeouts, and Bedrock enforces strict pairing.
+
+        Returns:
+            A tuple of (messages, effective_session_id).  The session id may
+            differ from *main_thread_id* when the process restarted and the
+            session was recovered from the database.
         """
 
         def _as_text_only_message(m: dict) -> dict:
@@ -173,24 +184,64 @@ class MessageProcessor:
             history = self._conversation_history.get(user_id)
             window = int(getattr(self.config, "conversation_window_size", 20) or 20)
             recent = history[-window:] if window > 0 else history
-            return [{"role": m.role, "content": [{"text": m.content}]} for m in recent]
+            return (
+                [{"role": m.role, "content": [{"text": m.content}]} for m in recent],
+                main_thread_id,
+            )
 
         try:
+            window = getattr(self.config, "conversation_window_size", 20)
             msgs = await self._conversation_dao.get_conversation_structured(
                 user_id=user_id,
                 session_id=main_thread_id,
                 exclude_cron=True,
-                limit=getattr(self.config, "conversation_window_size", 20),
+                limit=window,
             )
-            # Extra safety: strip any non-text blocks if they ever made it into
-            # the main thread.
+
+            effective_id = main_thread_id
+
+            # ---- Session recovery after process restart ----
+            # SessionManager keeps session IDs in memory only.  After a
+            # restart, a brand-new session_id is generated and the DB query
+            # above returns nothing even though older messages still exist.
+            # Detect this case and recover the previous session_id so the
+            # agent retains conversational context.
+            if not msgs:
+                recovered = await self._conversation_dao.get_latest_session_id(
+                    user_id=user_id,
+                    exclude_cron=True,
+                )
+                if recovered and recovered != main_thread_id:
+                    msgs = await self._conversation_dao.get_conversation_structured(
+                        user_id=user_id,
+                        session_id=recovered,
+                        exclude_cron=True,
+                        limit=window,
+                    )
+                    if msgs:
+                        effective_id = recovered
+                        # Update the in-memory session manager so the rest
+                        # of the request (and future requests) use the
+                        # recovered session_id.
+                        if self._set_session_id is not None:
+                            self._set_session_id(user_id, recovered)
+                        logger.info(
+                            "Recovered session for user %s: %s -> %s (%d messages)",
+                            user_id,
+                            main_thread_id,
+                            recovered,
+                            len(msgs),
+                        )
+
+            # Extra safety: strip any non-text blocks if they ever made it
+            # into the main thread.
             out: list[dict] = []
             for m in msgs:
                 if isinstance(m, dict):
                     out.append(_as_text_only_message(m))
-            return out
+            return out, effective_id
         except Exception:
-            return []
+            return [], main_thread_id
 
     async def _persist_main_plain_message(
         self,
@@ -441,10 +492,13 @@ class MessageProcessor:
 
             # Load context BEFORE persisting the new user message, to avoid
             # double-including it (once in history, once as the prompt).
-            snapshot = await self._load_main_thread_snapshot(
+            # The effective session id may differ from main_thread_id if the
+            # session was recovered from the DB after a process restart.
+            snapshot, main_thread_id = await self._load_main_thread_snapshot(
                 user_id=user_id,
                 main_thread_id=main_thread_id,
             )
+            job_thread_id = f"{main_thread_id}__job__{_job_short}"
 
             await self._persist_main_plain_message(
                 user_id=user_id,
@@ -729,10 +783,11 @@ class MessageProcessor:
 
         # Load context BEFORE persisting the new user prompt, to avoid
         # double-including it (once in history, once as the prompt).
-        snapshot = await self._load_main_thread_snapshot(
+        snapshot, main_thread_id = await self._load_main_thread_snapshot(
             user_id=user_id,
             main_thread_id=main_thread_id,
         )
+        job_thread_id = f"{main_thread_id}__job__{_job_short}"
 
         await self._persist_main_plain_message(
             user_id=user_id,

@@ -38,6 +38,18 @@ class SessionManager:
         self._sessions[user_id] = f"session_{user_id}_{timestamp}"
         return self._sessions[user_id]
 
+    def set(self, user_id: str, session_id: str) -> None:
+        """Restore a previously-known session ID for a user.
+
+        Used to recover the session after a process restart by replaying
+        the session_id persisted in the conversation database.
+
+        Args:
+            user_id: User's telegram ID.
+            session_id: Session ID to restore.
+        """
+        self._sessions[user_id] = session_id
+
     def get(self, user_id: str) -> str | None:
         """Get session ID for a user without creating one.
 
