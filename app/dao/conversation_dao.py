@@ -233,13 +233,13 @@ class ConversationDAO:
                 if exclude_cron:
                     query = query.where(ConversationMessageModel.is_cron == False)
 
-                query = query.order_by(ConversationMessageModel.created_at.asc())
-
                 if limit:
-                    # For limit, we want the most recent messages, so we need
-                    # to order differently and then reverse
+                    # For limit, we want the most recent N messages.  Order
+                    # DESC + LIMIT, then reverse to chronological after fetch.
                     query = query.order_by(ConversationMessageModel.created_at.desc())
                     query = query.limit(limit)
+                else:
+                    query = query.order_by(ConversationMessageModel.created_at.asc())
 
                 result = await session.execute(query)
                 messages = result.scalars().all()
@@ -281,11 +281,12 @@ class ConversationDAO:
                 if exclude_cron:
                     query = query.where(ConversationMessageModel.is_cron == False)
 
-                query = query.order_by(ConversationMessageModel.created_at.asc())
-
                 if limit:
+                    # Most recent N messages: DESC + LIMIT, reversed after fetch.
                     query = query.order_by(ConversationMessageModel.created_at.desc())
                     query = query.limit(limit)
+                else:
+                    query = query.order_by(ConversationMessageModel.created_at.asc())
 
                 result = await session.execute(query)
                 messages = result.scalars().all()
@@ -394,6 +395,45 @@ class ConversationDAO:
             except SQLAlchemyError as e:
                 logger.error("Failed to load cron conversation: %s", e)
                 return []
+
+    async def get_latest_session_id(
+        self,
+        user_id: str,
+        exclude_cron: bool = True,
+    ) -> str | None:
+        """Return the session_id of the most recent message for a user.
+
+        Skips job-thread session IDs (those containing ``__job__``) so the
+        caller gets the main conversation thread.
+
+        Returns:
+            The latest main-thread session_id, or None if no messages exist.
+        """
+        from app.models.orm import ConversationMessageModel
+
+        async with self._session_factory() as session:
+            try:
+                query = (
+                    select(ConversationMessageModel.session_id)
+                    .where(ConversationMessageModel.user_id == user_id)
+                    .order_by(ConversationMessageModel.created_at.desc())
+                    .limit(50)
+                )
+
+                if exclude_cron:
+                    query = query.where(ConversationMessageModel.is_cron == False)
+
+                result = await session.execute(query)
+                rows = result.scalars().all()
+
+                for sid in rows:
+                    if sid and "__job__" not in sid:
+                        return sid
+
+                return None
+            except SQLAlchemyError as e:
+                logger.error("Failed to get latest session_id: %s", e)
+                return None
 
     async def count_messages(
         self,
