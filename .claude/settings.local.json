@@ -8,7 +8,8 @@
       "Bash(python3:*)",
       "Bash(tree:*)",
       "Bash(GEMINI_API_KEY=\"AIzaSyBR3WRDzJ3tY050ha_-RMCZfXOClqfRZZU\" uv run:*)",
-      "Bash(pytest:*)"
+      "Bash(pytest:*)",
+      "Bash(uv sync:*)"
     ]
   }
 }
