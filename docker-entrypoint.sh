@@ -11,6 +11,10 @@
 
 set -e
 
+# Ensure Cargo/Rust binaries (including himalaya) are in PATH.
+# These are installed in the base stage via cargo to /usr/local/cargo/bin.
+export PATH="/usr/local/cargo/bin:$PATH"
+
 # Ensure we use the prebuilt virtual environment created at image build time.
 # When running the container as a non-root host UID (via docker-compose `user:`),
 # `uv run` may attempt to re-sync or install the project in editable mode,
