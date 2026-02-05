@@ -42,6 +42,7 @@ class SkillInfo(JsonModel):
     name: str
     description: str
     path: str
+    long_running: bool = False
 
 
 class ConversationMessage(JsonModel):

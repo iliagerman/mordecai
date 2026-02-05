@@ -43,6 +43,7 @@ from app.services import (
     TaskService,
     WebhookService,
 )
+from app.services.agent.background_tasks import BackgroundTaskManager
 from app.services.agent_service import AgentService
 from app.services.cron_service import CronService
 from app.services.memory_service import MemoryService
@@ -148,6 +149,9 @@ class Application:
 
         # File service
         self.file_service: FileService | None = None
+
+        # Background task manager for long-running skills
+        self.background_task_manager: BackgroundTaskManager | None = None
 
         # Background tasks
         self._background_tasks: list[asyncio.Task] = []
@@ -266,6 +270,18 @@ class Application:
             typing_action_callback=self._send_telegram_typing_action,
         )
         logger.info("Message processor initialized")
+
+        # Initialize background task manager for long-running skills
+        self.background_task_manager = BackgroundTaskManager(
+            agent_service=self.agent_service,
+            response_callback=self._send_telegram_response,
+            logging_service=self.logging_service,
+            config=self.config,
+        )
+        # Wire to agent service and message processor
+        self.agent_service.set_background_task_manager(self.background_task_manager)
+        self.message_processor.background_task_manager = self.background_task_manager
+        logger.info("Background task manager initialized")
 
         # Initialize Telegram bot
         self.telegram_bot = TelegramBotInterface(
@@ -553,6 +569,12 @@ class Application:
 
         # Signal shutdown
         self._shutdown_event.set()
+
+        # Cancel background tasks from BackgroundTaskManager first
+        if self.background_task_manager:
+            cancelled = await self.background_task_manager.cancel_all()
+            if cancelled > 0:
+                logger.info("Background task manager: cancelled %d tasks", cancelled)
 
         # Stop cron scheduler
         if self.cron_scheduler:

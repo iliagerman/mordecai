@@ -63,6 +63,7 @@ if TYPE_CHECKING:
     from strands.models.model import Model
 
     from app.dao.conversation_dao import ConversationDAO
+    from app.services.agent.background_tasks import BackgroundTaskManager
     from app.services.cron_service import CronService
     from app.services.file_service import FileService
     from app.services.memory_extraction_service import MemoryExtractionService
@@ -300,6 +301,34 @@ class AgentService:
             self._agent_creator.cron_service = cron_service
         except Exception:
             pass
+
+    # ========================================================================
+    # Background Task Management
+    # ========================================================================
+
+    _background_task_manager: "BackgroundTaskManager | None" = None
+
+    @property
+    def background_task_manager(self) -> "BackgroundTaskManager | None":
+        """Background task manager for long-running skill execution (optional)."""
+        return self._background_task_manager
+
+    def set_background_task_manager(
+        self,
+        manager: "BackgroundTaskManager",
+    ) -> None:
+        """Wire BackgroundTaskManager into this AgentService.
+
+        The manager is created externally (in main.py) and passed in after
+        AgentService construction, because the manager needs a reference
+        back to AgentService for result processing.
+
+        Args:
+            manager: The BackgroundTaskManager instance.
+        """
+        self._background_task_manager = manager
+        # Give the manager a reference to this service for result processing.
+        manager.set_agent_service(self)
 
     # ========================================================================
     # Session Management Methods (delegated to SessionLifecycleManager)

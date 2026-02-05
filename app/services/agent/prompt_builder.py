@@ -80,6 +80,7 @@ class SystemPromptBuilder:
 
         prompt += self._progress_updates_section()
         prompt += self._shell_timeout_handling_section()
+        prompt += self._background_tasks_section()
 
         if self.has_cron:
             prompt += self._scheduling_section()
@@ -332,7 +333,8 @@ class SystemPromptBuilder:
             name = skill.name or "unknown"
             desc = skill.description or ""
             path = skill.path or ""
-            prompt += f"- **{name}**: {desc}\n"
+            long_running_label = " **(long-running)**" if skill.long_running else ""
+            prompt += f"- **{name}**{long_running_label}: {desc}\n"
             prompt += f'  → file_read(path="{path}/SKILL.md", mode="view") → shell(command="...")\n'
 
         missing = self.skill_repo.get_missing_skill_requirements(user_id)
@@ -469,6 +471,35 @@ class SystemPromptBuilder:
             "- 'The transcript fetch timed out after 5 minutes, but I was able to retrieve about 8,000 characters. Here's a summary of what I found...'\n\n"
             "**Example response:**\n"
             "- 'The video is quite long (45 minutes) and the transcript fetch timed out. Try asking again with a note to use a longer timeout.'\n\n"
+        )
+
+    def _background_tasks_section(self) -> str:
+        return (
+            "\n## Background Task Execution\n\n"
+            "For long-running operations (research, large file processing, complex data analysis), "
+            "you can run commands in the background so you can respond to the user immediately.\n\n"
+            "**When to use background execution:**\n"
+            "- Skills marked as **(long-running)** in the Installed Skills section\n"
+            "- Any command expected to take more than 60 seconds\n"
+            "- Operations that involve external APIs, web scraping, or heavy computation\n\n"
+            "**How to use:**\n"
+            '- `run_in_background(command="...", description="...", work_dir="...")`: Spawn a background task\n'
+            "- The command will execute asynchronously\n"
+            "- You MUST respond to the user immediately after spawning, explaining the task is running\n"
+            "- The user will be automatically notified when the task completes\n\n"
+            "**Example:**\n"
+            "```\n"
+            "run_in_background(\n"
+            '  command="uv run python scripts/deep_research.py --query \\"quantum computing\\"",\n'
+            '  description="Deep research on quantum computing",\n'
+            '  work_dir="/app/skills/user123/gemini-deep-research"\n'
+            ")\n"
+            "```\n\n"
+            "**Important:**\n"
+            "- Always include a clear description of what the task does\n"
+            "- There is a limit of 3 concurrent background tasks per user\n"
+            "- If a task fails, the user will be notified with the error\n"
+            "- You cannot see the output until the task completes and you are re-invoked\n\n"
         )
 
     def _scheduling_section(self) -> str:

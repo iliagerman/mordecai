@@ -76,6 +76,9 @@ from app.tools import (
 from app.tools import (
     skill_secrets as skill_secrets_module,
 )
+from app.tools import (
+    run_in_background as run_in_background_module,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -408,6 +411,7 @@ class AgentCreator:
             set_agent_name_tool,
             send_file_module.send_file,
             send_progress_module.send_progress,
+            run_in_background_module.run_in_background,
         ]
 
         # Built-in tools for persisting per-skill settings into secrets.yml
