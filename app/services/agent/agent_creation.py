@@ -389,6 +389,16 @@ class AgentCreator:
             config=self.config,
         )
 
+        # File read/write tool context: allow access to user's skill directories
+        file_read_env_module.set_file_read_context(
+            user_id=user_id,
+            config=self.config,
+        )
+        file_write_env_module.set_file_write_context(
+            user_id=user_id,
+            config=self.config,
+        )
+
         # Built-in Strands tools (not the same thing as instruction-based "skills").
         # Skills are loaded separately from the skills directory via load_tools_from_directory.
         builtin_tools = [

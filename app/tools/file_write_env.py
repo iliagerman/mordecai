@@ -10,9 +10,11 @@ We keep the public tool name as `file_write` so prompts/skills remain compatible
 from __future__ import annotations
 
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
+from app.config import resolve_user_skills_dir
 from app.observability.trace_context import get_trace_id
 from app.observability.trace_logging import trace_event
 
@@ -35,6 +37,20 @@ try:  # pragma: no cover
     from strands_tools.file_write import file_write as _base_file_write  # type: ignore
 except Exception:  # pragma: no cover
     from strands_tools import file_write as _base_file_write  # type: ignore
+
+
+# Context variables for user-specific path access
+_current_user_id_var: ContextVar[str | None] = ContextVar("file_write_user_id", default=None)
+_config_var: ContextVar[Any] = ContextVar("file_write_config", default=None)
+
+
+def set_file_write_context(*, user_id: str, config=None) -> None:
+    """Set user context for file_write tool.
+
+    Called by agent_service before creating the agent.
+    """
+    _current_user_id_var.set(user_id)
+    _config_var.set(config)
 
 
 def _call_base_file_write(**kwargs: Any):
@@ -83,19 +99,55 @@ def _scratchpad_root() -> Path:
     return (repo_root / "scratchpad").resolve()
 
 
-def _ensure_scratchpad_path(path_raw: str) -> Path:
-    root = _scratchpad_root()
+def _allowed_roots() -> list[Path]:
+    """Return list of allowed root paths for file operations."""
+    roots = [_scratchpad_root()]
+
+    # Add user's skill directory if context is available
+    cfg = _config_var.get()
+    uid = _current_user_id_var.get()
+    if cfg is not None and uid is not None:
+        try:
+            user_skills_dir = resolve_user_skills_dir(cfg, uid, create=False)
+            if user_skills_dir.exists():
+                roots.append(user_skills_dir)
+                # Also allow the skills base dir for shared skill access
+                skills_base = Path(getattr(cfg, "skills_base_dir", "./skills")).expanduser()
+                if not skills_base.is_absolute():
+                    skills_base = _find_repo_root(start=Path(__file__)) / skills_base
+                if skills_base.exists():
+                    roots.append(skills_base.resolve())
+        except Exception:
+            pass
+
+    return roots
+
+
+def _ensure_allowed_path(path_raw: str) -> Path:
+    """Ensure the path is within an allowed directory.
+
+    Allowed directories:
+    - scratchpad/**
+    - User's skill directory (e.g., /app/skills/{username}/**)
+    - Skills base directory (e.g., /app/skills/** for shared skills)
+    """
     p = Path(str(path_raw)).expanduser()
     if not p.is_absolute():
         p = _find_repo_root(start=Path(__file__)) / p
     resolved = p.resolve()
-    try:
-        resolved.relative_to(root)
-    except Exception as e:
-        raise ValueError(
-            f"file_write is restricted to scratchpad/**. Refusing path: {resolved}"
-        ) from e
-    return resolved
+
+    roots = _allowed_roots()
+    for root in roots:
+        try:
+            resolved.relative_to(root)
+            return resolved
+        except Exception:
+            continue
+
+    allowed_strs = [str(r) for r in roots]
+    raise ValueError(
+        f"file_write is restricted to: {', '.join(allowed_strs)}. Refusing path: {resolved}"
+    )
 
 
 @tool(
@@ -117,7 +169,7 @@ def file_write(
             content_len=len(content) if isinstance(content, str) else None,
         )
 
-    safe_path = str(_ensure_scratchpad_path(path))
+    safe_path = str(_ensure_allowed_path(path))
 
     try:
         result = _call_base_file_write(path=safe_path, content=content, **kwargs)
