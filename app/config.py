@@ -1063,6 +1063,34 @@ class AgentConfig(BaseSettings):
         default=20, description="Number of messages to keep in conversation window"
     )
 
+    # Error log file settings
+    error_log_file_enabled: bool = Field(
+        default=True,
+        description=(
+            "Write error and warning logs to a file for debugging and tracking. "
+            "This captures tool execution errors, warnings, and other issues."
+        ),
+    )
+    error_log_file_path: str = Field(
+        default="./logs/errors.log",
+        description="Path to the error log file. Relative paths are resolved against repo root.",
+    )
+    error_log_level: str = Field(
+        default="WARNING",
+        description=(
+            "Minimum log level for error log file. Options: DEBUG, INFO, WARNING, ERROR, CRITICAL. "
+            "WARNING captures both warnings and errors."
+        ),
+    )
+    error_log_max_bytes: int = Field(
+        default=10_485_760,  # 10 MB
+        description="Maximum size of error log file before rotation (in bytes).",
+    )
+    error_log_backup_count: int = Field(
+        default=5,
+        description="Number of backup error log files to keep during rotation.",
+    )
+
     # Observability / trace logging
     trace_enabled: bool = Field(
         default=True,
