@@ -1,0 +1,45 @@
+{
+  "model_provider": "bedrock",
+  "bedrock_model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "google_model_id": "gemini-2.5-flash",
+  "openai_model_id": "gpt-5.2",
+  "aws_region": "us-east-1",
+  "timezone": "Asia/Jerusalem",
+  "sqs_queue_prefix": "agent-user-",
+  "localstack_endpoint": "http://localhost:4566",
+  "database_url": "sqlite+aiosqlite:///./agent.db",
+  "session_storage_dir": "./sessions",
+  "obsidian_vault_root": "./scratchpad",
+  "skills_base_dir": "./skills",
+  "max_conversation_messages": 30,
+  "extraction_timeout_seconds": 30,
+  "api_host": "0.0.0.0",
+  "api_port": 8742,
+  "max_concurrent_tasks_per_user": 5,
+  "agent_commands": [
+    {
+      "name": "new",
+      "description": "Start a new conversation session"
+    },
+    {
+      "name": "logs",
+      "description": "View recent activity logs"
+    },
+    {
+      "name": "install skill <url>",
+      "description": "Install a skill from URL"
+    },
+    {
+      "name": "uninstall skill <name>",
+      "description": "Remove an installed skill"
+    },
+    {
+      "name": "help",
+      "description": "Show available commands"
+    },
+    {
+      "name": "name <name>",
+      "description": "Set the agent's name"
+    }
+  ]
+}

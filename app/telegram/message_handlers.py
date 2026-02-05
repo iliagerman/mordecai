@@ -1,0 +1,1165 @@
+"""Telegram message handlers.
+
+This module handles incoming Telegram updates including:
+- Command handlers (start, help, new, logs, skills, add_skill, delete_skill)
+- Text message handler
+- Document and photo attachment handlers
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Any
+
+from telegram import Update, PhotoSize
+from telegram.error import TelegramError
+
+from app.enums import LogSeverity
+from app.security.whitelist import DEFAULT_FORBIDDEN_DETAIL, is_whitelisted, live_allowed_users
+
+if TYPE_CHECKING:
+    from app.dao.user_dao import UserDAO
+    from app.services.onboarding_service import OnboardingService
+    from app.telegram.models import TelegramAttachment
+    from app.services.logging_service import LoggingService
+    from app.services.file_service import FileService
+    from app.services.skill_service import SkillService
+
+logger = logging.getLogger(__name__)
+
+
+class TelegramMessageHandlers:
+    """Handles incoming Telegram updates for the bot.
+
+    Processes commands, text messages, and file attachments.
+    """
+
+    def __init__(
+        self,
+        config: Any,
+        logging_service: "LoggingService",
+        skill_service: "SkillService",
+        file_service: "FileService",
+        command_parser: Any,
+        bot_application: Any,
+        get_allowed_users: callable,
+        user_dao: "UserDAO | None" = None,
+        onboarding_service: "OnboardingService | None" = None,
+    ):
+        """Initialize the message handlers.
+
+        Args:
+            config: Application configuration.
+            logging_service: Logging service for activity logs.
+            skill_service: Skill service for skill operations.
+            file_service: File service for attachment handling.
+            command_parser: Command parser instance.
+            bot_application: Telegram bot application.
+            get_allowed_users: Function to get live allowed users.
+            user_dao: User DAO for user management operations.
+            onboarding_service: Service for handling user onboarding.
+        """
+        self.config = config
+        self.logging_service = logging_service
+        self.skill_service = skill_service
+        self.file_service = file_service
+        self.command_parser = command_parser
+        self.bot = bot_application.bot
+        self._get_allowed_users_live = get_allowed_users
+        self.user_dao = user_dao
+        self.onboarding_service = onboarding_service
+
+    def extract_telegram_identity(self, update: Update) -> tuple:
+        """Extract user identity from a Telegram update.
+
+        Returns:
+            (user_id, telegram_user_id, telegram_username, display_name)
+
+        Notes:
+            - In this system, the *primary* user identifier (user_id) is the Telegram username.
+              We do not use numeric IDs as user identifiers.
+            - telegram_user_id is retained for whitelist checks and diagnostics.
+        """
+        user = getattr(update, "effective_user", None)
+
+        telegram_user_id: str | None = None
+        telegram_username: str | None = None
+        display_name: str | None = None
+
+        try:
+            raw_id = getattr(user, "id", None)
+            if raw_id is not None:
+                telegram_user_id = str(raw_id)
+        except Exception:
+            telegram_user_id = None
+
+        try:
+            telegram_username = getattr(user, "username", None) or None
+        except Exception:
+            telegram_username = None
+
+        try:
+            display_name = getattr(user, "first_name", None) or None
+        except Exception:
+            display_name = None
+
+        # Primary system identifier: username only.
+        user_id = telegram_username
+
+        # Defensive display name for logs.
+        fallback = telegram_username or telegram_user_id or "unknown"
+        return user_id, telegram_user_id, telegram_username, (display_name or fallback)
+
+    async def reject_if_missing_username(self, chat_id: int) -> bool:
+        """Return True if request should be rejected due to missing Telegram username."""
+        from app.telegram.message_sender import TelegramMessageSender
+
+        await TelegramMessageSender(self.bot).send_response(
+            chat_id,
+            (
+                "❌ Your Telegram account must have a username to use this bot.\n\n"
+                "Please set a username in Telegram Settings → Username, then try again."
+            ),
+        )
+        return True
+
+    async def reject_if_not_whitelisted(
+        self,
+        telegram_user_id: str,
+        telegram_username: str | None,
+        chat_id: int,
+    ) -> bool:
+        """Return True if request should be rejected due to whitelist."""
+        # _get_allowed_users_live may be a LiveAllowedUsers object with .get() or a plain callable
+        if hasattr(self._get_allowed_users_live, "get"):
+            allowed = self._get_allowed_users_live.get()
+        else:
+            allowed = self._get_allowed_users_live()
+        whitelisted = is_whitelisted(telegram_user_id, allowed) or (
+            telegram_username is not None and is_whitelisted(telegram_username, allowed)
+        )
+        if whitelisted:
+            return False
+
+        # Log to both DB-backed activity logs and server logs.
+        logger.warning(
+            "Telegram user rejected by whitelist (chat_id=%s, telegram_user_id=%s, username=%s)",
+            chat_id,
+            telegram_user_id,
+            telegram_username,
+        )
+        try:
+            await self.logging_service.log_action(
+                # Primary identifier in this system is the Telegram username.
+                # We avoid storing numeric identifiers as user_id.
+                user_id=telegram_username or "unknown",
+                action="Rejected Telegram message: user not whitelisted",
+                severity=LogSeverity.WARNING,
+                details={
+                    "chat_id": chat_id,
+                    "telegram_user_id": telegram_user_id,
+                    "telegram_username": telegram_username,
+                },
+            )
+        except Exception:
+            # Never block rejection response due to logging failures.
+            logger.exception("Failed to persist whitelist rejection log")
+
+        # Keep the human guidance stable across HTTP + Telegram.
+        await self._send_response(chat_id, f"403 Forbidden, {DEFAULT_FORBIDDEN_DETAIL}")
+        return True
+
+    async def _send_response(self, chat_id: int, response: str) -> None:
+        """Send a text response to a Telegram chat.
+
+        Args:
+            chat_id: Telegram chat ID to send to.
+            response: Response text to send.
+        """
+        from app.telegram.message_sender import TelegramMessageSender
+
+        await TelegramMessageSender(self.bot).send_response(chat_id, response)
+
+    def migrate_legacy_skill_folder(self, telegram_user_id: str | None, user_id: str) -> None:
+        """One-way migration: move skills/<numeric_id>/ -> skills/<username>/.        No backward-compat behavior is kept after migration."""
+        if not telegram_user_id:
+            return
+        try:
+            migrated = self.skill_service.migrate_user_skills_dir(
+                legacy_user_id=telegram_user_id,
+                user_id=user_id,
+            )
+            if migrated:
+                logger.info(
+                    "Migrated legacy skills folder from %s to %s",
+                    telegram_user_id,
+                    user_id,
+                )
+        except Exception:
+            # Never block user interactions due to migration issues.
+            logger.exception(
+                "Failed to migrate legacy skills folder from %s to %s",
+                telegram_user_id,
+                user_id,
+            )
+
+    async def handle_start_command(self, update: Update, context: Any) -> None:
+        """Handle /start command.
+
+        Sends a welcome message to new users.
+
+        Args:
+            update: Telegram update object.
+            context: Callback context.
+        """
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /start")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        logger.info("User %s started the bot", user_id)
+
+        welcome_message = (
+            "Welcome to Mordecai! 🤖\n\n"
+            "I'm your AI assistant. You can:\n"
+            "- Send me any message and I'll help you\n"
+            "- Use 'new' to start a fresh conversation\n"
+            "- Use 'logs' to see recent activity\n"
+            "- Use 'install skill <url>' to add capabilities\n"
+            "- Use 'uninstall skill <name>' to remove skills\n"
+            "- Use 'help' for more information\n"
+        )
+
+        await self._send_response(chat_id, welcome_message)
+
+        # Log the start action
+        try:
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action="Started bot interaction",
+                severity=LogSeverity.INFO,
+            )
+        except Exception:
+            logger.exception("Failed to persist start interaction log")
+
+    async def handle_help_command(self, update: Update, context: Any) -> None:
+        """Handle /help command.
+
+        Sends help text with available commands.
+
+        Args:
+            update: Telegram update object.
+            context: Callback context.
+
+        Requirements:
+            - 11.5: Support basic commands (help)
+        """
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /help")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        help_text = self.command_parser.get_help_text()
+        await self._send_response(chat_id, help_text)
+
+    async def handle_new_command(self, update: Update, context: Any, execute_new: callable) -> None:
+        """Handle /new command.
+
+        Creates a new session for the user.
+
+        Args:
+            update: Telegram update object.
+            context: Callback context.
+            execute_new: Callback to execute new command.
+
+        Requirements:
+            - 11.5: Support basic commands (new)
+            - 11.6: Parse and execute appropriate actions
+        """
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /new")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+        await execute_new(user_id, chat_id)
+
+    async def handle_cancel_command(
+        self, update: Update, context: Any, execute_cancel: callable
+    ) -> None:
+        """Handle /cancel command.
+
+        Attempts to cancel the currently-running request/tool for this user.
+        """
+
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /cancel")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+        await execute_cancel(user_id, chat_id)
+
+    async def handle_logs_command(
+        self, update: Update, context: Any, execute_logs: callable
+    ) -> None:
+        """Handle /logs command.
+
+        Shows recent activity logs for the user.
+
+        Args:
+            update: Telegram update object.
+            context: Callback context.
+            execute_logs: Callback to execute logs command.
+
+        Requirements:
+            - 11.5: Support basic commands (logs)
+            - 11.6: Parse and execute appropriate actions
+        """
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /logs")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+        await execute_logs(user_id, chat_id)
+
+    async def handle_skills_command(self, update: Update, context: Any) -> None:
+        """Handle /skills command - list all installed skills."""
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /skills")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+
+        skills = self.skill_service.list_skills(user_id)
+
+        if not skills:
+            await self._send_response(chat_id, "No skills installed yet.")
+            return
+
+        skill_list = "\n".join(f"• {skill}" for skill in skills)
+        await self._send_response(chat_id, f"📦 Installed skills:\n\n{skill_list}")
+
+    async def handle_add_skill_command(
+        self, update: Update, context: Any, execute_install: callable
+    ) -> None:
+        """Handle /add_skill <url> command - install a skill from URL."""
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /add_skill")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+
+        if not context.args:
+            await self._send_response(
+                chat_id,
+                "Usage: /add_skill <url>\n\n"
+                "Example: /add_skill https://github.com/user/repo/tree/main/skill",
+            )
+            return
+
+        url = context.args[0]
+        await execute_install(user_id, chat_id, url)
+
+    async def handle_delete_skill_command(
+        self, update: Update, context: Any, execute_uninstall: callable
+    ) -> None:
+        """Handle /delete_skill <name> command - remove an installed skill."""
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for /delete_skill")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+
+        if not context.args:
+            await self._send_response(
+                chat_id, "Usage: /delete_skill <name>\n\nUse /skills to see installed skills."
+            )
+            return
+
+        skill_name = context.args[0]
+        await execute_uninstall(user_id, chat_id, skill_name)
+
+    async def handle_message(self, update: Update, context: Any, execute_command: callable) -> None:
+        """Handle incoming text messages.
+
+        Parses the message for commands and either executes them directly
+        or forwards to the agent via SQS queue.
+
+        Args:
+            update: Telegram update object.
+            context: Callback context.
+            execute_command: Callback to execute parsed command.
+
+        Requirements:
+            - 11.2: Forward messages to Agent for processing
+            - 11.4: Identify users by Telegram user ID
+            - 11.6: Parse and execute appropriate actions
+        """
+        if not update.message or not update.message.text:
+            return
+
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for message")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, display_name = self.extract_telegram_identity(update)
+        message_text = update.message.text
+
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+
+        # Materialize the user's workspace folder as early as possible.
+        #
+        # Why: the very first user message may not include attachments, but we still
+        # want `workspace/<USER_NAME>/` to exist for the agent and any tools that
+        # write files during first-turn handling.
+        try:
+            self.file_service.get_user_working_dir(user_id)
+        except Exception:
+            # Best-effort: never block message handling due to filesystem issues.
+            logger.exception("Failed to create working dir for user %s", user_id)
+
+        # Check if user needs onboarding (returns context if this is first interaction)
+        onboarding_context = await self._check_and_handle_onboarding(user_id, chat_id)
+
+        # If onboarding was triggered, send the onboarding message FIRST.
+        #
+        # We do this deterministically because relying on the LLM to "SHOW" the
+        # soul.md / id.md content is flaky and can regress with model changes.
+        # The user's first experience should always include the actual content
+        # of these files and an explicit invitation to request changes.
+        if onboarding_context is not None and self.onboarding_service is not None:
+            try:
+                await self._send_response(
+                    chat_id,
+                    self.onboarding_service.get_onboarding_message(user_id),
+                )
+                # Avoid duplicating onboarding content in the model-generated response.
+                #
+                # However, we *do* pass a sentinel through to the agent so it knows
+                # onboarding was already delivered deterministically and it should not
+                # send another "welcome" message (or end with a question like
+                # "What do you need?").
+                onboarding_context = {"_onboarding_deterministic_sent": "true"}
+            except Exception:
+                logger.exception("Failed to send onboarding message for user %s", user_id)
+
+        if len(message_text) > 50:
+            preview = message_text[:50] + "..."
+        else:
+            preview = message_text
+
+        logger.info(
+            "Received message from %s (@%s): %s", display_name, username or user_id, preview
+        )
+
+        # Parse the message for commands
+        parsed = self.command_parser.parse(message_text)
+
+        # Execute based on command type (pass onboarding context for first interaction)
+        await execute_command(parsed, user_id, chat_id, message_text, onboarding_context)
+
+    async def handle_document(
+        self,
+        update: Update,
+        context: Any,
+        enqueue_with_attachments: callable,
+    ) -> None:
+        """Handle incoming document attachments.
+
+        Validates the document, downloads it, and enqueues a message
+        with attachment metadata for agent processing.
+
+        Args:
+            update: Telegram update object.
+            context: Callback context.
+            enqueue_with_attachments: Callback to enqueue with attachments.
+
+        Requirements:
+            - 1.1: Download document attachments from Telegram
+            - 1.3: Extract file metadata from Telegram message
+            - 1.4: Forward file path and metadata to agent
+            - 1.5: Support common document types
+            - 1.6: Reject files exceeding maximum size
+            - 1.7: Log file receipt for auditing
+            - 6.2: Add message handler for document filter
+        """
+        if not update.message or not update.message.document:
+            return
+
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for document")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        document = update.message.document
+        caption = update.message.caption or ""
+
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+
+        if document.file_size is None:
+            await self._send_response(
+                chat_id,
+                "❌ Telegram did not provide a file size for this document; cannot accept it.",
+            )
+            return
+
+        logger.info(
+            "Received document from user %s: %s (%s bytes)",
+            user_id,
+            document.file_name,
+            document.file_size,
+        )
+
+        # Validate file before download
+        validation = self.file_service.validate_file(
+            file_name=document.file_name or "unnamed_file",
+            file_size=document.file_size,
+            mime_type=document.mime_type,
+        )
+
+        if not validation.valid:
+            await self._send_response(chat_id, f"❌ {validation.error_message}")
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action=f"Document rejected: {validation.error_message}",
+                severity=LogSeverity.WARNING,
+                details={
+                    "file_name": document.file_name,
+                    "file_size": document.file_size,
+                },
+            )
+            return
+
+        try:
+            from app.telegram.models import TelegramAttachment
+
+            # Download and store file
+            metadata = await self.file_service.download_file(
+                bot=self.bot,
+                file_id=document.file_id,
+                user_id=user_id,
+                file_name=(validation.sanitized_name or document.file_name or "unnamed_file"),
+                mime_type=document.mime_type,
+            )
+
+            # Convert to TelegramAttachment
+            attachment = TelegramAttachment(
+                file_id=document.file_id,
+                file_name=metadata.file_name,
+                file_path=metadata.file_path,
+                mime_type=metadata.mime_type,
+                file_size=metadata.file_size,
+                is_image=False,
+            )
+
+            # Enqueue message with attachment
+            await enqueue_with_attachments(
+                user_id=user_id,
+                chat_id=chat_id,
+                message=caption,
+                attachments=[attachment],
+            )
+
+            # Log the action (Requirement 1.7)
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action=f"Document received: {metadata.file_name}",
+                severity=LogSeverity.INFO,
+                details={
+                    "file_name": metadata.file_name,
+                    "file_size": metadata.file_size,
+                    "mime_type": metadata.mime_type,
+                },
+            )
+
+        except TelegramError as e:
+            logger.error("Telegram download failed: %s", e)
+            await self._send_response(
+                chat_id,
+                "❌ Failed to download file. Please try again.",
+            )
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action="Document download failed",
+                severity=LogSeverity.ERROR,
+                details={"error": str(e)},
+            )
+        except Exception as e:
+            logger.error("File handling error: %s", e)
+            await self._send_response(
+                chat_id,
+                "❌ An error occurred processing your file.",
+            )
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action="Document processing error",
+                severity=LogSeverity.ERROR,
+                details={"error": str(e)},
+            )
+
+    async def handle_photo(
+        self,
+        update: Update,
+        context: Any,
+        enqueue_with_attachments: callable,
+    ) -> None:
+        """Handle incoming photo attachments.
+
+        Selects the highest resolution photo variant, downloads it,
+        and enqueues a message with attachment metadata.
+
+        Args:
+            update: Telegram update object.
+            context: Callback context.
+            enqueue_with_attachments: Callback to enqueue with attachments.
+
+        Requirements:
+            - 2.1: Download image attachments from Telegram
+            - 2.3: Extract image metadata when available
+            - 2.5: Download highest resolution version
+            - 2.6: Forward image path and metadata to agent
+            - 6.2: Add message handler for photo filter
+        """
+        if not update.message or not update.message.photo:
+            return
+
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for photo")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        caption = update.message.caption or ""
+
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+
+        # Select highest resolution photo (Requirement 2.5)
+        # Photos are sorted by size, last one is largest
+        photo = self.select_highest_resolution_photo(update.message.photo)
+
+        if photo.file_size is None:
+            await self._send_response(
+                chat_id,
+                "❌ Telegram did not provide a file size for this photo; cannot accept it.",
+            )
+            return
+
+        logger.info(
+            "Received photo from user %s: %dx%d (%d bytes)",
+            user_id,
+            photo.width,
+            photo.height,
+            photo.file_size,
+        )
+
+        # Validate file size
+        max_bytes = self.config.max_file_size_mb * 1024 * 1024
+        if photo.file_size > max_bytes:
+            await self._send_response(
+                chat_id,
+                f"❌ Photo too large. Maximum size is {self.config.max_file_size_mb}MB",
+            )
+            return
+
+        try:
+            from app.telegram.models import TelegramAttachment
+
+            # Generate filename for photo
+            file_name = f"photo_{photo.file_unique_id}.jpg"
+
+            # Download and store file
+            metadata = await self.file_service.download_file(
+                bot=self.bot,
+                file_id=photo.file_id,
+                user_id=user_id,
+                file_name=file_name,
+                mime_type="image/jpeg",
+            )
+
+            # Convert to TelegramAttachment
+            attachment = TelegramAttachment(
+                file_id=photo.file_id,
+                file_name=metadata.file_name,
+                file_path=metadata.file_path,
+                mime_type="image/jpeg",
+                file_size=metadata.file_size,
+                is_image=True,
+            )
+
+            # Enqueue message with attachment
+            await enqueue_with_attachments(
+                user_id=user_id,
+                chat_id=chat_id,
+                message=caption,
+                attachments=[attachment],
+            )
+
+            # Log the action
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action=f"Photo received: {photo.width}x{photo.height}",
+                severity=LogSeverity.INFO,
+                details={
+                    "file_size": metadata.file_size,
+                    "dimensions": f"{photo.width}x{photo.height}",
+                },
+            )
+
+        except TelegramError as e:
+            logger.error("Telegram photo download failed: %s", e)
+            await self._send_response(
+                chat_id,
+                "❌ Failed to download photo. Please try again.",
+            )
+        except Exception as e:
+            logger.error("Photo handling error: %s", e)
+            await self._send_response(
+                chat_id,
+                "❌ An error occurred processing your photo.",
+            )
+
+    async def handle_voice(
+        self,
+        update: Update,
+        context: Any,
+        enqueue_with_attachments: callable,
+    ) -> None:
+        """Handle incoming Telegram voice messages.
+
+        Telegram voice notes arrive as `message.voice` (typically OGG/OPUS).
+        We download the file and enqueue it as an attachment so the agent
+        worker can process/transcribe it.
+        """
+        if not update.message or not update.message.voice:
+            return
+
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for voice")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        voice = update.message.voice
+
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+
+        if voice.file_size is None:
+            await self._send_response(
+                chat_id,
+                "❌ Telegram did not provide a file size for this voice message; cannot accept it.",
+            )
+            return
+
+        # Validate file size only (voice is a trusted Telegram upload type)
+        max_bytes = self.config.max_file_size_mb * 1024 * 1024
+        if voice.file_size > max_bytes:
+            await self._send_response(
+                chat_id,
+                f"❌ Voice message too large. Maximum size is {self.config.max_file_size_mb}MB",
+            )
+            return
+
+        try:
+            from app.telegram.models import TelegramAttachment
+
+            unique = getattr(voice, "file_unique_id", None) or voice.file_id
+            file_name = self.file_service.sanitize_filename(f"voice_{unique}.ogg")
+            mime_type = getattr(voice, "mime_type", None) or "audio/ogg"
+
+            metadata = await self.file_service.download_file(
+                bot=self.bot,
+                file_id=voice.file_id,
+                user_id=user_id,
+                file_name=file_name,
+                mime_type=mime_type,
+            )
+
+            attachment = TelegramAttachment(
+                file_id=voice.file_id,
+                file_name=metadata.file_name,
+                file_path=metadata.file_path,
+                mime_type=metadata.mime_type,
+                file_size=metadata.file_size,
+                is_image=False,
+            )
+
+            duration = getattr(voice, "duration", None)
+            duration_text = f" duration={duration}s" if duration is not None else ""
+            message_text = f"[Voice message]{duration_text}"
+
+            await enqueue_with_attachments(
+                user_id=user_id,
+                chat_id=chat_id,
+                message=message_text,
+                attachments=[attachment],
+            )
+
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action="Voice message received",
+                severity=LogSeverity.INFO,
+                details={
+                    "file_name": metadata.file_name,
+                    "file_size": metadata.file_size,
+                    "mime_type": metadata.mime_type,
+                    "duration": duration,
+                },
+            )
+        except TelegramError as e:
+            logger.error("Telegram voice download failed: %s", e)
+            await self._send_response(
+                chat_id, "❌ Failed to download voice message. Please try again."
+            )
+        except Exception as e:
+            logger.error("Voice handling error: %s", e)
+            await self._send_response(
+                chat_id, "❌ An error occurred processing your voice message."
+            )
+
+    async def handle_audio(
+        self,
+        update: Update,
+        context: Any,
+        enqueue_with_attachments: callable,
+    ) -> None:
+        """Handle incoming Telegram audio messages.
+
+        Audio files arrive as `message.audio`. We download and enqueue them
+        as attachments for agent processing.
+        """
+        if not update.message or not update.message.audio:
+            return
+
+        chat = update.effective_chat
+        if chat is None:
+            logger.warning("Telegram update missing effective_chat for audio")
+            return
+        chat_id = chat.id
+
+        user_id, telegram_user_id, username, _ = self.extract_telegram_identity(update)
+        audio = update.message.audio
+        caption = update.message.caption or ""
+
+        if await self.reject_if_not_whitelisted(telegram_user_id or "unknown", username, chat_id):
+            return
+
+        if not user_id:
+            await self.reject_if_missing_username(chat_id)
+            return
+
+        self.migrate_legacy_skill_folder(telegram_user_id, user_id)
+
+        if audio.file_size is None:
+            await self._send_response(
+                chat_id,
+                "❌ Telegram did not provide a file size for this audio message; cannot accept it.",
+            )
+            return
+
+        max_bytes = self.config.max_file_size_mb * 1024 * 1024
+        if audio.file_size > max_bytes:
+            await self._send_response(
+                chat_id,
+                f"❌ Audio file too large. Maximum size is {self.config.max_file_size_mb}MB",
+            )
+            return
+
+        try:
+            from app.telegram.models import TelegramAttachment
+
+            unique = getattr(audio, "file_unique_id", None) or audio.file_id
+            mime_type = getattr(audio, "mime_type", None)
+
+            suggested_name = getattr(audio, "file_name", None)
+            if suggested_name:
+                file_name = self.file_service.sanitize_filename(suggested_name)
+            else:
+                # Best-effort extension guess from mime type.
+                ext = ".audio"
+                if mime_type == "audio/mpeg":
+                    ext = ".mp3"
+                elif mime_type == "audio/mp4":
+                    ext = ".m4a"
+                elif mime_type == "audio/ogg":
+                    ext = ".ogg"
+                file_name = self.file_service.sanitize_filename(f"audio_{unique}{ext}")
+
+            metadata = await self.file_service.download_file(
+                bot=self.bot,
+                file_id=audio.file_id,
+                user_id=user_id,
+                file_name=file_name,
+                mime_type=mime_type,
+            )
+
+            attachment = TelegramAttachment(
+                file_id=audio.file_id,
+                file_name=metadata.file_name,
+                file_path=metadata.file_path,
+                mime_type=metadata.mime_type,
+                file_size=metadata.file_size,
+                is_image=False,
+            )
+
+            message_text = caption or "[Audio message]"
+
+            await enqueue_with_attachments(
+                user_id=user_id,
+                chat_id=chat_id,
+                message=message_text,
+                attachments=[attachment],
+            )
+
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action="Audio received",
+                severity=LogSeverity.INFO,
+                details={
+                    "file_name": metadata.file_name,
+                    "file_size": metadata.file_size,
+                    "mime_type": metadata.mime_type,
+                    "duration": getattr(audio, "duration", None),
+                    "title": getattr(audio, "title", None),
+                    "performer": getattr(audio, "performer", None),
+                },
+            )
+        except TelegramError as e:
+            logger.error("Telegram audio download failed: %s", e)
+            await self._send_response(chat_id, "❌ Failed to download audio. Please try again.")
+        except Exception as e:
+            logger.error("Audio handling error: %s", e)
+            await self._send_response(chat_id, "❌ An error occurred processing your audio.")
+
+    def select_highest_resolution_photo(
+        self,
+        photos: list[PhotoSize],
+    ) -> PhotoSize:
+        """Select the highest resolution photo from variants.
+
+        Telegram sends multiple photo sizes. This selects the one
+        with the largest file size (highest resolution).
+
+        Args:
+            photos: List of PhotoSize objects from Telegram.
+
+        Returns:
+            PhotoSize with the largest file size.
+
+        Requirements:
+            - 2.5: Download highest resolution version available
+        """
+        # Sort by file_size and return largest
+        return max(photos, key=lambda p: p.file_size or 0)
+
+    async def _check_and_handle_onboarding(
+        self, user_id: str, chat_id: int
+    ) -> dict[str, str | None] | None:
+        """Check if user needs onboarding and handle it if needed.
+
+        Args:
+            user_id: The user's identifier.
+            chat_id: Telegram chat ID for sending messages.
+
+        Returns:
+            Onboarding context dict with 'soul' and 'id' content if onboarding
+            was just performed, None otherwise. The caller should inject this
+            into the agent's prompt so it can generate a personalized welcome.
+        """
+        if self.user_dao is None or self.onboarding_service is None:
+            # Onboarding not configured, skip
+            return None
+
+        # Ensure the user exists before onboarding checks.
+        #
+        # The onboarding flow is triggered in the Telegram handler (before the message
+        # is enqueued/processed by the SQS worker). The worker is what historically
+        # created the user row in the database. Without creating the user here,
+        # set_onboarding_completed() becomes a no-op and the onboarding message
+        # repeats on every incoming message.
+        try:
+            db_user = await self.user_dao.get_or_create(
+                user_id=user_id,
+                telegram_id=str(chat_id),
+            )
+            onboarding_user_id = db_user.id
+            if onboarding_user_id != user_id:
+                logger.warning(
+                    "Telegram username %s maps to existing user id %s (telegram_id=%s)",
+                    user_id,
+                    onboarding_user_id,
+                    chat_id,
+                )
+        except Exception as e:
+            logger.warning("Failed to get_or_create user before onboarding for %s: %s", user_id, e)
+            return None
+
+        # Check if user has already completed onboarding
+        try:
+            is_completed = await self.user_dao.is_onboarding_completed(onboarding_user_id)
+            if is_completed:
+                return None
+        except Exception as e:
+            logger.warning("Failed to check onboarding status for %s: %s", user_id, e)
+            return None
+
+        # Copy personality files to user's folder
+        if self.onboarding_service.is_enabled():
+            try:
+                success, result_msg = await self.onboarding_service.ensure_user_personality_files(
+                    user_id
+                )
+                if success:
+                    logger.info("Created personality files for user %s: %s", user_id, result_msg)
+                else:
+                    logger.warning("Personality file setup for %s: %s", user_id, result_msg)
+            except Exception as e:
+                logger.error("Failed to create personality files for %s: %s", user_id, e)
+
+        # Get onboarding context (soul.md and id.md content) for agent injection
+        onboarding_context = None
+        try:
+            onboarding_context = self.onboarding_service.get_onboarding_context(user_id)
+        except Exception as e:
+            logger.error("Failed to get onboarding context for %s: %s", user_id, e)
+
+        # If we couldn't load any onboarding content, do NOT mark onboarding as
+        # completed.
+        #
+        # This prevents a bad deployment (e.g. missing /instructions in a
+        # container image) from permanently skipping onboarding for the user.
+        if onboarding_context is None:
+            logger.warning(
+                "Onboarding content unavailable for user %s; will retry on next message",
+                user_id,
+            )
+            return None
+
+        # Mark onboarding as completed
+        try:
+            updated = await self.user_dao.set_onboarding_completed(onboarding_user_id)
+            if updated:
+                logger.info("Marked onboarding as completed for user %s", onboarding_user_id)
+            else:
+                logger.warning(
+                    "Failed to mark onboarding as completed (user not found) for user %s",
+                    onboarding_user_id,
+                )
+        except Exception as e:
+            logger.error("Failed to mark onboarding complete for %s: %s", user_id, e)
+
+        # Log the action
+        try:
+            await self.logging_service.log_action(
+                user_id=user_id,
+                action="Completed onboarding",
+                severity=LogSeverity.INFO,
+            )
+        except Exception:
+            logger.exception("Failed to log onboarding completion for %s", user_id)
+
+        return onboarding_context

@@ -1,0 +1,81 @@
+# Compose overrides to give Mordecai direct read/write access to Vibe-Kanban's persisted data directory.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.vibe-kanban.yml up -d
+
+services:
+  mordecai:
+    # Run as host UID/GID to avoid creating root-owned files in bind mounts.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+
+    # Ensure HOME is writable when running as a numeric UID without an /etc/passwd entry.
+    # Also configure temp_files to use the writable workspace mount (not /app/temp_files).
+    environment:
+      HOME: /app/workspace
+      AGENT_TEMP_FILES_BASE_DIR: /app/workspace/.temp
+      # Make the sidecar-provisioned `vibe-kanban` wrapper available in PATH (use-case specific).
+      # We set a full PATH to avoid relying on host-side ${PATH} expansion.
+      PATH: /opt/vk-cli/bin:/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+    # Mount Vibe-Kanban persistence at the exact same path used by the vibe-kanban container.
+    volumes:
+      - /home/ilia/.local/share/vibe-kanban:/home/ilia/.local/share/vibe-kanban:rw
+
+      # Provide a stable location for the MCP port file inside the container.
+      # (The MCP server reads /tmp/vibe-kanban/vibe-kanban.port)
+      - vibe-kanban-tmp:/tmp/vibe-kanban:rw
+
+      # Sidecar-provisioned CLI wrappers (use-case specific)
+      - vibe-kanban-cli-bin:/opt/vk-cli/bin:rw
+
+  # Vibe-Kanban MCP expects the backend at http://127.0.0.1:1111.
+  # When Vibe-Kanban runs in a separate compose project, 127.0.0.1 inside the mordecai
+  # container won't reach it. This sidecar shares the *mordecai* network namespace and
+  # forwards localhost:1111 -> host:1111 (which is published by the vibe-kanban container).
+  vibe-kanban-localhost-forward:
+    image: alpine/socat:latest
+    restart: unless-stopped
+    network_mode: "service:mordecai"
+    depends_on:
+      - mordecai
+    # With network_mode=service:mordecai we can't use extra_hosts. Instead we forward to
+    # the Docker gateway IP (i.e., the host as seen from the container network), which
+    # can reach the published host port 1111.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        set -- $$(ip route 2>/dev/null | grep -m1 ^default || true);
+        GW="$$3";
+        if [ -z "$$GW" ]; then GW="172.17.0.1"; fi;
+        echo "[vk-forward] Forwarding 127.0.0.1:1111 -> $$GW:1111";
+        exec socat TCP-LISTEN:1111,bind=127.0.0.1,fork,reuseaddr TCP:$$GW:1111
+
+  # Ensures /tmp/vibe-kanban/vibe-kanban.port exists (content: 1111) for tools running inside mordecai.
+  vibe-kanban-portfile:
+    image: alpine:3.20
+    restart: unless-stopped
+    volumes:
+      - vibe-kanban-tmp:/tmp/vibe-kanban:rw
+      - vibe-kanban-cli-bin:/opt/vk-cli/bin:rw
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        mkdir -p /tmp/vibe-kanban &&
+        printf '1111\n' > /tmp/vibe-kanban/vibe-kanban.port &&
+        chmod 0644 /tmp/vibe-kanban/vibe-kanban.port &&
+        mkdir -p /opt/vk-cli/bin &&
+        cat > /opt/vk-cli/bin/vibe-kanban <<'EOF' &&
+        #!/bin/sh
+        # Wrapper to ensure the Vibe-Kanban CLI is available in PATH without baking it into the image.
+        # Also pins PWD so the CLI/MCP server reads/writes persisted state from the mounted directory.
+        export PWD=/home/ilia/.local/share/vibe-kanban
+        exec npx -y vibe-kanban@latest "$@"
+        EOF
+        chmod +x /opt/vk-cli/bin/vibe-kanban &&
+        echo "[vk-portfile] wrote /tmp/vibe-kanban/vibe-kanban.port and provisioned /opt/vk-cli/bin/vibe-kanban" &&
+        sleep infinity
+
+volumes:
+  vibe-kanban-tmp:
+    name: mordecai-vibe-kanban-tmp
+  vibe-kanban-cli-bin:
+    name: mordecai-vibe-kanban-cli-bin

@@ -1,0 +1,57 @@
+{
+  "ok": false,
+  "scope": "user",
+  "skill": "local-places",
+  "steps": {
+    "generate_requirements": {
+      "added": [
+        "local_places"
+      ],
+      "created": false,
+      "declared_from_skill_md": [],
+      "generated": true,
+      "ok": true,
+      "path": "/app/skills/splintermaster/pending/local-places/requirements.txt",
+      "requirements": [
+        "fastapi",
+        "httpx",
+        "local_places",
+        "pydantic",
+        "uvicorn"
+      ],
+      "warnings": []
+    },
+    "install_dependencies": {
+      "error": "pip install failed",
+      "ok": false,
+      "stderr": "  \u00d7 No solution found when resolving dependencies:\n  \u2570\u2500\u25b6 Because local-places was not found in the package registry and you\n      require local-places, we can conclude that your requirements are\n      unsatisfiable.\n",
+      "stdout": ""
+    },
+    "normalize_skill_md": {
+      "actions": [],
+      "ok": true,
+      "skill_md": "/app/skills/splintermaster/pending/local-places/SKILL.md"
+    },
+    "sync_requires_pip": {
+      "ok": true,
+      "reason": "already in sync",
+      "updated": false
+    },
+    "validate_python_syntax": {
+      "checked": 6,
+      "ok": true
+    },
+    "validate_required_config_files": {
+      "checked": 0,
+      "ok": true,
+      "reason": "no config templates found"
+    },
+    "validate_required_env": {
+      "checked": 0,
+      "ok": true,
+      "reason": "no required env declared"
+    }
+  },
+  "timestamp": "2026-02-02T15:53:10.168132+00:00",
+  "user_id": "splintermaster"
+}

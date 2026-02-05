@@ -1,0 +1,12 @@
+# --- AUTO-GENERATED (imports) ---
+fastapi
+httpx
+-e .
+pydantic
+uvicorn
+# --- END AUTO-GENERATED (imports) ---
+
+# --- AUTO-GENERATED (imports) ---
+local_places
+# --- END AUTO-GENERATED (imports) ---
+

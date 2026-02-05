@@ -1,0 +1,110 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# uv
+uv.lock
+
+# Testing
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# IDEs
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.kiro/
+scratchpad/**
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets
+*secrets.yml*
+*secrets.yaml*
+!*secrets.yml_example
+!*secrets.yml.example
+!*secrets.yml.template
+!*secrets.yml.sample
+!*secrets.yaml_example
+!*secrets.yaml.example
+!*secrets.yaml.template
+!*secrets.yaml.sample
+
+*skills_secrets.yml*
+*skills_secrets.yaml*
+!*skills_secrets.yml_example
+!*skills_secrets.yaml_example
+
+.env
+*.env
+.env.local
+.env.*.local
+
+# Session data
+sessions/
+
+# Logs
+*.log
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# Alembic
+alembic/versions/*.pyc
+
+MagicMock
+
+# OS
+.DS_Store
+Thumbs.db
+settings.local.json
+# Project specific
+agent.db
+workspace/
+splintermaster
+temp_files
+himalaya.toml
+
+
+mcp_servers.json
+
+# Skills - ignore all except shared
+skills/*
+!skills/shared
+
+# Integration test artifacts
+scratchpad/users/integration_test_*

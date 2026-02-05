@@ -1,0 +1,43 @@
+# Himalaya Email CLI Configuration
+# Auto-generated from secrets.yml - DO NOT commit this file
+
+[accounts.gmail]
+email = "[GMAIL]"
+display-name = "Gmail"
+default = true
+
+# Folder aliases
+folder.aliases.sent = "Sent"
+folder.aliases.drafts = "Drafts"
+folder.aliases.trash = "Trash"
+
+# Message display settings
+message.read.format = "auto"
+message.delete.style = "folder"
+
+# Template settings
+template.new.signature-style = "inlined"
+template.reply.posting-style = "top"
+template.reply.signature-style = "below-quote"
+template.forward.posting-style = "top"
+template.forward.signature-style = "inlined"
+
+# IMAP Backend
+backend.type = "imap"
+backend.host = "imap.gmail.com"
+backend.port = 993
+backend.encryption.type = "tls"
+backend.login = "[GMAIL]"
+backend.auth.type = "password"
+backend.auth.raw = "[PASSWORD]"
+
+# SMTP Backend for sending
+message.send.backend.type = "smtp"
+message.send.backend.host = "smtp.gmail.com"
+message.send.backend.port = 587
+message.send.backend.encryption.type = "start-tls"
+message.send.backend.login = "[GMAIL]"
+message.send.backend.auth.type = "password"
+message.send.backend.auth.raw = "[PASSWORD]"
+
+
