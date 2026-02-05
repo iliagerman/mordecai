@@ -58,6 +58,7 @@ from app.observability.health_state import (
     snapshot as health_snapshot,
     start_stall_watchdog,
 )
+from app.observability.error_log_file import setup_error_log_file
 
 # Configure logging
 logging.basicConfig(
@@ -185,6 +186,9 @@ class Application:
             - All integration: Initialize Database, DAOs, Services, Routers
         """
         logger.info("Setting up application components...")
+
+        # Initialize error log file handler early to capture setup errors
+        setup_error_log_file(self.config)
 
         # Initialize database
         self.database = Database(self.config.database_url)
