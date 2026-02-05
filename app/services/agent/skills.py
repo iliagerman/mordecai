@@ -226,10 +226,13 @@ class SkillRepository:
                 content = skill_md.read_text(encoding="utf-8")
                 frontmatter = parse_skill_frontmatter(content)
                 skill_name = str(frontmatter.get("name") or item.name)
+                # Parse long_running flag (default False)
+                long_running = bool(frontmatter.get("long_running", False))
                 skills_by_name[skill_name] = SkillInfo(
                     name=skill_name,
                     description=str(frontmatter.get("description") or ""),
                     path=str(item.resolve()),
+                    long_running=long_running,
                 )
             except Exception as e:
                 logger.warning("Failed to read skill %s: %s", item, e)

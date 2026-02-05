@@ -32,6 +32,7 @@ from app.sqs.typing_indicator import (
 )
 from app.tools import send_file as send_file_module
 from app.tools import send_progress as send_progress_module
+from app.tools import run_in_background as run_in_background_module
 
 try:
     from mypy_boto3_sqs import SQSClient  # type: ignore[reportMissingImports]
@@ -48,6 +49,7 @@ except Exception:  # pragma: no cover
 if TYPE_CHECKING:
     from app.config import AgentConfig
     from app.dao.user_dao import UserDAO
+    from app.services.agent.background_tasks import BackgroundTaskManager
     from app.services.agent_service import AgentService
     from app.services.file_service import FileService
     from app.sqs.queue_manager import SQSQueueManager
@@ -212,6 +214,19 @@ class MessageProcessor:
 
         # Diagnostics: log background polling mode once per queue.
         self._logged_background_queues: set[str] = set()
+
+        # Background task manager reference (set externally after construction).
+        self._background_task_manager: "BackgroundTaskManager | None" = None
+
+    @property
+    def background_task_manager(self) -> "BackgroundTaskManager | None":
+        """Get the background task manager."""
+        return self._background_task_manager
+
+    @background_task_manager.setter
+    def background_task_manager(self, manager: "BackgroundTaskManager | None") -> None:
+        """Set the background task manager."""
+        self._background_task_manager = manager
 
     async def start(self) -> None:
         """Start processing messages from all user queues.
@@ -530,6 +545,39 @@ class MessageProcessor:
                         )
                         await progress_loop.start()
 
+                    # Set up background task spawn callback if manager is available
+                    if self._background_task_manager and user_id and chat_id:
+                        bg_manager = self._background_task_manager
+                        captured_loop = asyncio.get_event_loop()
+                        captured_user_id = user_id
+                        captured_chat_id = chat_id
+
+                        def spawn_bg_task(
+                            task_id: str,
+                            command: str,
+                            description: str,
+                            work_dir: str | None,
+                        ) -> bool:
+                            """Spawn a background task from the agent thread.
+
+                            The agent tool runs in a background thread (via asyncio.to_thread),
+                            so we pass the event loop for thread-safe task scheduling.
+                            """
+                            return bg_manager.spawn(
+                                captured_user_id,
+                                captured_chat_id,
+                                task_id,
+                                command,
+                                description,
+                                work_dir,
+                                loop=captured_loop,
+                            )
+
+                        run_in_background_module.set_background_task_context(
+                            spawn_bg_task,
+                            user_id,
+                        )
+
                     return await self._handle_message(queue_url, message, body=body)
             else:
                 # No user_id, process directly (shouldn't happen in normal flow)
@@ -545,6 +593,7 @@ class MessageProcessor:
             # Clear per-task tool callbacks and pending file queue.
             send_file_module.clear_send_callbacks()
             send_progress_module.clear_progress_callback()
+            run_in_background_module.clear_background_task_context()
 
     async def _start_heartbeat(self, queue_url: str, receipt_handle: str, message_id: str) -> None:
         """Start a heartbeat task to extend visibility timeout.
