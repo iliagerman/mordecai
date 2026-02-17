@@ -522,6 +522,22 @@ class AgentCreator:
                         server_config.args,
                     )
                     if client:
+                        # Pre-validate: attempt to start the client so that a broken
+                        # server (e.g. missing port file) doesn't crash Agent().
+                        try:
+                            client.start()
+                        except Exception as start_err:
+                            logger.warning(
+                                "User %s: MCP client '%s' failed to start, skipping: %s",
+                                user_id,
+                                server_name,
+                                start_err,
+                            )
+                            try:
+                                client.stop()
+                            except Exception:
+                                pass
+                            continue
                         builtin_tools.append(client)
                         logger.info("User %s: Added MCP client '%s'", user_id, server_name)
                 except Exception as e:

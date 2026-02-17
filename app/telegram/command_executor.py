@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 from app.enums import CommandType, LogSeverity
 from app.models.agent import ForgetMemoryResult
 
+from app.services.conversation_service import ConversationService
+
 if TYPE_CHECKING:
     from app.services.agent_service import AgentService
     from app.services.command_parser import ParsedCommand
@@ -36,6 +38,8 @@ class CommandExecutor:
         command_parser: Any,
         enqueue_callback: Callable,
         send_response_callback: Callable,
+        conversation_service: ConversationService | None = None,
+        get_allowed_users: Callable | None = None,
     ):
         """Initialize the command executor.
 
@@ -46,6 +50,8 @@ class CommandExecutor:
             command_parser: Command parser instance.
             enqueue_callback: Callback to enqueue messages for agent processing.
             send_response_callback: Callback to send responses to user.
+            conversation_service: Optional conversation service for multi-agent conversations.
+            get_allowed_users: Optional callable returning allowed usernames (for agent listing).
         """
         self.agent_service = agent_service
         self.skill_service = skill_service
@@ -53,6 +59,8 @@ class CommandExecutor:
         self.command_parser = command_parser
         self._enqueue_message = enqueue_callback
         self._send_response = send_response_callback
+        self._conversation_service = conversation_service
+        self._get_allowed_users = get_allowed_users
 
     async def execute_command(
         self,
@@ -114,6 +122,9 @@ class CommandExecutor:
             case CommandType.FORGET_DELETE:
                 query = parsed.args[0] if parsed.args else ""
                 await self.execute_forget_command(user_id, chat_id, query=query, delete=True)
+
+            case CommandType.CONVERSATION:
+                await self.execute_conversation_command(user_id, chat_id, parsed)
 
             case CommandType.MESSAGE:
                 # Forward to agent via SQS queue (with onboarding context if first interaction)
@@ -239,6 +250,408 @@ class CommandExecutor:
             )
         except Exception:
             logger.exception("Failed to log cancel action")
+
+    async def execute_conversation_command(
+        self,
+        user_id: str,
+        chat_id: int,
+        parsed,
+    ) -> None:
+        """Execute conversation command.
+
+        Args:
+            user_id: Telegram user ID.
+            chat_id: Telegram chat ID for responses.
+            parsed: Parsed command with CONVERSATION type.
+        """
+        if not parsed.args:
+            await self._send_response(
+                chat_id,
+                "Usage: conversation <action> [args]\n"
+                "Actions:\n"
+                "  create <topic> [max_iterations] [@agent1 @agent2] [-- instructions]\n"
+                "  join <conversation_id>\n"
+                "  add <conversation_id> @agent\n"
+                "  instruct <instructions for your agent>\n"
+                "  cancel <conversation_id>\n"
+                "  status <conversation_id>\n"
+                "  list\n"
+                "  agents",
+            )
+            return
+
+        action = parsed.args[0].lower() if parsed.args else ""
+        args = parsed.args[1:] if len(parsed.args) > 1 else []
+
+        if action == "create":
+            await self._execute_conversation_create(user_id, chat_id, args)
+        elif action == "join":
+            await self._execute_conversation_join(user_id, chat_id, args)
+        elif action == "add":
+            await self._execute_conversation_add(user_id, chat_id, args)
+        elif action == "cancel":
+            await self._execute_conversation_cancel(user_id, chat_id, args)
+        elif action == "status":
+            await self._execute_conversation_status(user_id, chat_id, args)
+        elif action == "instruct":
+            await self._execute_conversation_instruct(user_id, chat_id, args)
+        elif action == "list":
+            await self._execute_conversation_list(user_id, chat_id)
+        elif action == "agents":
+            await self._execute_conversation_agents(user_id, chat_id)
+        else:
+            await self._send_response(chat_id, f"Unknown conversation action: {action}")
+
+    async def _execute_conversation_create(
+        self,
+        user_id: str,
+        chat_id: int,
+        args: list[str],
+    ) -> None:
+        """Execute conversation create command.
+
+        Expected format (after 'create' is stripped):
+            <topic_words...> [max_iterations] [timeout=SECONDS] [@agent1 @agent2 ...] [-- instructions...]
+
+        - Topic: all leading words that are not @mentions, numbers, or timeout=N
+        - max_iterations: first bare integer (default 5)
+        - timeout=N: instruction wait timeout in seconds (default 300 = 5 min)
+        - @mentions: agent usernames to invite
+        - Everything after '--' is treated as agent instructions
+
+        Args:
+            user_id: Telegram user ID.
+            chat_id: Telegram chat ID.
+            args: Command arguments (after 'create').
+        """
+        if not args:
+            await self._send_response(
+                chat_id,
+                "Usage: conversation create <topic> [max_iterations] [timeout=SECONDS] "
+                "[@agent1 @agent2] [-- instructions]",
+            )
+            return
+
+        max_iterations = 5
+        instruction_timeout = 300  # 5 minutes default
+        participant_usernames: list[str] = []
+        topic_parts: list[str] = []
+        agent_instructions: str | None = None
+
+        # Check for instructions after '--'
+        if "--" in args:
+            separator_idx = args.index("--")
+            instruction_parts = args[separator_idx + 1 :]
+            args = args[:separator_idx]
+            if instruction_parts:
+                agent_instructions = " ".join(instruction_parts)
+
+        # Parse remaining args
+        for arg in args:
+            if arg.startswith("@"):
+                participant_usernames.append(arg.lstrip("@").lower())
+            elif arg.lower().startswith("timeout="):
+                try:
+                    instruction_timeout = int(arg.split("=", 1)[1])
+                except ValueError:
+                    pass
+            elif arg.isdigit() and not topic_parts:
+                max_iterations = int(arg)
+            elif arg.isdigit() and topic_parts:
+                max_iterations = int(arg)
+            else:
+                topic_parts.append(arg)
+
+        topic = " ".join(topic_parts).strip()
+        if not topic:
+            await self._send_response(chat_id, "Please provide a topic for the conversation.")
+            return
+
+        if not self._conversation_service:
+            await self._send_response(
+                chat_id,
+                f"🔄 Conversation service is not available. "
+                f"Parsed: topic='{topic}', iterations={max_iterations}, "
+                f"agents={participant_usernames or 'none'}",
+            )
+            return
+
+        try:
+            conversation_id = await self._conversation_service.create_conversation(
+                creator_user_id=user_id,
+                creator_chat_id=chat_id,
+                topic=topic,
+                max_iterations=max_iterations,
+                participant_user_ids=participant_usernames or None,
+                agent_instructions=agent_instructions,
+                instruction_timeout=instruction_timeout,
+            )
+            await self._send_response(
+                chat_id,
+                f"Conversation created!\n"
+                f"ID: {conversation_id}\n"
+                f"Topic: {topic}\n"
+                f"Max iterations: {max_iterations}\n"
+                f"Agents: {', '.join(participant_usernames) if participant_usernames else 'None specified'}\n"
+                f"Use 'conversation status {conversation_id}' for a live transcript.",
+            )
+        except Exception as e:
+            logger.exception("Failed to create conversation")
+            await self._send_response(chat_id, f"❌ Failed to create conversation: {e}")
+
+    async def _execute_conversation_join(
+        self,
+        user_id: str,
+        chat_id: int,
+        args: list[str],
+    ) -> None:
+        """Execute conversation join command.
+
+        Args:
+            user_id: Telegram user ID.
+            chat_id: Telegram chat ID.
+            args: Command arguments.
+        """
+        if not args:
+            await self._send_response(chat_id, "Usage: conversation join <conversation_id>")
+            return
+
+        if not self._conversation_service:
+            await self._send_response(chat_id, "Conversation service is not available.")
+            return
+
+        conversation_id = args[0]
+        try:
+            success = await self._conversation_service.add_participant(
+                conversation_id=conversation_id,
+                user_id=user_id,
+            )
+            if success:
+                await self._send_response(chat_id, f"✅ Joined conversation {conversation_id}.")
+            else:
+                await self._send_response(
+                    chat_id,
+                    f"❌ Could not join conversation {conversation_id}. "
+                    "It may not exist or is no longer active.",
+                )
+        except Exception as e:
+            logger.exception("Failed to join conversation")
+            await self._send_response(chat_id, f"❌ Failed to join: {e}")
+
+    async def _execute_conversation_add(
+        self,
+        user_id: str,
+        chat_id: int,
+        args: list[str],
+    ) -> None:
+        """Execute conversation add agent command.
+
+        Args:
+            user_id: Telegram user ID.
+            chat_id: Telegram chat ID.
+            args: Command arguments.
+        """
+        if len(args) < 2:
+            await self._send_response(chat_id, "Usage: conversation add <conversation_id> @agent")
+            return
+
+        if not self._conversation_service:
+            await self._send_response(chat_id, "Conversation service is not available.")
+            return
+
+        conversation_id = args[0]
+        agent_mention = args[1]
+
+        if not agent_mention.startswith("@"):
+            await self._send_response(chat_id, "Agent must be specified with @username")
+            return
+
+        agent_username = agent_mention.lstrip("@").lower()
+
+        try:
+            success = await self._conversation_service.add_participant(
+                conversation_id=conversation_id,
+                user_id=agent_username,
+            )
+            if success:
+                await self._send_response(
+                    chat_id,
+                    f"✅ Added @{agent_username} to conversation {conversation_id}.",
+                )
+            else:
+                await self._send_response(
+                    chat_id,
+                    f"❌ Could not add @{agent_username}. "
+                    "Conversation may not exist, is inactive, or they already joined.",
+                )
+        except Exception as e:
+            logger.exception("Failed to add participant")
+            await self._send_response(chat_id, f"❌ Failed to add agent: {e}")
+
+    async def _execute_conversation_cancel(
+        self,
+        user_id: str,
+        chat_id: int,
+        args: list[str],
+    ) -> None:
+        """Execute conversation cancel command.
+
+        Args:
+            user_id: Telegram user ID.
+            chat_id: Telegram chat ID.
+            args: Command arguments.
+        """
+        if not args:
+            await self._send_response(chat_id, "Usage: conversation cancel <conversation_id>")
+            return
+
+        if not self._conversation_service:
+            await self._send_response(chat_id, "Conversation service is not available.")
+            return
+
+        conversation_id = args[0]
+        try:
+            success = await self._conversation_service.cancel_conversation(conversation_id)
+            if success:
+                await self._send_response(chat_id, f"✅ Conversation {conversation_id} cancelled.")
+            else:
+                await self._send_response(
+                    chat_id,
+                    f"❌ Could not cancel conversation {conversation_id}. "
+                    "It may not exist or is already ended.",
+                )
+        except Exception as e:
+            logger.exception("Failed to cancel conversation")
+            await self._send_response(chat_id, f"❌ Failed to cancel: {e}")
+
+    async def _execute_conversation_status(
+        self,
+        user_id: str,
+        chat_id: int,
+        args: list[str],
+    ) -> None:
+        """Show a live transcript for a conversation.
+
+        Args:
+            user_id: Telegram user ID.
+            chat_id: Telegram chat ID.
+            args: Command arguments (expects conversation_id).
+        """
+        if not args:
+            await self._send_response(chat_id, "Usage: conversation status <conversation_id>")
+            return
+
+        if not self._conversation_service:
+            await self._send_response(chat_id, "Conversation service is not available.")
+            return
+
+        conversation_id = args[0]
+        try:
+            transcript = await self._conversation_service.get_conversation_transcript(conversation_id)
+            await self._send_response(chat_id, transcript)
+        except Exception as e:
+            logger.exception("Failed to get conversation transcript")
+            await self._send_response(chat_id, f"Failed to get transcript: {e}")
+
+    async def _execute_conversation_instruct(
+        self,
+        user_id: str,
+        chat_id: int,
+        args: list[str],
+    ) -> None:
+        """Provide instructions for the user's agent in an active conversation.
+
+        Args:
+            user_id: Telegram user ID.
+            chat_id: Telegram chat ID.
+            args: Instruction text tokens.
+        """
+        if not args:
+            await self._send_response(
+                chat_id,
+                "Usage: conversation instruct <your instructions for the agent>",
+            )
+            return
+
+        if not self._conversation_service:
+            await self._send_response(chat_id, "Conversation service is not available.")
+            return
+
+        instruction = " ".join(args)
+        try:
+            result = await self._conversation_service.handle_private_instruction(
+                user_id=user_id,
+                instruction=instruction,
+            )
+            if result:
+                await self._send_response(chat_id, result)
+            else:
+                await self._send_response(
+                    chat_id,
+                    "You don't have an active conversation to instruct.",
+                )
+        except Exception as e:
+            logger.exception("Failed to store conversation instruction")
+            await self._send_response(chat_id, f"Failed to store instruction: {e}")
+
+    async def _execute_conversation_list(
+        self,
+        user_id: str,
+        chat_id: int,
+    ) -> None:
+        """Execute conversation list command.
+
+        Args:
+            user_id: Telegram user ID.
+            chat_id: Telegram chat ID.
+        """
+        if not self._conversation_service:
+            await self._send_response(chat_id, "Conversation service is not available.")
+            return
+
+        active = await self._conversation_service.get_active_conversation_for_user(user_id)
+        if not active:
+            await self._send_response(chat_id, "You have no active conversations.")
+            return
+
+        state = active["state"]
+        lines = [
+            "📋 Your active conversations:\n",
+            f"  ID: {active['conversation_id']}",
+            f"  Topic: {state.topic}",
+            f"  Iteration: {state.current_iteration or 0}/{state.max_iterations}",
+        ]
+        await self._send_response(chat_id, "\n".join(lines))
+
+    async def _execute_conversation_agents(
+        self,
+        user_id: str,
+        chat_id: int,
+    ) -> None:
+        """List available agents (allowed users) that can be invited to conversations.
+
+        Args:
+            user_id: Telegram user ID.
+            chat_id: Telegram chat ID.
+        """
+        if not self._get_allowed_users:
+            await self._send_response(chat_id, "Agent listing is not available.")
+            return
+
+        allowed = list(self._get_allowed_users())
+        if not allowed:
+            await self._send_response(
+                chat_id,
+                "No allowed users configured. All users can be invited.",
+            )
+            return
+
+        lines = ["🤖 Available agents (users):\n"]
+        for username in sorted(allowed):
+            marker = " (you)" if username.lower() == user_id.lower() else ""
+            lines.append(f"  @{username}{marker}")
+        lines.append("\nUse @username when creating a conversation to invite them.")
+        await self._send_response(chat_id, "\n".join(lines))
 
     async def execute_logs_command(self, user_id: str, chat_id: int) -> None:
         """Execute the 'logs' command to show recent activity.

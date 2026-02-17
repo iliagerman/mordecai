@@ -21,7 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 
 from app.database import Base
-from app.enums import LogSeverity, TaskStatus
+from app.enums import LogSeverity, TaskStatus, ConversationStatus
 
 
 class UserModel(Base):
@@ -63,6 +63,21 @@ class UserModel(Base):
     conversation_messages = relationship(
         "ConversationMessageModel",
         back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    created_conversations = relationship(
+        "ConversationModel",
+        foreign_keys="[ConversationModel.creator_user_id]",
+        cascade="all, delete-orphan",
+    )
+    participated_conversations = relationship(
+        "ConversationParticipantModel",
+        foreign_keys="[ConversationParticipantModel.user_id]",
+        cascade="all, delete-orphan",
+    )
+    agent_messages = relationship(
+        "MultiAgentConversationMessageModel",
+        foreign_keys="[MultiAgentConversationMessageModel.participant_user_id]",
         cascade="all, delete-orphan",
     )
 
@@ -277,4 +292,140 @@ class ConversationMessageModel(Base):
     __table_args__ = (
         Index("ix_conversation_user_session", "user_id", "session_id"),
         Index("ix_conversation_user_created", "user_id", "created_at"),
+    )
+
+
+class ConversationModel(Base):
+    """Multi-agent conversation ORM model.
+
+    Represents a conversation between multiple AI agents working toward
+    consensus on a topic (e.g., scheduling a launch).
+    """
+
+    __tablename__ = "conversations"
+
+    id = Column(String, primary_key=True)
+    creator_user_id = Column(
+        String,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+    topic = Column(String, nullable=False)
+    max_iterations = Column(Integer, nullable=False, default=5)
+    current_iteration = Column(Integer, nullable=False, default=0)
+    status = Column(
+        String,
+        nullable=False,
+        default=ConversationStatus.ACTIVE.value,
+    )
+    exit_reason = Column(Text, nullable=True)
+    telegram_group_id = Column(Integer, nullable=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    # Relationships
+    creator = relationship("UserModel", foreign_keys=[creator_user_id])
+    participants = relationship(
+        "ConversationParticipantModel",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
+    messages = relationship(
+        "MultiAgentConversationMessageModel",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
+
+    # Indexes for efficient queries
+    __table_args__ = (
+        Index("ix_conversation_creator", "creator_user_id"),
+        Index("ix_conversation_status", "status"),
+    )
+
+
+class ConversationParticipantModel(Base):
+    """Participant in a multi-agent conversation.
+
+    Represents an agent (user) participating in a conversation.
+    Each participant is identified by their user_id and can signal
+    agreement by having has_agreed set to True.
+    """
+
+    __tablename__ = "conversation_participants"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(
+        String,
+        ForeignKey("conversations.id"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(
+        String,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+    agent_name = Column(String, nullable=True)  # Custom agent name
+    has_agreed = Column(Boolean, nullable=False, default=False)
+    joined_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # Relationships
+    conversation = relationship("ConversationModel", back_populates="participants")
+    user = relationship("UserModel", foreign_keys=[user_id])
+
+    # Unique constraint: one agent per conversation
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "user_id", name="uq_conversation_participant"),
+        Index("ix_participant_conversation", "conversation_id"),
+        Index("ix_participant_user", "user_id"),
+    )
+
+
+class MultiAgentConversationMessageModel(Base):
+    """Message in a multi-agent conversation.
+
+    Stores individual messages from agents participating in a conversation,
+    along with metadata about which iteration the message was part of.
+    """
+
+    __tablename__ = "multi_agent_conversation_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(
+        String,
+        ForeignKey("conversations.id"),
+        nullable=False,
+        index=True,
+    )
+    participant_user_id = Column(
+        String,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+    content = Column(Text, nullable=False)
+    iteration_number = Column(Integer, nullable=False, default=1)
+    is_private_instruction = Column(Boolean, nullable=False, default=False)
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        index=True,
+    )
+
+    # Relationships
+    conversation = relationship("ConversationModel", back_populates="messages")
+    participant = relationship("UserModel")
+
+    # Indexes for efficient queries
+    __table_args__ = (
+        Index("ix_multi_agent_msg_conversation", "conversation_id", "created_at"),
+        Index("ix_multi_agent_msg_participant", "participant_user_id"),
     )

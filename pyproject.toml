@@ -78,6 +78,7 @@ markers = [
     "integration: marks tests as integration tests (may require network)",
     "e2e: marks tests as end-to-end tests (require real credentials)",
     "slow: marks tests as slow (may incur API costs)",
+    "evaluation: marks tests as evaluation tests using AgentCore API (may be slow and require AWS)",
 ]
 
 [tool.ruff]

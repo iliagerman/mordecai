@@ -30,6 +30,16 @@ class CommandType(StrEnum):
     FORGET_DELETE = "forget_delete"
     HELP = "help"
     MESSAGE = "message"
+    CONVERSATION = "conversation"
+
+
+class ConversationStatus(StrEnum):
+    """Multi-agent conversation status values."""
+
+    ACTIVE = "active"
+    CONSENSUS_REACHED = "consensus_reached"
+    MAX_ITERATIONS_REACHED = "max_iterations_reached"
+    CANCELLED = "cancelled"
 
 
 class LogSeverity(StrEnum):

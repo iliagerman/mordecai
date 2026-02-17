@@ -7,7 +7,7 @@ never be exposed outside the DAO layer - always convert to these models.
 
 from datetime import datetime
 
-from app.enums import LogSeverity, TaskStatus
+from app.enums import LogSeverity, TaskStatus, ConversationStatus
 from app.models.base import JsonModel
 
 
@@ -106,3 +106,79 @@ class CronLock(JsonModel):
     task_id: str
     instance_id: str
     lock_acquired_at: datetime
+
+
+class Conversation(JsonModel):
+    """Multi-agent conversation domain model.
+
+    Represents a conversation between multiple AI agents working toward
+    consensus on a topic.
+    """
+
+    id: str
+    creator_user_id: str
+    topic: str
+    max_iterations: int
+    current_iteration: int = 0
+    status: ConversationStatus = ConversationStatus.ACTIVE
+    exit_reason: str | None = None
+    telegram_group_id: int | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationParticipant(JsonModel):
+    """Participant in a multi-agent conversation.
+
+    Represents an agent (user) participating in a conversation.
+    """
+
+    id: int
+    conversation_id: str
+    user_id: str
+    agent_name: str | None = None
+    has_agreed: bool = False
+    joined_at: datetime
+
+
+class MultiAgentConversationMessage(JsonModel):
+    """Message in a multi-agent conversation.
+
+    Represents a single message from an agent during a conversation.
+    """
+
+    id: int
+    conversation_id: str
+    participant_user_id: str
+    content: str
+    iteration_number: int
+    is_private_instruction: bool = False
+    created_at: datetime
+
+
+class ParameterPosition(JsonModel):
+    """One agent's stance on a single decision parameter."""
+
+    agent_user_id: str
+    agent_name: str | None = None
+    position: str
+    source: str = "initial_instruction"  # initial_instruction | clarification | conversation
+
+
+class ConversationParameter(JsonModel):
+    """A single decision parameter extracted from agent instructions."""
+
+    name: str
+    description: str
+    positions: list[ParameterPosition]
+    is_aligned: bool = False
+    aligned_value: str | None = None
+
+
+class ParameterAnalysis(JsonModel):
+    """Full parameter analysis for a conversation."""
+
+    parameters: list[ConversationParameter]
+    summary: str
+    all_aligned: bool = False
+    last_updated_iteration: int = 0

@@ -43,6 +43,14 @@ class CommandParser:
 - uninstall skill <name>: Uninstall the specified skill
 - forget <query>: Preview (dry-run) which long-term memories would be deleted
 - forget! <query>: Delete matching long-term memories (use dry-run first)
+- conversation create <topic> [max_iterations] [timeout=SECONDS] [@agent1 @agent2] [-- instructions]
+- conversation join <id>: Join an existing conversation
+- conversation add <id> @agent: Add an agent mid-conversation
+- conversation instruct <text>: Provide instructions for your agent
+- conversation cancel <id>: Cancel an active conversation
+- conversation status <id>: Show a live transcript
+- conversation list: List your active conversations
+- conversation agents: List available agents to invite
 - help: Show this help message
 
 Any other input will be processed as a regular message to the agent."""
@@ -70,6 +78,17 @@ Any other input will be processed as a regular message to the agent."""
         # Check for "new" command (Requirement 10.1)
         if lower_message == "new":
             return ParsedCommand(CommandType.NEW)
+
+        # Check for "conversation" command
+        if lower_message.startswith("conversation "):
+            parts = normalized[12:].strip().split()
+            if not parts:
+                return ParsedCommand(CommandType.CONVERSATION, [])
+
+            action = parts[0].lower() if parts else ""
+            args = parts[1:] if len(parts) > 1 else []
+
+            return ParsedCommand(CommandType.CONVERSATION, [action] + args)
 
         # Check for "logs" command (Requirement 10.2)
         if lower_message == "logs":

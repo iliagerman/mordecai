@@ -85,6 +85,7 @@ class TelegramBotInterface:
         command_parser: CommandParser | None = None,
         user_dao: UserDAO | None = None,
         onboarding_service: OnboardingService | None = None,
+        conversation_service: Any | None = None,
     ) -> None:
         """Initialize the Telegram bot interface.
 
@@ -137,6 +138,8 @@ class TelegramBotInterface:
             command_parser=self.command_parser,
             enqueue_callback=self._enqueue_message,
             send_response_callback=self._send_response_via_sender,
+            conversation_service=conversation_service,
+            get_allowed_users=self._get_allowed_users_live,
         )
 
         # Initialize message handlers

@@ -46,6 +46,8 @@ from app.services import (
 from app.services.agent_service import AgentService
 from app.services.cron_service import CronService
 from app.services.memory_service import MemoryService
+from app.services.conversation_manager_agent import ConversationManagerAgent
+from app.services.conversation_service import ConversationService
 from app.services.onboarding_service import OnboardingService
 from app.sqs.message_processor import MessageProcessor
 from app.sqs.queue_manager import SQSQueueManager
@@ -271,6 +273,19 @@ class Application:
         )
         logger.info("Message processor initialized")
 
+        # Initialize conversation service
+        self.conversation_manager_agent = ConversationManagerAgent(
+            conversation_dao=self.conversation_dao,
+        )
+        self.conversation_service = ConversationService(
+            conversation_dao=self.conversation_dao,
+            agent_service=self.agent_service,
+            send_message=self._send_telegram_response,
+            resolve_chat_id=self._resolve_user_chat_id,
+            manager_agent=self.conversation_manager_agent,
+        )
+        logger.info("Conversation service initialized")
+
         # Initialize Telegram bot
         self.telegram_bot = TelegramBotInterface(
             config=self.config,
@@ -282,6 +297,7 @@ class Application:
             command_parser=self.command_parser,
             user_dao=self.user_dao,
             onboarding_service=self.onboarding_service,
+            conversation_service=self.conversation_service,
         )
         logger.info("Telegram bot initialized")
 
@@ -327,6 +343,25 @@ class Application:
         logger.info("File service and system scheduler initialized")
 
         logger.info("Application setup complete")
+
+    async def _resolve_user_chat_id(self, user_id: str) -> int | None:
+        """Resolve a username to a Telegram numeric chat_id for DMs.
+
+        Args:
+            user_id: Username (primary key in users table).
+
+        Returns:
+            Numeric Telegram chat_id or None if user not found.
+        """
+        if not self.user_dao:
+            return None
+        user = await self.user_dao.get_by_id(user_id)
+        if user and user.telegram_id:
+            try:
+                return int(user.telegram_id)
+            except (ValueError, TypeError):
+                return None
+        return None
 
     async def _send_telegram_response(self, chat_id: int, response: str) -> None:
         """Send response via Telegram bot.

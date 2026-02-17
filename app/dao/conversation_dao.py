@@ -470,3 +470,412 @@ class ConversationDAO:
             except SQLAlchemyError as e:
                 logger.error("Failed to count messages: %s", e)
                 return 0
+
+    # ========================================================================
+    # Multi-Agent Conversation Methods
+    # ========================================================================
+
+    async def create_conversation(
+        self,
+        creator_user_id: str,
+        topic: str,
+        max_iterations: int = 5,
+    ) -> str:
+        """Create a new multi-agent conversation.
+
+        Args:
+            creator_user_id: ID of the user creating the conversation.
+            topic: The topic/question for the conversation.
+            max_iterations: Maximum number of iterations before ending.
+
+        Returns:
+            The created conversation ID.
+        """
+        from app.models.orm import ConversationModel
+        import uuid
+
+        conversation_id = str(uuid.uuid4())
+
+        async with self._session_factory() as session:
+            try:
+                conv = ConversationModel(
+                    id=conversation_id,
+                    creator_user_id=creator_user_id,
+                    topic=topic,
+                    max_iterations=max_iterations,
+                    current_iteration=0,
+                    status="active",
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                session.add(conv)
+                await session.commit()
+                logger.info("Created conversation %s for user %s", conversation_id, creator_user_id)
+                return conversation_id
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logger.error("Failed to create conversation: %s", e)
+                raise
+
+    async def get_conversation_by_id(self, conversation_id: str) -> dict | None:
+        """Get a conversation by ID.
+
+        Args:
+            conversation_id: The conversation ID.
+
+        Returns:
+            Dictionary with conversation data or None.
+        """
+        from app.models.orm import ConversationModel
+
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(
+                    select(ConversationModel).where(ConversationModel.id == conversation_id)
+                )
+                conv = result.scalar_one_or_none()
+                if not conv:
+                    return None
+
+                return {
+                    "id": conv.id,
+                    "creator_user_id": conv.creator_user_id,
+                    "topic": conv.topic,
+                    "max_iterations": conv.max_iterations,
+                    "current_iteration": conv.current_iteration,
+                    "status": conv.status,
+                    "exit_reason": conv.exit_reason,
+                    "telegram_group_id": conv.telegram_group_id,
+                    "created_at": conv.created_at.isoformat() if conv.created_at else None,
+                    "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+                }
+            except SQLAlchemyError as e:
+                logger.error("Failed to get conversation: %s", e)
+                return None
+
+    async def update_conversation_status(
+        self,
+        conversation_id: str,
+        status: str | None = None,
+        current_iteration: int | None = None,
+        exit_reason: str | None = None,
+        telegram_group_id: int | None = None,
+    ) -> bool:
+        """Update conversation status or iteration count.
+
+        Args:
+            conversation_id: The conversation ID.
+            status: New status to set.
+            current_iteration: New iteration count.
+            exit_reason: Reason for conversation ending.
+            telegram_group_id: Telegram group chat ID.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        from app.models.orm import ConversationModel
+
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(
+                    select(ConversationModel).where(ConversationModel.id == conversation_id)
+                )
+                conv = result.scalar_one_or_none()
+                if not conv:
+                    return False
+
+                if status is not None:
+                    conv.status = status
+                if current_iteration is not None:
+                    conv.current_iteration = current_iteration
+                if exit_reason is not None:
+                    conv.exit_reason = exit_reason
+                if telegram_group_id is not None:
+                    conv.telegram_group_id = telegram_group_id
+
+                conv.updated_at = datetime.utcnow()
+                await session.commit()
+                return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logger.error("Failed to update conversation: %s", e)
+                return False
+
+    async def increment_conversation_iteration(self, conversation_id: str) -> bool:
+        """Increment the iteration count for a conversation.
+
+        Args:
+            conversation_id: The conversation ID.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        from app.models.orm import ConversationModel
+        from sqlalchemy import update as sql_update
+
+        async with self._session_factory() as session:
+            try:
+                stmt = (
+                    sql_update(ConversationModel)
+                    .where(ConversationModel.id == conversation_id)
+                    .values(current_iteration=ConversationModel.current_iteration + 1)
+                )
+                await session.execute(stmt)
+                await session.commit()
+                return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logger.error("Failed to increment iteration: %s", e)
+                return False
+
+    async def add_participant(
+        self,
+        conversation_id: str,
+        user_id: str,
+        agent_name: str | None = None,
+    ) -> bool:
+        """Add a participant to a conversation.
+
+        Args:
+            conversation_id: The conversation ID.
+            user_id: The user ID (agent owner).
+            agent_name: Optional custom agent name.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        from app.models.orm import ConversationParticipantModel
+
+        async with self._session_factory() as session:
+            try:
+                participant = ConversationParticipantModel(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    agent_name=agent_name,
+                    has_agreed=False,
+                    joined_at=datetime.utcnow(),
+                )
+                session.add(participant)
+                await session.commit()
+                logger.info("Added participant %s to conversation %s", user_id, conversation_id)
+                return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logger.error("Failed to add participant: %s", e)
+                return False
+
+    async def get_participants(self, conversation_id: str) -> list[dict]:
+        """Get all participants for a conversation.
+
+        Args:
+            conversation_id: The conversation ID.
+
+        Returns:
+            List of participant dictionaries.
+        """
+        from app.models.orm import ConversationParticipantModel
+
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(
+                    select(ConversationParticipantModel)
+                    .where(ConversationParticipantModel.conversation_id == conversation_id)
+                    .order_by(ConversationParticipantModel.joined_at.asc())
+                )
+                participants = result.scalars().all()
+
+                return [
+                    {
+                        "id": p.id,
+                        "conversation_id": p.conversation_id,
+                        "user_id": p.user_id,
+                        "agent_name": p.agent_name,
+                        "has_agreed": p.has_agreed,
+                        "joined_at": p.joined_at.isoformat() if p.joined_at else None,
+                    }
+                    for p in participants
+                ]
+            except SQLAlchemyError as e:
+                logger.error("Failed to get participants: %s", e)
+                return []
+
+    async def mark_participant_agreed(self, conversation_id: str, user_id: str) -> bool:
+        """Mark a participant as having agreed.
+
+        Args:
+            conversation_id: The conversation ID.
+            user_id: The user ID (agent) to mark as agreed.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        from app.models.orm import ConversationParticipantModel
+
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(
+                    select(ConversationParticipantModel).where(
+                        ConversationParticipantModel.conversation_id == conversation_id,
+                        ConversationParticipantModel.user_id == user_id,
+                    )
+                )
+                participant = result.scalar_one_or_none()
+                if not participant:
+                    return False
+
+                participant.has_agreed = True
+                await session.commit()
+                logger.info("Marked participant %s as agreed in conversation %s", user_id, conversation_id)
+                return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logger.error("Failed to mark agreed: %s", e)
+                return False
+
+    async def add_conversation_message(
+        self,
+        conversation_id: str,
+        participant_user_id: str,
+        content: str,
+        iteration_number: int,
+        is_private_instruction: bool = False,
+    ) -> bool:
+        """Add a message to a multi-agent conversation.
+
+        Args:
+            conversation_id: The conversation ID.
+            participant_user_id: The user ID of who is speaking.
+            content: The message content.
+            iteration_number: Which iteration this message belongs to.
+            is_private_instruction: Whether this is a private instruction from owner.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        from app.models.orm import MultiAgentConversationMessageModel
+
+        async with self._session_factory() as session:
+            try:
+                msg = MultiAgentConversationMessageModel(
+                    conversation_id=conversation_id,
+                    participant_user_id=participant_user_id,
+                    content=content,
+                    iteration_number=iteration_number,
+                    is_private_instruction=is_private_instruction,
+                    created_at=datetime.utcnow(),
+                )
+                session.add(msg)
+                await session.commit()
+                return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logger.error("Failed to add conversation message: %s", e)
+                return False
+
+    async def get_conversation_messages(
+        self,
+        conversation_id: str,
+    ) -> list[dict]:
+        """Get all messages for a conversation.
+
+        Args:
+            conversation_id: The conversation ID.
+
+        Returns:
+            List of message dictionaries ordered by creation time.
+        """
+        from app.models.orm import MultiAgentConversationMessageModel
+
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(
+                    select(MultiAgentConversationMessageModel)
+                    .where(MultiAgentConversationMessageModel.conversation_id == conversation_id)
+                    .order_by(MultiAgentConversationMessageModel.created_at.asc())
+                )
+                messages = result.scalars().all()
+
+                return [
+                    {
+                        "id": m.id,
+                        "conversation_id": m.conversation_id,
+                        "participant_user_id": m.participant_user_id,
+                        "content": m.content,
+                        "iteration_number": m.iteration_number,
+                        "is_private_instruction": m.is_private_instruction,
+                        "created_at": m.created_at.isoformat() if m.created_at else None,
+                    }
+                    for m in messages
+                ]
+            except SQLAlchemyError as e:
+                logger.error("Failed to get conversation messages: %s", e)
+                return []
+
+    async def get_pending_participants(
+        self,
+        conversation_id: str,
+    ) -> list[dict]:
+        """Get participants who haven't agreed yet (still need to speak).
+
+        Args:
+            conversation_id: The conversation ID.
+
+        Returns:
+            List of participant dictionaries ordered by joined time.
+        """
+        from app.models.orm import ConversationParticipantModel
+
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(
+                    select(ConversationParticipantModel)
+                    .where(
+                        ConversationParticipantModel.conversation_id == conversation_id,
+                        ConversationParticipantModel.has_agreed == False,
+                    )
+                    .order_by(ConversationParticipantModel.joined_at.asc())
+                )
+                participants = result.scalars().all()
+
+                return [
+                    {
+                        "id": p.id,
+                        "conversation_id": p.conversation_id,
+                        "user_id": p.user_id,
+                        "agent_name": p.agent_name,
+                        "has_agreed": p.has_agreed,
+                        "joined_at": p.joined_at.isoformat() if p.joined_at else None,
+                    }
+                    for p in participants
+                ]
+            except SQLAlchemyError as e:
+                logger.error("Failed to get pending participants: %s", e)
+                return []
+
+    async def check_all_agreed(self, conversation_id: str) -> bool:
+        """Check if all participants in a conversation have agreed.
+
+        Args:
+            conversation_id: The conversation ID.
+
+        Returns:
+            True if all participants have agreed, False otherwise.
+        """
+        from app.models.orm import ConversationParticipantModel
+        from sqlalchemy import func as sql_func
+
+        async with self._session_factory() as session:
+            try:
+                # Count non-agreed participants
+                result = await session.execute(
+                    select(sql_func.count(ConversationParticipantModel.id))
+                    .where(
+                        ConversationParticipantModel.conversation_id == conversation_id,
+                        ConversationParticipantModel.has_agreed == False,
+                    )
+                )
+                count = result.scalar()
+                return count == 0
+            except SQLAlchemyError as e:
+                logger.error("Failed to check all agreed: %s", e)
+                return False
