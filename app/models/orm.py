@@ -68,16 +68,25 @@ class UserModel(Base):
     created_conversations = relationship(
         "ConversationModel",
         foreign_keys="[ConversationModel.creator_user_id]",
+        back_populates="creator",
         cascade="all, delete-orphan",
     )
     participated_conversations = relationship(
         "ConversationParticipantModel",
         foreign_keys="[ConversationParticipantModel.user_id]",
+        back_populates="user",
         cascade="all, delete-orphan",
     )
     agent_messages = relationship(
         "MultiAgentConversationMessageModel",
         foreign_keys="[MultiAgentConversationMessageModel.participant_user_id]",
+        back_populates="participant",
+        cascade="all, delete-orphan",
+    )
+    skill_secrets = relationship(
+        "UserSkillSecretModel",
+        uselist=False,
+        back_populates="user",
         cascade="all, delete-orphan",
     )
 
@@ -330,7 +339,7 @@ class ConversationModel(Base):
     )
 
     # Relationships
-    creator = relationship("UserModel", foreign_keys=[creator_user_id])
+    creator = relationship("UserModel", foreign_keys=[creator_user_id], back_populates="created_conversations")
     participants = relationship(
         "ConversationParticipantModel",
         back_populates="conversation",
@@ -378,7 +387,7 @@ class ConversationParticipantModel(Base):
 
     # Relationships
     conversation = relationship("ConversationModel", back_populates="participants")
-    user = relationship("UserModel", foreign_keys=[user_id])
+    user = relationship("UserModel", foreign_keys=[user_id], back_populates="participated_conversations")
 
     # Unique constraint: one agent per conversation
     __table_args__ = (
@@ -386,6 +395,76 @@ class ConversationParticipantModel(Base):
         Index("ix_participant_conversation", "conversation_id"),
         Index("ix_participant_user", "user_id"),
     )
+
+
+class BrowserCookieModel(Base):
+    """Browser cookie ORM model.
+
+    Stores browser cookies per user per domain for session persistence
+    across browser automation sessions (Nova Act / AgentCore Browser).
+    """
+
+    __tablename__ = "browser_cookies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(
+        String,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+    domain = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    value = Column(Text, nullable=False)
+    path = Column(String, nullable=False, default="/")
+    expires = Column(DateTime, nullable=True)
+    http_only = Column(Boolean, nullable=False, default=False)
+    secure = Column(Boolean, nullable=False, default=False)
+    same_site = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    # Relationships
+    user = relationship("UserModel")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "domain", "name", "path", name="uq_user_cookie"),
+        Index("ix_browser_cookie_user_domain", "user_id", "domain"),
+    )
+
+
+class UserSkillSecretModel(Base):
+    """User skill secrets ORM model.
+
+    Stores per-user skill secrets as a JSON blob. The structure mirrors
+    what was previously in skills/<user_id>/skills_secrets.yml under the
+    ``skills:`` key.  Only uppercase keys (e.g. ``OP_SERVICE_ACCOUNT_TOKEN``)
+    are exported as environment variables during tool/shell execution.
+    """
+
+    __tablename__ = "user_skill_secrets"
+
+    user_id = Column(
+        String,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    secrets_data = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    # Relationships
+    user = relationship("UserModel", back_populates="skill_secrets")
 
 
 class MultiAgentConversationMessageModel(Base):
@@ -422,7 +501,7 @@ class MultiAgentConversationMessageModel(Base):
 
     # Relationships
     conversation = relationship("ConversationModel", back_populates="messages")
-    participant = relationship("UserModel")
+    participant = relationship("UserModel", back_populates="agent_messages")
 
     # Indexes for efficient queries
     __table_args__ = (

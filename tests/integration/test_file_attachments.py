@@ -76,16 +76,14 @@ class TestDocumentAttachmentFlow:
     @pytest.fixture
     def temp_dirs(self):
         """Create temporary directories for file storage."""
-        temp_base = tempfile.mkdtemp()
         work_base = tempfile.mkdtemp()
-        yield temp_base, work_base
-        shutil.rmtree(temp_base, ignore_errors=True)
+        yield work_base
         shutil.rmtree(work_base, ignore_errors=True)
 
     @pytest.fixture
     def config(self, temp_dirs):
         """Create test configuration with file attachment settings."""
-        temp_base, work_base = temp_dirs
+        work_base = temp_dirs
         return MagicMock(
             spec=AgentConfig,
             model_provider=ModelProvider.BEDROCK,
@@ -99,7 +97,6 @@ class TestDocumentAttachmentFlow:
                 ".py", ".js", ".ts", ".html", ".css",
                 ".png", ".jpg", ".jpeg", ".gif", ".webp",
             ],
-            temp_files_base_dir=temp_base,
             working_folder_base_dir=work_base,
         )
 
@@ -286,16 +283,14 @@ class TestPhotoAttachmentFlow:
     @pytest.fixture
     def temp_dirs(self):
         """Create temporary directories for file storage."""
-        temp_base = tempfile.mkdtemp()
         work_base = tempfile.mkdtemp()
-        yield temp_base, work_base
-        shutil.rmtree(temp_base, ignore_errors=True)
+        yield work_base
         shutil.rmtree(work_base, ignore_errors=True)
 
     @pytest.fixture
     def config(self, temp_dirs):
         """Create test configuration."""
-        temp_base, work_base = temp_dirs
+        work_base = temp_dirs
         return MagicMock(
             spec=AgentConfig,
             enable_file_attachments=True,
@@ -304,7 +299,6 @@ class TestPhotoAttachmentFlow:
             allowed_file_extensions=[
                 ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
             ],
-            temp_files_base_dir=temp_base,
             working_folder_base_dir=work_base,
             vision_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
         )
@@ -468,23 +462,20 @@ class TestFileCleanup:
     @pytest.fixture
     def temp_dirs(self):
         """Create temporary directories for file storage."""
-        temp_base = tempfile.mkdtemp()
         work_base = tempfile.mkdtemp()
-        yield temp_base, work_base
-        shutil.rmtree(temp_base, ignore_errors=True)
+        yield work_base
         shutil.rmtree(work_base, ignore_errors=True)
 
     @pytest.fixture
     def config(self, temp_dirs):
         """Create test configuration."""
-        temp_base, work_base = temp_dirs
+        work_base = temp_dirs
         return MagicMock(
             spec=AgentConfig,
             enable_file_attachments=True,
             max_file_size_mb=20,
             file_retention_hours=24,
             allowed_file_extensions=[".txt", ".pdf", ".png", ".jpg"],
-            temp_files_base_dir=temp_base,
             working_folder_base_dir=work_base,
         )
 

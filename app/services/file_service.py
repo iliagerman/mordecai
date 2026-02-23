@@ -88,9 +88,7 @@ class FileService:
             config: Application configuration with file settings.
         """
         self.config = config
-        self._temp_base = Path(config.temp_files_base_dir)
         self._work_base = Path(config.working_folder_base_dir)
-        self._temp_base.mkdir(parents=True, exist_ok=True)
         self._work_base.mkdir(parents=True, exist_ok=True)
 
     def validate_file(
@@ -251,6 +249,9 @@ class FileService:
     def get_user_temp_dir(self, user_id: str) -> Path:
         """Get temporary directory for user's downloaded files.
 
+        Temp files live inside the user's workspace at
+        ``workspace/<user_id>/temp/``.
+
         Creates the directory if it doesn't exist.
 
         Args:
@@ -263,7 +264,7 @@ class FileService:
             - 1.2: Store files in user-specific directories
             - 9.3: Store files in isolated user-specific directories
         """
-        user_dir = self._temp_base / user_id
+        user_dir = self._work_base / user_id / "temp"
         user_dir.mkdir(parents=True, exist_ok=True)
         return user_dir
 
@@ -298,6 +299,10 @@ class FileService:
         user_dir = self._work_base / user_id
         if user_dir.exists():
             for item in user_dir.iterdir():
+                # Preserve the scratchpad — it contains personality files and
+                # short-term memory that must survive session resets.
+                if item.name == "scratchpad":
+                    continue
                 if item.is_file():
                     item.unlink()
                 elif item.is_dir():
@@ -402,23 +407,30 @@ class FileService:
                     logger.debug("Failed to delete stale file under %s: %s", label, item)
 
             # Clean per-user directories:
-            # 1. Delete whole dir if it hasn't changed for > max_age (faster cleanup)
-            # 2. Otherwise, clean individual old files within the directory
+            # 1. Skip the scratchpad/ subdirectory (persistent personality/memory data)
+            # 2. Delete whole dir if it hasn't changed for > max_age (faster cleanup)
+            # 3. Otherwise, clean individual old files within the directory
             for user_dir in base.iterdir():
                 if not user_dir.is_dir():
                     continue
 
+                # Never delete the entire user dir if it contains a scratchpad
+                has_scratchpad = (user_dir / "scratchpad").is_dir()
+
                 try:
                     newest_mtime = _newest_mtime_in_tree(user_dir)
                     age = current_time - newest_mtime
-                    if age > max_age_seconds:
-                        # Entire directory is old, delete it all at once
+                    if age > max_age_seconds and not has_scratchpad:
+                        # Entire directory is old and has no scratchpad, delete it all
                         files_removed = _count_files_in_tree(user_dir)
                         shutil.rmtree(user_dir, ignore_errors=False)
                         deleted_count += files_removed
                     else:
-                        # Directory has recent files, but still clean individual old files
+                        # Clean individual old files, skipping scratchpad/
                         for root, dirs, files in os.walk(user_dir):
+                            # Skip the scratchpad directory entirely
+                            if "scratchpad" in dirs:
+                                dirs.remove("scratchpad")
                             for name in files:
                                 try:
                                     file_path = Path(root) / name
@@ -430,21 +442,17 @@ class FileService:
                                     logger.debug(
                                         "Failed to delete old file in %s: %s", label, file_path
                                     )
-                            # Don't traverse into nested user directories to avoid double-cleanup
-                            dirs.clear()
                 except Exception:
                     logger.debug("Failed to cleanup %s dir: %s", label, user_dir)
 
             return deleted_count
 
-        _cleanup_base_dir(self._temp_base, label="temp")
         _cleanup_base_dir(self._work_base, label="workspace")
 
         logger.info(
-            "Cleanup: deleted %d files older than %d hours (temp=%s workspace=%s)",
+            "Cleanup: deleted %d files older than %d hours (workspace=%s)",
             deleted_count,
             max_age_hours,
-            str(self._temp_base),
             str(self._work_base),
         )
 

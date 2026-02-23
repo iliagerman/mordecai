@@ -105,8 +105,8 @@ class TestCommandType:
         assert CommandType.MESSAGE == "message"
 
     def test_all_members(self):
-        """CommandType should have exactly 8 members."""
-        assert len(CommandType) == 8
+        """CommandType should have exactly 9 members."""
+        assert len(CommandType) == 9
         assert set(CommandType) == {
             CommandType.NEW,
             CommandType.LOGS,
@@ -116,6 +116,7 @@ class TestCommandType:
             CommandType.FORGET_DELETE,
             CommandType.HELP,
             CommandType.MESSAGE,
+            CommandType.CONVERSATION,
         }
 
 

@@ -8,10 +8,8 @@ services:
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
 
     # Ensure HOME is writable when running as a numeric UID without an /etc/passwd entry.
-    # Also configure temp_files to use the writable workspace mount (not /app/temp_files).
     environment:
       HOME: /app/workspace
-      AGENT_TEMP_FILES_BASE_DIR: /app/workspace/.temp
       # Make the sidecar-provisioned `vibe-kanban` wrapper available in PATH (use-case specific).
       # We set a full PATH to avoid relying on host-side ${PATH} expansion.
       PATH: /opt/vk-cli/bin:/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

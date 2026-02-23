@@ -140,7 +140,7 @@ uv run uvicorn app.main:get_fastapi_app --host 0.0.0.0 --port 8000 --factory
 
 - `scratchpad/` is **long-lived** and is where the agent stores per-user notes/memory artifacts.
 - `workspace/` is **ephemeral** and is only for artifacts (images/scripts/etc.) that are meant to be returned to the user.
-  - The backend runs an hourly cleanup job that deletes stale `workspace/<USER_ID>/` and `temp_files/<USER_ID>/` directories when they have not changed for 24 hours.
+  - The backend runs an hourly cleanup job that deletes stale `workspace/<USER_ID>/` directories when they have not changed for 24 hours.
 
 ### Docker Deployment
 
@@ -277,8 +277,7 @@ The platform supports receiving file attachments (documents and images) from use
 | `max_file_size_mb`        | Maximum file size in MB                 | `20`           |
 | `file_retention_hours`    | Hours before files are auto-deleted     | `24`           |
 | `allowed_file_extensions` | List of allowed file extensions         | See below      |
-| `temp_files_base_dir`     | Base directory for temporary files      | `./temp_files` |
-| `working_folder_base_dir` | Base directory for user workspaces      | `./workspaces` |
+| `working_folder_base_dir` | Base directory for user workspaces      | `./workspace`  |
 | `vision_model_id`         | Model ID for image analysis (optional)  | -              |
 
 #### Default Allowed Extensions

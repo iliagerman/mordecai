@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.config import AgentConfig
+from app.config import AgentConfig, get_user_scratchpad_path
 from app.services.agent_service import AgentService
 from app.tools.short_term_memory_vault import append_memory, short_term_memory_path
 
@@ -12,14 +12,14 @@ def _make_minimal_config(tmp_path):
     cfg = MagicMock(spec=AgentConfig)
     cfg.skills_base_dir = str(tmp_path / "skills")
     cfg.shared_skills_dir = str(tmp_path / "shared_skills")
-    cfg.obsidian_vault_root = str(tmp_path / "vault")
+    cfg.obsidian_vault_root = None
     cfg.personality_max_chars = 20_000
     cfg.personality_enabled = False
     cfg.telegram_bot_token = "test-token"
     cfg.timezone = "UTC"
     cfg.memory_enabled = False
     cfg.agent_commands = []
-    cfg.working_folder_base_dir = str(tmp_path / "workspaces")
+    cfg.working_folder_base_dir = str(tmp_path / "workspace")
     cfg.extraction_timeout_seconds = 1
     cfg.model_provider = "bedrock"
     cfg.bedrock_model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
@@ -46,8 +46,9 @@ async def test_consolidate_stm_clears_file_on_success(tmp_path):
         extraction_service=extraction_service,
     )
 
-    append_memory(cfg.obsidian_vault_root, "u1", kind="fact", text="User likes cats")
-    stm_path = short_term_memory_path(cfg.obsidian_vault_root, "u1")
+    scratchpad_dir = str(get_user_scratchpad_path(cfg, "u1"))
+    append_memory(scratchpad_dir, kind="fact", text="User likes cats")
+    stm_path = short_term_memory_path(scratchpad_dir)
     assert stm_path.exists()
 
     await svc.consolidate_short_term_memories_daily()
@@ -82,8 +83,9 @@ async def test_consolidate_stm_keeps_file_on_failure(tmp_path):
         extraction_service=extraction_service,
     )
 
-    append_memory(cfg.obsidian_vault_root, "u1", kind="fact", text="User likes turtles")
-    stm_path = short_term_memory_path(cfg.obsidian_vault_root, "u1")
+    scratchpad_dir = str(get_user_scratchpad_path(cfg, "u1"))
+    append_memory(scratchpad_dir, kind="fact", text="User likes turtles")
+    stm_path = short_term_memory_path(scratchpad_dir)
     assert stm_path.exists()
 
     await svc.consolidate_short_term_memories_daily()

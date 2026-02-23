@@ -44,6 +44,7 @@ def skill_service(temp_skills_dir):
         telegram_bot_token="test-token",
         skills_base_dir=temp_skills_dir,
         session_storage_dir=temp_skills_dir,
+        working_folder_base_dir=temp_skills_dir + "/workspace",
     )
     return SkillService(config)
 

@@ -834,16 +834,15 @@ class MemoryService:
         The merged result lists are ordered with short-term items first.
         """
 
-        vault_root = getattr(self.config, "obsidian_vault_root", None)
-        if not vault_root:
-            return long_term
-
         try:
+            from app.config import get_user_scratchpad_path
             from app.tools.short_term_memory_vault import read_parsed
+
+            scratchpad_dir = str(get_user_scratchpad_path(self.config, user_id, create=False))
         except Exception:
             return long_term
 
-        stm = read_parsed(vault_root, user_id)
+        stm = read_parsed(scratchpad_dir)
         if not stm:
             return long_term
 
@@ -1172,30 +1171,29 @@ class MemoryService:
             )
 
         # ------------------------------------------------------------------
-        # Best-effort short-term memory write (Obsidian vault)
+        # Best-effort short-term memory write
         # ------------------------------------------------------------------
         if write_to_short_term:
-            vault_root = getattr(self.config, "obsidian_vault_root", None)
-            if vault_root:
-                try:
-                    from app.tools.short_term_memory_vault import append_memory
+            try:
+                from app.config import get_user_scratchpad_path
+                from app.tools.short_term_memory_vault import append_memory
 
-                    append_memory(
-                        vault_root,
-                        user_id,
-                        kind=short_term_kind or "fact",
-                        text=fact,
-                        max_chars=getattr(self.config, "personality_max_chars", 20_000),
-                    )
-                    stm_ok = True
-                except Exception as e:
-                    # Don't fail if STM append fails; just report False if we
-                    # also failed to store LTM.
-                    logger.debug(
-                        "Failed to append short-term memory for user %s: %s",
-                        user_id,
-                        e,
-                    )
+                scratchpad_dir = str(get_user_scratchpad_path(self.config, user_id))
+                append_memory(
+                    scratchpad_dir,
+                    kind=short_term_kind or "fact",
+                    text=fact,
+                    max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                )
+                stm_ok = True
+            except Exception as e:
+                # Don't fail if STM append fails; just report False if we
+                # also failed to store LTM.
+                logger.debug(
+                    "Failed to append short-term memory for user %s: %s",
+                    user_id,
+                    e,
+                )
 
         return bool(ltm_ok or stm_ok)
 
@@ -1258,27 +1256,26 @@ class MemoryService:
                 e,
             )
 
-        # Short-term memory note write (Obsidian) is best-effort.
+        # Short-term memory note write is best-effort.
         if write_to_short_term:
-            vault_root = getattr(self.config, "obsidian_vault_root", None)
-            if vault_root:
-                try:
-                    from app.tools.short_term_memory_vault import append_memory
+            try:
+                from app.config import get_user_scratchpad_path
+                from app.tools.short_term_memory_vault import append_memory
 
-                    append_memory(
-                        vault_root,
-                        user_id,
-                        kind="preference",
-                        text=preference,
-                        max_chars=getattr(self.config, "personality_max_chars", 20_000),
-                    )
-                    stm_ok = True
-                except Exception as e:
-                    logger.debug(
-                        "Failed to append short-term preference for user %s: %s",
-                        user_id,
-                        e,
-                    )
+                scratchpad_dir = str(get_user_scratchpad_path(self.config, user_id))
+                append_memory(
+                    scratchpad_dir,
+                    kind="preference",
+                    text=preference,
+                    max_chars=getattr(self.config, "personality_max_chars", 20_000),
+                )
+                stm_ok = True
+            except Exception as e:
+                logger.debug(
+                    "Failed to append short-term preference for user %s: %s",
+                    user_id,
+                    e,
+                )
 
         return bool(ltm_ok or stm_ok)
 

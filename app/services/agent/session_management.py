@@ -239,14 +239,13 @@ class SessionLifecycleManager:
                     e,
                 )
 
-        # If we wrote a session summary into Obsidian STM, snapshot it into an
-        # in-memory cache for immediate injection into the next session prompt,
-        # then clear stm.md on disk. This implements an explicit "handoff" model:
-        # the prior session's STM is preserved for the next prompt, but the
-        # scratchpad is reset for the new session.
-        vault_root = getattr(self.config, "obsidian_vault_root", None)
-        if vault_root and summary_text:
+        # Snapshot STM into an in-memory cache for immediate injection into the
+        # next session prompt, then clear stm.md on disk.  This implements an
+        # explicit "handoff" model: the prior session's STM is preserved for the
+        # next prompt, but the scratchpad is reset for the new session.
+        if summary_text:
             try:
+                from app.config import get_user_scratchpad_path
                 from app.tools.short_term_memory_vault import (
                     append_session_summary,
                     read_raw_text,
@@ -256,11 +255,13 @@ class SessionLifecycleManager:
                     clear as clear_stm,
                 )
 
+                scratchpad_dir = str(get_user_scratchpad_path(self.config, user_id))
+
                 # Make sure the session summary is appended to STM even if the
                 # extraction service couldn't write it (e.g., due to config
                 # differences) or long-term memory is unavailable.
                 try:
-                    stm_path = short_term_memory_path(vault_root, user_id)
+                    stm_path = short_term_memory_path(scratchpad_dir)
                     already_has_block = False
                     if stm_path.exists() and stm_path.is_file():
                         try:
@@ -271,14 +272,13 @@ class SessionLifecycleManager:
 
                     if not already_has_block:
                         append_session_summary(
-                            vault_root,
-                            user_id,
+                            scratchpad_dir,
                             session_id,
                             summary_text,
                             max_chars=getattr(self.config, "personality_max_chars", 20_000),
                         )
                 except Exception:
-                    # Never fail /new due to Obsidian write issues.
+                    # Never fail /new due to scratchpad write issues.
                     pass
 
                 # Snapshot STM into an in-memory handoff cache for the next prompt.
@@ -287,17 +287,13 @@ class SessionLifecycleManager:
                 stm_text: str | None = None
                 try:
                     stm_text = read_raw_text(
-                        vault_root,
-                        user_id,
+                        scratchpad_dir,
                         max_chars=getattr(self.config, "personality_max_chars", 20_000),
                     )
                 except Exception:
                     stm_text = None
 
                 if not stm_text:
-                    # Fallback: construct the minimal expected handoff block so
-                    # the next session prompt still includes the prior summary.
-                    # (We don't include created_at here; it's not required for prompt injection.)
                     stm_text = (
                         "# STM\n\n"
                         f"## Session summary: {session_id}\n\n"
@@ -307,14 +303,15 @@ class SessionLifecycleManager:
                 if stm_text:
                     self._obsidian_stm_cache[user_id] = stm_text
             except Exception:
-                # Never fail /new due to Obsidian handling issues.
+                # Never fail /new due to scratchpad handling issues.
                 pass
             finally:
                 # Clear the on-disk scratchpad after we snapshot it.
                 try:
                     from app.tools.short_term_memory_vault import clear as clear_stm
 
-                    clear_stm(vault_root, user_id)
+                    scratchpad_dir = str(get_user_scratchpad_path(self.config, user_id, create=False))
+                    clear_stm(scratchpad_dir)
                 except Exception:
                     pass
 
@@ -455,15 +452,15 @@ class SessionLifecycleManager:
                     user_id,
                 )
 
-            # Snapshot Obsidian STM into cache for the next session and clear it.
-            vault_root = getattr(self.config, "obsidian_vault_root", None)
-            if vault_root and summary_text:
+            # Snapshot STM into cache for the next session and clear it.
+            if summary_text:
                 try:
+                    from app.config import get_user_scratchpad_path
                     from app.tools.short_term_memory_vault import read_raw_text
 
+                    scratchpad_dir = str(get_user_scratchpad_path(self.config, user_id, create=False))
                     stm_text = read_raw_text(
-                        vault_root,
-                        user_id,
+                        scratchpad_dir,
                         max_chars=getattr(self.config, "personality_max_chars", 20_000),
                     )
                     if stm_text:
@@ -472,9 +469,11 @@ class SessionLifecycleManager:
                     pass
 
                 try:
+                    from app.config import get_user_scratchpad_path
                     from app.tools.short_term_memory_vault import clear as clear_stm
 
-                    clear_stm(vault_root, user_id)
+                    scratchpad_dir = str(get_user_scratchpad_path(self.config, user_id, create=False))
+                    clear_stm(scratchpad_dir)
                 except Exception:
                     pass
         finally:
@@ -484,42 +483,43 @@ class SessionLifecycleManager:
             self._extraction_lock.release(user_id)
 
     async def consolidate_short_term_memories_daily(self) -> None:
-        """Internal daily job: promote Obsidian short-term memories into LTM.
+        """Internal daily job: promote short-term memories into LTM.
 
         Source of truth for short-term memory:
-                    <vault>/users/<USER_ID>/stm.md
+            workspace/<USER_ID>/scratchpad/stm.md
 
         This method is intended to be called by a *system* cron task that is
         registered in code (not DB-backed), so it is not user-editable.
 
         Behavior:
-        - For each user folder under <vault>/users/* (excluding 'default'):
-                    - If stm.md exists and is non-empty:
-            - Extract important facts/preferences into long-term memory.
-            - Optionally store a concise summary.
-                        - Delete stm.md to start fresh.
+        - For each user whose workspace contains a scratchpad/:
+            - If stm.md exists and is non-empty:
+                - Extract important facts/preferences into long-term memory.
+                - Optionally store a concise summary.
+                - Delete stm.md to start fresh.
         - If extraction fails for a user, we DO NOT delete the file.
         """
-
-        vault_root = getattr(self.config, "obsidian_vault_root", None)
-        if not vault_root:
-            logger.debug("Short-term memory consolidation skipped: vault not configured")
-            return
 
         if self.memory_service is None:
             logger.debug("Short-term memory consolidation skipped: memory service unavailable")
             return
 
         try:
+            from app.config import get_user_scratchpad_path
             from app.tools.short_term_memory_vault import clear, list_user_ids, read_raw_text
         except Exception as e:
             logger.debug("Short-term memory consolidation skipped: %s", e)
             return
 
+        workspace_base = getattr(self.config, "working_folder_base_dir", None)
+        if not workspace_base:
+            logger.debug("Short-term memory consolidation skipped: workspace not configured")
+            return
+
         day_stamp = datetime.utcnow().strftime("%Y%m%d")
         session_id = f"stm_daily_{day_stamp}"
 
-        user_ids = list_user_ids(vault_root)
+        user_ids = list_user_ids(workspace_base)
         if not user_ids:
             return
 
@@ -530,9 +530,9 @@ class SessionLifecycleManager:
 
         for user_id in user_ids:
             try:
+                scratchpad_dir = str(get_user_scratchpad_path(self.config, user_id, create=False))
                 raw = read_raw_text(
-                    vault_root,
-                    user_id,
+                    scratchpad_dir,
                     max_chars=getattr(self.config, "personality_max_chars", 20_000),
                 )
                 if not raw:
@@ -579,7 +579,6 @@ class SessionLifecycleManager:
                             )
                 else:
                     # Degraded mode: store a snapshot as a fact.
-                    # NOTE: We do not write this back to short-term.
                     promoted_ok = self.memory_service.store_fact(
                         user_id=user_id,
                         fact=f"Short-term memories snapshot ({session_id}):\n{raw}",
@@ -588,7 +587,7 @@ class SessionLifecycleManager:
                     )
 
                 if promoted_ok:
-                    if not clear(vault_root, user_id):
+                    if not clear(scratchpad_dir):
                         logger.warning(
                             "Failed to clear short-term memories for user %s",
                             user_id,

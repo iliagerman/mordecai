@@ -29,7 +29,7 @@ def test_shell_tool_executes_real_command_without_hanging(tmp_path, monkeypatch)
     secrets_path = tmp_path / "secrets.yml"
     secrets_path.write_text("skills: {}\n", encoding="utf-8")
 
-    cfg = AgentConfig(telegram_bot_token="test-token", skills_base_dir=str(tmp_path / "skills"))
+    cfg = AgentConfig(telegram_bot_token="test-token", skills_base_dir=str(tmp_path / "skills"), working_folder_base_dir=str(tmp_path / "workspace"))
     shell_env_module.set_shell_env_context(
         user_id="u_real_shell", secrets_path=secrets_path, config=cfg
     )

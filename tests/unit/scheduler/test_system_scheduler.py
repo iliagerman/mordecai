@@ -21,19 +21,16 @@ from app.services.file_service import FileService
 @pytest.fixture
 def temp_dirs():
     """Create temporary directories for testing."""
-    with tempfile.TemporaryDirectory() as temp_base:
-        with tempfile.TemporaryDirectory() as work_base:
-            yield temp_base, work_base
+    with tempfile.TemporaryDirectory() as work_base:
+        yield work_base
 
 
 @pytest.fixture
 def config(temp_dirs):
     """Create test configuration with temp directories."""
-    temp_base, work_base = temp_dirs
     return AgentConfig(
         telegram_bot_token="test_token",
-        temp_files_base_dir=temp_base,
-        working_folder_base_dir=work_base,
+        working_folder_base_dir=temp_dirs,
         file_retention_hours=24,
     )
 
@@ -67,11 +64,9 @@ class TestFileCleanupTask:
         self, temp_dirs
     ):
         """Test that cleanup uses file_retention_hours from config."""
-        temp_base, work_base = temp_dirs
         config = AgentConfig(
             telegram_bot_token="test_token",
-            temp_files_base_dir=temp_base,
-            working_folder_base_dir=work_base,
+            working_folder_base_dir=temp_dirs,
             file_retention_hours=48,  # Custom retention
         )
         file_service = FileService(config)

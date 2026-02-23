@@ -18,7 +18,7 @@ import uuid
 
 import pytest
 
-from app.config import AgentConfig
+from app.config import AgentConfig, get_user_scratchpad_path
 from app.services.agent_service import AgentService
 from app.services.memory_extraction_service import MemoryExtractionService
 from app.services.memory_service import MemoryService
@@ -46,8 +46,6 @@ async def test_obsidian_stm_handoff_on_new_session(tmp_path):
             "session_storage_dir": str(tmp_path / "sessions"),
             "skills_base_dir": str(tmp_path / "skills"),
             "working_folder_base_dir": str(tmp_path / "work"),
-            "temp_files_base_dir": str(tmp_path / "tmp"),
-            "obsidian_vault_root": str(tmp_path / "vault"),
             "memory_enabled": True,
         }
     )
@@ -72,9 +70,9 @@ async def test_obsidian_stm_handoff_on_new_session(tmp_path):
     user_id = f"e2e_stm_{uuid.uuid4()}"
 
     print(
-        "[e2e] Setup: isolated vault + user\n"
+        "[e2e] Setup: isolated workspace + user\n"
         f"      user_id={user_id}\n"
-        f"      vault_root={cfg.obsidian_vault_root}"
+        f"      working_folder_base_dir={cfg.working_folder_base_dir}"
     )
 
     # Create a session and at least 2 messages so summarize_and_store runs.
@@ -89,19 +87,19 @@ async def test_obsidian_stm_handoff_on_new_session(tmp_path):
     print("[e2e] Step 2/4: Trigger /new (AgentService.new_session)")
     await agent_service.new_session(user_id)
 
-    assert cfg.obsidian_vault_root is not None
+    scratchpad_dir = str(get_user_scratchpad_path(cfg, user_id, create=False))
 
     print("[e2e] Step 3/4: Assert per-session note exists")
 
     # Per-session conversation summary note should exist.
-    note_path = conversation_summary_path(cfg.obsidian_vault_root, user_id, old_session_id)
+    note_path = conversation_summary_path(scratchpad_dir, old_session_id)
     assert note_path.exists(), f"Expected session note at {note_path}"
 
     print(f"[e2e] ✅ Session note exists: {note_path}")
 
     # STM should be cleared on disk after handoff.
     print("[e2e] Step 4/4: Assert STM is cleared on disk but injected via prompt cache")
-    stm_path = short_term_memory_path(cfg.obsidian_vault_root, user_id)
+    stm_path = short_term_memory_path(scratchpad_dir)
     assert not stm_path.exists(), f"Expected STM to be cleared after handoff: {stm_path}"
 
     # The new session prompt must include the previous session's summary block.

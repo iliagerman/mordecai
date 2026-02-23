@@ -20,7 +20,7 @@ def test_shell_env_context_sets_skills_base_dir_env(tmp_path: Path, monkeypatch)
     secrets_path.write_text("skills: {}\n", encoding="utf-8")
 
     user_id = "u_base"
-    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"), working_folder_base_dir=str(tmp_path / "workspace"))
 
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
@@ -68,6 +68,7 @@ def test_shell_inlines_mordecai_skills_base_dir_from_env_template(tmp_path: Path
 
 def test_shell_sees_new_secret_without_restart(tmp_path: Path, monkeypatch):
     """Validate hot-reload: after saving secrets, next shell call sees new env without restart."""
+    from unittest.mock import AsyncMock, MagicMock
 
     monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
 
@@ -76,10 +77,15 @@ def test_shell_sees_new_secret_without_restart(tmp_path: Path, monkeypatch):
 
     user_id = "u1"
 
-    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"), working_folder_base_dir=str(tmp_path / "workspace"))
+
+    # Provide a mock DAO so set_skill_env_vars doesn't bail out.
+    mock_dao = MagicMock()
+    mock_dao.get_secrets_data = AsyncMock(return_value={})
+    mock_dao.upsert = AsyncMock()
 
     skill_secrets_module.set_skill_secrets_context(
-        user_id=user_id, secrets_path=secrets_path, config=cfg
+        user_id=user_id, config=cfg, dao=mock_dao,
     )
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
@@ -121,7 +127,7 @@ def test_shell_calls_refresh_every_invocation_and_before_base_shell(tmp_path: Pa
 
     user_id = "u_refresh"
     monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
-    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"), working_folder_base_dir=str(tmp_path / "workspace"))
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
     # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
@@ -173,7 +179,7 @@ def test_shell_hot_reloads_from_updated_secrets_file_without_restart(tmp_path: P
     user_id = "u_disk"
 
     monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
-    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"), working_folder_base_dir=str(tmp_path / "workspace"))
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
     # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
@@ -231,7 +237,7 @@ def test_shell_applies_default_timeout_for_himalaya_commands(tmp_path: Path, mon
 
     user_id = "u_timeout"
     monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
-    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"), working_folder_base_dir=str(tmp_path / "workspace"))
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
     # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
@@ -268,7 +274,7 @@ def test_shell_normalizes_backslash_escaped_quotes_for_himalaya(tmp_path: Path, 
 
     user_id = "u_himalaya_quote"
     monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
-    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"), working_folder_base_dir=str(tmp_path / "workspace"))
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
     # Mock _stdin_is_tty to avoid triggering safe_runner mode in pytest environment
@@ -307,7 +313,7 @@ def test_shell_forces_non_interactive_when_stdin_not_tty(tmp_path: Path, monkeyp
 
     user_id = "u_non_tty"
     monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
-    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"))
+    cfg = AgentConfig(skills_base_dir=str(tmp_path / "skills"), working_folder_base_dir=str(tmp_path / "workspace"))
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
 
     # Simulate a non-interactive/headless environment.
@@ -334,6 +340,7 @@ def test_shell_clamps_timeout_to_configured_max(tmp_path: Path, monkeypatch):
 
     cfg = AgentConfig(
         skills_base_dir=str(tmp_path / "skills"),
+        working_folder_base_dir=str(tmp_path / "workspace"),
         shell_max_timeout_seconds=7,
         shell_progress_heartbeat_seconds=60,
     )
@@ -364,6 +371,7 @@ def test_shell_emits_progress_heartbeats_during_long_runs(tmp_path: Path, monkey
 
     cfg = AgentConfig(
         skills_base_dir=str(tmp_path / "skills"),
+        working_folder_base_dir=str(tmp_path / "workspace"),
         shell_progress_heartbeat_seconds=1,
     )
     shell_env_module.set_shell_env_context(user_id=user_id, secrets_path=secrets_path, config=cfg)
@@ -403,6 +411,7 @@ def test_shell_stream_output_forces_safe_runner(tmp_path: Path, monkeypatch):
 
     cfg = AgentConfig(
         skills_base_dir=str(tmp_path / "skills"),
+        working_folder_base_dir=str(tmp_path / "workspace"),
         shell_use_safe_runner=False,
         shell_stream_output_enabled=True,
     )

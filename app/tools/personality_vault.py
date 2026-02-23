@@ -1,15 +1,15 @@
 """Constrained tools for reading/writing per-user personality files under the scratchpad.
 
 These tools are designed to safely edit ONLY:
-- users/<TELEGRAM_ID>/soul.md
-- users/<TELEGRAM_ID>/id.md
+- workspace/<USER_ID>/scratchpad/soul.md
+- workspace/<USER_ID>/scratchpad/id.md
 
-…and to read built-in defaults from the repo under:
+...and to read built-in defaults from the repo under:
 - instructions/soul.md
 - instructions/id.md
 
-The root is configured via AgentConfig.obsidian_vault_root and is expected to point at the
-repo-local scratchpad.
+The scratchpad directory is resolved via ``get_user_scratchpad_path`` and passed
+in via ``set_personality_context``.
 """
 
 from __future__ import annotations
@@ -32,37 +32,36 @@ PersonalityDocKind = Literal["soul", "id"]
 PersonalityDocSource = Literal["auto", "user", "default"]
 
 
-_vault_root_raw: str | None = None
+_scratchpad_dir: str | None = None
 _current_user_id: str | None = None
 _max_chars: int = 20_000
 
 
 def set_personality_context(
-    vault_root: str | None,
+    scratchpad_dir: str | None,
     user_id: str,
     *,
     max_chars: int = 20_000,
 ) -> None:
-    global _vault_root_raw, _current_user_id, _max_chars
-    _vault_root_raw = vault_root
+    global _scratchpad_dir, _current_user_id, _max_chars
+    _scratchpad_dir = scratchpad_dir
     _current_user_id = user_id
     _max_chars = max_chars
 
 
 def _require_context() -> tuple[bool, str]:
-    if not _vault_root_raw:
+    if not _scratchpad_dir:
         return (
             False,
-            "Scratchpad root is not configured (obsidian_vault_root).",
+            "Scratchpad directory is not configured.",
         )
     if not _current_user_id:
         return False, "User context not available."
     return True, ""
 
 
-def _vault_root() -> Path:
-    # Expand ~ for macOS paths.
-    return Path(_vault_root_raw).expanduser().resolve()  # type: ignore[arg-type]
+def _resolve_scratchpad() -> Path:
+    return Path(_scratchpad_dir).expanduser().resolve()  # type: ignore[arg-type]
 
 
 def _filename(kind: PersonalityDocKind) -> str:
@@ -92,14 +91,14 @@ def _safe_under_root(root: Path, candidate: Path) -> Path:
     try:
         resolved.relative_to(root)
     except Exception as e:
-        raise ValueError(f"Path escapes vault root: {resolved}") from e
+        raise ValueError(f"Path escapes scratchpad root: {resolved}") from e
     return resolved
 
 
 def _paths_for(kind: PersonalityDocKind) -> dict[str, Path]:
-    root = _vault_root()
+    root = _resolve_scratchpad()
     fname = _filename(kind)
-    user_path = root / "users" / _current_user_id / fname  # type: ignore[arg-type]
+    user_path = root / fname
     return {
         "user": _safe_under_root(root, user_path),
         "default": _repo_default_path(kind),
@@ -124,7 +123,7 @@ def _read_text(path: Path) -> str | None:
 @tool(
     name="personality_read",
     description=(
-        "Read the agent's personality/identity file from the configured Obsidian vault. "
+        "Read the agent's personality/identity file from the configured scratchpad. "
         "Use kind='soul' to read personality instructions or kind='id' to read identity metadata. "
         "Use source='auto' to prefer the per-user file and fallback to default."
     ),
@@ -161,7 +160,7 @@ def personality_read(
     name="personality_write",
     description=(
         "Write/update the per-user personality/identity file under the scratchpad. "
-        "This ONLY writes to users/<TELEGRAM_ID>/{soul,id}.md. "
+        "This ONLY writes to workspace/<USER_ID>/scratchpad/{soul,id}.md. "
         "Use this when the user asks to modify the agent's personality (soul) or identity (id)."
     ),
 )
@@ -201,7 +200,7 @@ def personality_write(
     name="personality_reset_to_default",
     description=(
         "Reset the per-user personality/identity file to the built-in default version (instructions/{soul,id}.md). "
-        "Copies the repo default into users/<TELEGRAM_ID>/*.md under the scratchpad."
+        "Copies the repo default into the user's scratchpad."
     ),
 )
 def personality_reset_to_default(kind: PersonalityDocKind) -> str:

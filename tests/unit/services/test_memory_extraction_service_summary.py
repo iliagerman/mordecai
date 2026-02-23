@@ -6,7 +6,6 @@ MemoryExtractionService.summarize_and_store.
 This file focuses on summary storage behavior.
 """
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -28,9 +27,10 @@ def mock_config():
 
 
 @pytest.mark.asyncio
-async def test_summarize_and_store_stores_summary_for_conversation(mock_config):
+async def test_summarize_and_store_stores_summary_for_conversation(tmp_path, mock_config):
     from app.services.memory_extraction_service import MemoryExtractionService
 
+    mock_config.working_folder_base_dir = str(tmp_path / "workspace")
     memory_service = MagicMock()
 
     svc = MemoryExtractionService(config=mock_config, memory_service=memory_service)
@@ -62,10 +62,10 @@ async def test_summarize_and_store_stores_summary_for_conversation(mock_config):
 
 
 @pytest.mark.asyncio
-async def test_summarize_and_store_does_not_store_sensitive_summary(mock_config):
+async def test_summarize_and_store_does_not_store_sensitive_summary(tmp_path, mock_config):
     from app.services.memory_extraction_service import MemoryExtractionService
 
-    mock_config.obsidian_vault_root = None
+    mock_config.working_folder_base_dir = str(tmp_path / "workspace")
 
     memory_service = MagicMock()
 
@@ -92,8 +92,8 @@ async def test_summarize_and_store_does_not_store_sensitive_summary(mock_config)
 async def test_summarize_and_store_writes_obsidian_summary_note(tmp_path, mock_config):
     from app.services.memory_extraction_service import MemoryExtractionService
 
-    vault_root = tmp_path / "vault"
-    mock_config.obsidian_vault_root = str(vault_root)
+    workspace_base = tmp_path / "workspace"
+    mock_config.working_folder_base_dir = str(workspace_base)
     mock_config.personality_max_chars = 20_000
 
     memory_service = MagicMock()
@@ -116,7 +116,8 @@ async def test_summarize_and_store_writes_obsidian_summary_note(tmp_path, mock_c
 
     assert summary is not None
 
-    note_path = Path(mock_config.obsidian_vault_root) / "users" / "u1" / "conversations" / "s1.md"
+    scratchpad = workspace_base / "u1" / "scratchpad"
+    note_path = scratchpad / "conversations" / "s1.md"
     assert note_path.exists()
 
     content = note_path.read_text(encoding="utf-8")
@@ -124,7 +125,7 @@ async def test_summarize_and_store_writes_obsidian_summary_note(tmp_path, mock_c
     assert "session_id: s1" in content
     assert "Decision: Y" in content
 
-    stm_path = Path(mock_config.obsidian_vault_root) / "users" / "u1" / "stm.md"
+    stm_path = scratchpad / "stm.md"
     assert stm_path.exists()
     stm = stm_path.read_text(encoding="utf-8")
     assert "## Session summary: s1" in stm
@@ -138,8 +139,8 @@ async def test_summarize_and_store_does_not_write_obsidian_note_when_sensitive(
 ):
     from app.services.memory_extraction_service import MemoryExtractionService
 
-    vault_root = tmp_path / "vault"
-    mock_config.obsidian_vault_root = str(vault_root)
+    workspace_base = tmp_path / "workspace"
+    mock_config.working_folder_base_dir = str(workspace_base)
     mock_config.personality_max_chars = 20_000
 
     memory_service = MagicMock()
@@ -162,11 +163,9 @@ async def test_summarize_and_store_does_not_write_obsidian_note_when_sensitive(
     assert summary is None
     memory_service.store_fact.assert_not_called()
 
-    note_path = Path(mock_config.obsidian_vault_root) / "users" / "u1" / "conversations" / "s1.md"
+    scratchpad = workspace_base / "u1" / "scratchpad"
+    note_path = scratchpad / "conversations" / "s1.md"
     assert not note_path.exists()
 
-    stm_path = Path(mock_config.obsidian_vault_root) / "users" / "u1" / "stm.md"
-    assert not stm_path.exists()
-
-    stm_path = Path(mock_config.obsidian_vault_root) / "users" / "u1" / "stm.md"
+    stm_path = scratchpad / "stm.md"
     assert not stm_path.exists()

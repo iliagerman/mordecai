@@ -1,12 +1,12 @@
-"""Short-term memory storage under the repo-local scratchpad.
+"""Short-term memory storage under the per-user scratchpad.
 
 We store per-user short-term memories as a markdown note at:
-    users/<USER_ID>/stm.md
+    workspace/<USER_ID>/scratchpad/stm.md
 
-Where <USER_ID> is the same value as actor_id in AgentCore memory.
-
-This deployment intentionally does NOT maintain backward compatibility with
-older on-disk layouts. The source of truth is the `users/<USER_ID>/` folder.
+The caller is responsible for resolving the scratchpad directory
+(via ``get_user_scratchpad_path``).  Functions in this module accept
+a pre-resolved ``scratchpad_dir`` string rather than a raw vault root +
+user id.
 
 This module is intentionally *not* exposed as Strands tools.
 It is an internal system component used by:
@@ -14,7 +14,7 @@ It is an internal system component used by:
 - daily consolidation cron job
 
 Security/safety:
-- All filesystem operations are constrained under the configured vault root.
+- All filesystem operations are constrained under the configured scratchpad dir.
 - The daily consolidation cron is registered as a system task (not DB-backed),
     so it is not editable by users.
 """
@@ -28,16 +28,14 @@ from pathlib import Path
 
 DEFAULT_MAX_CHARS = 20_000
 
-
-USER_ROOT_DIRNAME = "users"
-
 STM_FILENAME = "stm.md"
 LEGACY_STM_FILENAME = "short_term_memories.md"
 
+SCRATCHPAD_SUBDIR = "scratchpad"
+
 
 def append_session_summary(
-    vault_root_raw: str,
-    user_id: str,
+    scratchpad_dir: str,
     session_id: str,
     summary: str,
     *,
@@ -59,7 +57,7 @@ def append_session_summary(
     if not body:
         raise ValueError("No summary text provided")
 
-    target = short_term_memory_path(vault_root_raw, user_id)
+    target = short_term_memory_path(scratchpad_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
@@ -101,8 +99,8 @@ class ShortTermMemories:
     raw_text: str
 
 
-def _vault_root(vault_root_raw: str) -> Path:
-    return Path(vault_root_raw).expanduser().resolve()
+def _resolve_dir(scratchpad_dir: str) -> Path:
+    return Path(scratchpad_dir).expanduser().resolve()
 
 
 def _safe_under_root(root: Path, candidate: Path) -> Path:
@@ -110,41 +108,36 @@ def _safe_under_root(root: Path, candidate: Path) -> Path:
     try:
         resolved.relative_to(root)
     except Exception as e:
-        raise ValueError(f"Path escapes vault root: {resolved}") from e
+        raise ValueError(f"Path escapes scratchpad root: {resolved}") from e
     return resolved
 
 
-def short_term_memory_path(vault_root_raw: str, user_id: str) -> Path:
-    root = _vault_root(vault_root_raw)
-    path = root / USER_ROOT_DIRNAME / user_id / STM_FILENAME
+def short_term_memory_path(scratchpad_dir: str) -> Path:
+    root = _resolve_dir(scratchpad_dir)
+    path = root / STM_FILENAME
     return _safe_under_root(root, path)
 
 
-def _legacy_short_term_memory_path(vault_root_raw: str, user_id: str) -> Path:
-    root = _vault_root(vault_root_raw)
-    # Legacy filename within the current folder layout.
-    path = root / USER_ROOT_DIRNAME / user_id / LEGACY_STM_FILENAME
+def _legacy_short_term_memory_path(scratchpad_dir: str) -> Path:
+    root = _resolve_dir(scratchpad_dir)
+    path = root / LEGACY_STM_FILENAME
     return _safe_under_root(root, path)
 
 
-def list_user_ids(vault_root_raw: str) -> list[str]:
-    """List user ids that exist under <vault>/users/*.
+def list_user_ids(workspace_base_dir: str) -> list[str]:
+    """List user ids whose workspace contains a scratchpad/ subdirectory.
 
+    Scans ``workspace/*`` and returns those with a ``scratchpad/`` child.
     Excludes the reserved folder 'default'.
     """
 
-    root = _vault_root(vault_root_raw)
-    users_dir = root / USER_ROOT_DIRNAME
-    try:
-        users_dir = _safe_under_root(root, users_dir)
-    except Exception:
-        return []
+    base = Path(workspace_base_dir).expanduser().resolve()
 
-    if not users_dir.exists() or not users_dir.is_dir():
+    if not base.exists() or not base.is_dir():
         return []
 
     user_ids: list[str] = []
-    for child in users_dir.iterdir():
+    for child in base.iterdir():
         if not child.is_dir():
             continue
         name = child.name
@@ -152,15 +145,15 @@ def list_user_ids(vault_root_raw: str) -> list[str]:
             continue
         if name.startswith("."):
             continue
-        user_ids.append(name)
+        if (child / SCRATCHPAD_SUBDIR).is_dir():
+            user_ids.append(name)
 
     user_ids.sort()
     return user_ids
 
 
 def append_memory(
-    vault_root_raw: str,
-    user_id: str,
+    scratchpad_dir: str,
     *,
     kind: str,
     text: str,
@@ -169,8 +162,7 @@ def append_memory(
     """Append a short-term memory entry for a user.
 
     Args:
-        vault_root_raw: Vault root path.
-        user_id: The actor_id/user_id.
+        scratchpad_dir: Pre-resolved per-user scratchpad directory.
         kind: 'fact' or 'preference' (other values treated as 'fact').
         text: Memory text.
         max_chars: Maximum file size allowed; if exceeded, raises ValueError.
@@ -187,12 +179,12 @@ def append_memory(
     if not body:
         raise ValueError("No short-term memory text provided")
 
-    target = short_term_memory_path(vault_root_raw, user_id)
+    target = short_term_memory_path(scratchpad_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    # If a legacy filename exists in the current folder layout, migrate it (best-effort).
+    # If a legacy filename exists, migrate it (best-effort).
     if not target.exists():
-        legacy = _legacy_short_term_memory_path(vault_root_raw, user_id)
+        legacy = _legacy_short_term_memory_path(scratchpad_dir)
         if legacy.exists() and legacy.is_file():
             try:
                 legacy.rename(target)
@@ -228,16 +220,15 @@ def append_memory(
 
 
 def read_raw_text(
-    vault_root_raw: str,
-    user_id: str,
+    scratchpad_dir: str,
     *,
     max_chars: int = DEFAULT_MAX_CHARS,
 ) -> str | None:
     """Read the short-term memory file contents (trimmed)."""
 
-    target = short_term_memory_path(vault_root_raw, user_id)
+    target = short_term_memory_path(scratchpad_dir)
     if not target.exists() or not target.is_file():
-        legacy = _legacy_short_term_memory_path(vault_root_raw, user_id)
+        legacy = _legacy_short_term_memory_path(scratchpad_dir)
         if not legacy.exists() or not legacy.is_file():
             return None
         target = legacy
@@ -313,26 +304,24 @@ def parse_short_term_memories(raw_text: str) -> ShortTermMemories:
 
 
 def read_parsed(
-    vault_root_raw: str,
-    user_id: str,
+    scratchpad_dir: str,
     *,
     max_chars: int = DEFAULT_MAX_CHARS,
 ) -> ShortTermMemories | None:
-    text = read_raw_text(vault_root_raw, user_id, max_chars=max_chars)
+    text = read_raw_text(scratchpad_dir, max_chars=max_chars)
     if not text:
         return None
     return parse_short_term_memories(text)
 
 
 def clear(
-    vault_root_raw: str,
-    user_id: str,
+    scratchpad_dir: str,
 ) -> bool:
     """Delete the short-term memory file to start over."""
 
     targets = [
-        short_term_memory_path(vault_root_raw, user_id),
-        _legacy_short_term_memory_path(vault_root_raw, user_id),
+        short_term_memory_path(scratchpad_dir),
+        _legacy_short_term_memory_path(scratchpad_dir),
     ]
 
     ok = True

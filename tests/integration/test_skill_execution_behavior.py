@@ -31,6 +31,10 @@ def _patched_shell_capture():
 
     This avoids false positives where the model prints a bash snippet but never
     calls the `shell` tool.
+
+    Note: In non-TTY environments (including pytest), the shell tool uses the
+    internal ``_safe_shell_run`` code path rather than ``_call_base_shell``.
+    We patch both paths so the capture works regardless of which branch is taken.
     """
 
     # Import inside to ensure we patch the same module object used by AgentService.
@@ -38,17 +42,12 @@ def _patched_shell_capture():
 
     calls: list[dict] = []
 
-    def _fake_base_shell(**kwargs):
-        calls.append(dict(kwargs))
-
-        cmd = str(kwargs.get("command", "") or "")
-
-        # Best-effort emulate common strands_tools.shell return shape.
+    def _fake_output_for_command(cmd: str):
+        """Return (stdout, stderr, returncode) for a given command string."""
         stdout = ""
         stderr = ""
         returncode = 0
 
-        # If the command is an echo, return what would be printed.
         if "SKILL_EXECUTED_SUCCESSFULLY" in cmd:
             stdout = "SKILL_EXECUTED_SUCCESSFULLY\n"
         elif "FIRST_COMMAND_EXECUTED" in cmd:
@@ -63,14 +62,48 @@ def _patched_shell_capture():
                 # Deterministic-ish stub; we don't care about the exact path.
                 stdout = "/usr/bin/echo\n"
 
+        return stdout, stderr, returncode
+
+    def _fake_base_shell(**kwargs):
+        calls.append(dict(kwargs))
+        cmd = str(kwargs.get("command", "") or "")
+        stdout, stderr, returncode = _fake_output_for_command(cmd)
         return {
             "stdout": stdout,
             "stderr": stderr,
             "returncode": returncode,
         }
 
-    with patch.object(shell_env_module, "_call_base_shell", side_effect=_fake_base_shell) as m:
-        yield calls, m
+    def _fake_safe_shell_run(**kwargs):
+        calls.append(dict(kwargs))
+        cmd = str(kwargs.get("command", "") or "")
+        stdout, stderr, returncode = _fake_output_for_command(cmd)
+        combined = stdout or "(no output)"
+        return {
+            "status": "success" if returncode == 0 else "error",
+            "returncode": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "timed_out": False,
+            "duration_ms": 0,
+            "content": [{"text": combined}],
+        }
+
+    with (
+        patch.object(
+            shell_env_module, "_call_base_shell", side_effect=_fake_base_shell
+        ) as m_base,
+        patch.object(
+            shell_env_module, "_safe_shell_run", side_effect=_fake_safe_shell_run
+        ) as m_safe,
+    ):
+        # Expose a lightweight proxy whose `.called` reflects either code path.
+        class _CombinedMock:
+            @property
+            def called(self):
+                return m_base.called or m_safe.called
+
+        yield calls, _CombinedMock()
 
 
 @contextmanager

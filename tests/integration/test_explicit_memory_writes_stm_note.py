@@ -7,7 +7,7 @@ These tests focus on AgentService's deterministic fallback that stores explicit
 "remember" requests immediately, even if the LLM fails to call a tool.
 
 Source of truth for STM note location:
-    <vault>/me/<USER_ID>/stm.md
+    workspace/<USER_ID>/scratchpad/stm.md
 
 """
 
@@ -68,15 +68,9 @@ async def test_process_message_explicit_remember_writes_stm_note(tmp_path, monke
         bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
         session_storage_dir=str(tmp_path / "sessions"),
         skills_base_dir=str(tmp_path / "skills"),
+        working_folder_base_dir=str(tmp_path / "workspace"),
         memory_enabled=True,
-        obsidian_vault_root=str(tmp_path / "vault"),
     )
-
-    # NOTE: AgentConfig.model_post_init unconditionally overrides obsidian_vault_root
-    # with the repo-local scratchpad. For test isolation, we must override it after
-    # construction and patch the accessor used by MemoryService.
-    vault_path = str(tmp_path / "vault")
-    config.obsidian_vault_root = vault_path
 
     memory_service = MemoryService(config)
 
@@ -141,8 +135,8 @@ async def test_process_message_explicit_remember_writes_stm_note(tmp_path, monke
 
     await service.process_message(user_id, msg)
 
-    stm_path = tmp_path / "vault" / "users" / user_id / "stm.md"
-    assert stm_path.exists(), "Expected STM note to be created under <vault>/users/<USER_ID>/stm.md"
+    stm_path = tmp_path / "workspace" / user_id / "scratchpad" / "stm.md"
+    assert stm_path.exists(), "Expected STM note to be created under workspace/<USER_ID>/scratchpad/stm.md"
 
     content = stm_path.read_text(encoding="utf-8")
     assert "# STM" in content
@@ -161,15 +155,9 @@ async def test_process_message_does_not_write_stm_for_retrieval_question(tmp_pat
         bedrock_model_id="anthropic.claude-3-sonnet-20240229-v1:0",
         session_storage_dir=str(tmp_path / "sessions"),
         skills_base_dir=str(tmp_path / "skills"),
+        working_folder_base_dir=str(tmp_path / "workspace"),
         memory_enabled=True,
-        obsidian_vault_root=str(tmp_path / "vault"),
     )
-
-    # NOTE: AgentConfig.model_post_init unconditionally overrides obsidian_vault_root
-    # with the repo-local scratchpad. For test isolation, we must override it after
-    # construction and patch the accessor used by MemoryService.
-    vault_path = str(tmp_path / "vault")
-    config.obsidian_vault_root = vault_path
 
     memory_service = MemoryService(config)
 
@@ -230,5 +218,5 @@ async def test_process_message_does_not_write_stm_for_retrieval_question(tmp_pat
 
     await service.process_message(user_id, "Remember when we met at that cafe?")
 
-    stm_path = tmp_path / "vault" / "users" / user_id / "stm.md"
+    stm_path = tmp_path / "workspace" / user_id / "scratchpad" / "stm.md"
     assert not stm_path.exists(), "Retrieval phrasing should not create STM note"

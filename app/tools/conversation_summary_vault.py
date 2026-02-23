@@ -1,19 +1,19 @@
-"""Per-conversation memory artifacts stored under the repo-local scratchpad.
+"""Per-conversation memory artifacts stored under the per-user scratchpad.
 
 We persist a *session-level* conversation summary as a markdown note:
 
-    users/<USER_ID>/conversations/<SESSION_ID>.md
+    workspace/<USER_ID>/scratchpad/conversations/<SESSION_ID>.md
 
 This is intentionally separate from the rolling STM scratchpad note:
 
-    users/<USER_ID>/stm.md
+    workspace/<USER_ID>/scratchpad/stm.md
 
 Rationale:
 - STM is a mutable scratchpad (and may be cleared after consolidation).
 - Conversation summaries are immutable per-session artifacts.
 
 Security/safety:
-- All filesystem operations are constrained under the configured vault root.
+- All filesystem operations are constrained under the configured scratchpad dir.
 - We do NOT store raw transcripts here by default (to avoid accidental secret
   persistence). Only summaries that already passed sensitive checks should be
   written.
@@ -31,8 +31,8 @@ DEFAULT_MAX_CHARS = 20_000
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def _vault_root(vault_root_raw: str) -> Path:
-    return Path(vault_root_raw).expanduser().resolve()
+def _resolve_dir(scratchpad_dir: str) -> Path:
+    return Path(scratchpad_dir).expanduser().resolve()
 
 
 def _safe_under_root(root: Path, candidate: Path) -> Path:
@@ -40,7 +40,7 @@ def _safe_under_root(root: Path, candidate: Path) -> Path:
     try:
         resolved.relative_to(root)
     except Exception as e:
-        raise ValueError(f"Path escapes vault root: {resolved}") from e
+        raise ValueError(f"Path escapes scratchpad root: {resolved}") from e
     return resolved
 
 
@@ -55,28 +55,26 @@ def _safe_filename(name: str, *, max_len: int = 120) -> str:
     return s
 
 
-def conversation_summary_path(vault_root_raw: str, user_id: str, session_id: str) -> Path:
-    root = _vault_root(vault_root_raw)
+def conversation_summary_path(scratchpad_dir: str, session_id: str) -> Path:
+    root = _resolve_dir(scratchpad_dir)
     safe_session = _safe_filename(session_id)
-    p = root / "users" / user_id / "conversations" / f"{safe_session}.md"
+    p = root / "conversations" / f"{safe_session}.md"
     return _safe_under_root(root, p)
 
 
 def write_session_summary(
-    vault_root_raw: str,
-    user_id: str,
+    scratchpad_dir: str,
     session_id: str,
     summary: str,
     *,
     max_chars: int = DEFAULT_MAX_CHARS,
 ) -> Path:
-    """Write a session summary note into the Obsidian vault.
+    """Write a session summary note into the scratchpad.
 
     This overwrites any existing note for the same session_id (idempotent).
 
     Args:
-        vault_root_raw: Vault root path.
-        user_id: The actor_id/user_id.
+        scratchpad_dir: Pre-resolved per-user scratchpad directory.
         session_id: Session identifier; used as filename (sanitized).
         summary: Summary text (expected to be already vetted for sensitive data).
         max_chars: Maximum file size allowed.
@@ -88,7 +86,7 @@ def write_session_summary(
     if not body:
         raise ValueError("No summary text provided")
 
-    target = conversation_summary_path(vault_root_raw, user_id, session_id)
+    target = conversation_summary_path(scratchpad_dir, session_id)
     target.parent.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")

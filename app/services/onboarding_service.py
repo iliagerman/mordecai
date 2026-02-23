@@ -2,7 +2,7 @@
 
 Handles first-time user experience including:
 - Loading default personality files from instructions/
-- Copying them to user's folder in the Obsidian vault
+- Copying them to user's scratchpad inside the workspace
 - Generating onboarding greeting messages
 """
 
@@ -23,29 +23,31 @@ logger = logging.getLogger(__name__)
 # these templates grow too large.
 PREVIEW_MAX_CHARS = 20_000
 
+SCRATCHPAD_SUBDIR = "scratchpad"
+
 
 class OnboardingService:
     """Service for managing user onboarding flow."""
 
     def __init__(
         self,
-        vault_root: str | None,
+        workspace_base_dir: str | None,
         max_chars: int = 20_000,
     ):
         """Initialize onboarding service.
 
         Args:
-            vault_root: Path to the Obsidian vault root.
+            workspace_base_dir: Path to the workspace base directory.
             max_chars: Maximum characters to read from each personality file.
         """
-        self._vault_root_raw = vault_root
+        self._workspace_base_raw = workspace_base_dir
         self._max_chars = max_chars
 
-    def _vault_root(self) -> Path | None:
-        """Get the vault root path, expanding ~ if present."""
-        if not self._vault_root_raw:
+    def _workspace_base(self) -> Path | None:
+        """Get the workspace base path, expanding ~ if present."""
+        if not self._workspace_base_raw:
             return None
-        return Path(self._vault_root_raw).expanduser().resolve()
+        return Path(self._workspace_base_raw).expanduser().resolve()
 
     @staticmethod
     def _find_repo_root(*, start: Path) -> Path:
@@ -128,11 +130,11 @@ class OnboardingService:
         try:
             resolved.relative_to(root)
         except Exception as e:
-            raise ValueError(f"Path escapes vault root: {resolved}") from e
+            raise ValueError(f"Path escapes root: {resolved}") from e
         return resolved
 
     async def ensure_user_personality_files(self, user_id: str) -> tuple[bool, str]:
-        """Copy default soul.md and id.md to user's folder in vault.
+        """Copy default soul.md and id.md to user's scratchpad in workspace.
 
         Args:
             user_id: The user's identifier (Telegram username).
@@ -141,21 +143,21 @@ class OnboardingService:
             (success, message) tuple where success is True if files were copied,
             and message contains details or error information.
         """
-        vault_root = self._vault_root()
-        if vault_root is None:
-            return False, "Scratchpad root is not configured"
+        workspace_base = self._workspace_base()
+        if workspace_base is None:
+            return False, "Workspace base directory is not configured"
 
         repo_dir = self._repo_instructions_dir()
         if repo_dir is None:
             return False, "Repo instructions directory not found"
 
         results = []
-        user_dir = vault_root / "users" / user_id
+        scratchpad_dir = workspace_base / user_id / SCRATCHPAD_SUBDIR
 
         for kind in ("soul", "id"):
             filename = self._kind_to_filename(kind)
             source_path = repo_dir / filename
-            target_path = self._ensure_under_root(vault_root, user_dir / filename)
+            target_path = self._ensure_under_root(scratchpad_dir, scratchpad_dir / filename)
 
             # Skip if target already exists
             if target_path.exists():
@@ -193,12 +195,12 @@ class OnboardingService:
         Returns:
             The onboarding message as a string.
         """
-        vault_root = self._vault_root()
+        workspace_base = self._workspace_base()
         vault_note = ""
-        if vault_root:
-            vault_note = f"📁 users/{user_id}/soul.md\n📁 users/{user_id}/id.md\n\n"
+        if workspace_base:
+            vault_note = "📁 scratchpad/soul.md\n📁 scratchpad/id.md\n\n"
         else:
-            vault_note = "Note: Vault not configured, using repo defaults.\n\n"
+            vault_note = "Note: Workspace not configured, using repo defaults.\n\n"
 
         soul_content = self.get_default_soul()
         id_content = self.get_default_id()
@@ -210,7 +212,7 @@ class OnboardingService:
 
         message = (
             f"Welcome to Mordecai! 👋\n\n"
-            f"I've set up your personalized personality files in your vault:\n\n"
+            f"I've set up your personalized personality files in your workspace:\n\n"
             f"{vault_note}"
             f"These define how I behave and respond. Here are the defaults:\n\n"
             f"---\n\n"
@@ -220,8 +222,8 @@ class OnboardingService:
             f"---\n\n"
             f"💡 Want to change how I behave or what I call myself? Just ask.\n"
             f"Tell me what you want to change (tone, verbosity, boundaries, identity metadata, etc.) and I can update:\n"
-            f"- `me/{user_id}/soul.md` (personality)\n"
-            f"- `me/{user_id}/id.md` (identity)\n\n"
+            f"- `scratchpad/soul.md` (personality)\n"
+            f"- `scratchpad/id.md` (identity)\n\n"
         )
 
         return message
@@ -251,4 +253,4 @@ class OnboardingService:
 
     def is_enabled(self) -> bool:
         """Check if onboarding service is properly configured."""
-        return self._vault_root() is not None or self._repo_instructions_dir() is not None
+        return self._workspace_base() is not None or self._repo_instructions_dir() is not None

@@ -32,6 +32,7 @@ def config(temp_dir):
         telegram_bot_token="test-token",
         skills_base_dir=temp_dir,
         session_storage_dir=temp_dir,
+        working_folder_base_dir=temp_dir + "/workspace",
     )
 
 

@@ -193,6 +193,7 @@ class TestSessionIsolationBetweenUsers:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
         # Mock the model creation to avoid actual API calls

@@ -55,7 +55,6 @@ class TestImageVisionAttachments:
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
             working_folder_base_dir=temp_dir,
-            temp_files_base_dir=temp_dir,
             memory_enabled=False,
             personality_enabled=False,
         )

@@ -59,8 +59,7 @@ async def test_real_llm_can_answer_using_agentcore_memory_context(tmp_path):
             "session_storage_dir": str(tmp_path / "sessions"),
             "skills_base_dir": str(tmp_path / "skills"),
             "working_folder_base_dir": str(tmp_path / "work"),
-            "temp_files_base_dir": str(tmp_path / "tmp"),
-            "obsidian_vault_root": str(tmp_path / "vault"),
+            # scratchpad is now inside workspace; no separate vault root needed
             "memory_enabled": True,
         }
     )

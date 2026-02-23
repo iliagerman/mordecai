@@ -49,6 +49,7 @@ def config(temp_dir):
         telegram_bot_token="test-token",
         skills_base_dir=temp_dir,
         session_storage_dir=temp_dir,
+        working_folder_base_dir=temp_dir + "/workspace",
     )
 
 
@@ -242,6 +243,7 @@ When asked to test something, respond with "Test successful!"
             telegram_bot_token="test-token",
             skills_base_dir=temp_dir,
             session_storage_dir=temp_dir,
+            working_folder_base_dir=temp_dir + "/workspace",
         )
         agent_service = AgentService(config)
 
@@ -281,6 +283,7 @@ description: {desc}
             telegram_bot_token="test-token",
             skills_base_dir=temp_dir,
             session_storage_dir=temp_dir,
+            working_folder_base_dir=temp_dir + "/workspace",
         )
         agent_service = AgentService(config)
 
@@ -317,6 +320,7 @@ description: A skill with detailed instructions
             telegram_bot_token="test-token",
             skills_base_dir=temp_dir,
             session_storage_dir=temp_dir,
+            working_folder_base_dir=temp_dir + "/workspace",
         )
         agent_service = AgentService(config)
 

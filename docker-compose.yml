@@ -57,8 +57,6 @@ services:
       # Skills directory (read-write for plugin persistence)
       - ./skills:/app/skills:rw
       - ./workspace:/app/workspace:rw
-      # Scratchpad is long-lived note/memory storage
-      - ./scratchpad:/app/scratchpad:rw
       # Named volumes for persistent data
       - agent-db:/app/data
       - agent-sessions:/app/sessions
@@ -70,9 +68,6 @@ services:
     environment:
       # Ensure HOME is writable when running as a non-root numeric UID
       - HOME=/app/workspace
-      # Default temp_files_base_dir resolves to /app/temp_files which is not writable when running as non-root.
-      # Keep temp files under the workspace bind mount instead.
-      - AGENT_TEMP_FILES_BASE_DIR=/app/workspace/temp_files
       - AGENT_WORKING_FOLDER_BASE_DIR=/app/workspace
       # Database URL - use absolute path to ensure it's in the mounted volume
       - AGENT_DATABASE_URL=sqlite+aiosqlite:////app/data/agent.db

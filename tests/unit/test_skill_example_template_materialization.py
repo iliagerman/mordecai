@@ -9,14 +9,18 @@ from app.config import (
     AgentConfig,
     refresh_runtime_env_from_secrets,
     resolve_user_skills_dir,
-    resolve_user_skills_secrets_path,
 )
+from app.tools.skill_secrets import set_cached_skill_secrets
 
 
 def test_example_template_is_materialized_and_exports_skill_config_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_TELEGRAM_BOT_TOKEN", "test-token")
 
-    cfg = AgentConfig(telegram_bot_token="test-token", skills_base_dir=str(tmp_path / "skills"))
+    cfg = AgentConfig(
+        telegram_bot_token="test-token",
+        skills_base_dir=str(tmp_path / "skills"),
+        working_folder_base_dir=str(tmp_path / "workspace"),
+    )
 
     # Create a user skill folder with an *_example template.
     user_id = "user1"
@@ -31,27 +35,28 @@ def test_example_template_is_materialized_and_exports_skill_config_env(tmp_path:
     secrets_path = tmp_path / "secrets.yml"
     secrets_path.write_text(yaml.safe_dump({"skills": {"demo": {}}}), encoding="utf-8")
 
-    # Per-user skills_secrets.yml provides the placeholder values.
-    user_secrets_path = resolve_user_skills_secrets_path(cfg, user_id)
-    user_secrets_path.write_text(
-        yaml.safe_dump({"skills": {"demo": {"TOKEN": "abc123"}}}),
-        encoding="utf-8",
-    )
+    # Populate the in-memory DB cache (replaces per-user skills_secrets.yml).
+    set_cached_skill_secrets({"demo": {"TOKEN": "abc123"}})
 
     monkeypatch.delenv("DEMO_CONFIG", raising=False)
 
-    refresh_runtime_env_from_secrets(secrets_path=secrets_path, user_id=user_id, config=cfg)
+    try:
+        refresh_runtime_env_from_secrets(secrets_path=secrets_path, user_id=user_id, config=cfg)
 
-    # The rendered file is written to user_dir, not skill_dir
-    rendered = user_dir / "demo.toml"
-    assert rendered.exists()
-    assert rendered.read_text(encoding="utf-8") == 'token = "abc123"\n'
+        # The rendered file is written to workspace/<user>/tmp/, not the skills dir.
+        workspace_tmp = tmp_path / "workspace" / user_id / "tmp"
+        rendered = workspace_tmp / "demo.toml"
+        assert rendered.exists()
+        assert rendered.read_text(encoding="utf-8") == 'token = "abc123"\n'
 
-    # The canonical convention: {skill}.toml_example -> export {SKILL}_CONFIG
-    assert os.environ.get("DEMO_CONFIG") == str(rendered)
+        # The canonical convention: {skill}.toml_example -> export {SKILL}_CONFIG
+        assert os.environ.get("DEMO_CONFIG") == str(rendered)
 
-    # A per-user .env convenience file should exist and include only *_CONFIG vars.
-    env_path = user_dir / ".env"
-    assert env_path.exists()
-    env_text = env_path.read_text(encoding="utf-8")
-    assert "DEMO_CONFIG=" in env_text
+        # A per-user .env convenience file should exist and include only *_CONFIG vars.
+        env_path = workspace_tmp / ".env"
+        assert env_path.exists()
+        env_text = env_path.read_text(encoding="utf-8")
+        assert "DEMO_CONFIG=" in env_text
+    finally:
+        # Clean up module-level cache
+        set_cached_skill_secrets({})

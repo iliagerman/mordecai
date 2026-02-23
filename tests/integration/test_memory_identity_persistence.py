@@ -93,16 +93,21 @@ def test_user_id():
 
 
 @pytest.fixture(autouse=True)
-def cleanup_scratchpad_test_users(memory_service):
-    """Clean up integration test user directories from scratchpad after tests."""
+def cleanup_scratchpad_test_users(memory_service, real_config):
+    """Clean up integration test user directories from workspace after tests."""
     yield
 
-    # Cleanup scratchpad directories
-    scratchpad_users = Path("scratchpad/users")
-    if not scratchpad_users.exists():
+    # Cleanup workspace directories for test users.
+    # New layout: workspace/<USER_ID>/scratchpad/
+    workspace_base = Path(real_config.working_folder_base_dir)
+    if not workspace_base.exists():
         return
-    for child in scratchpad_users.iterdir():
-        if child.is_dir() and child.name.startswith(TEST_USER_PREFIX):
+    for child in workspace_base.iterdir():
+        if child.is_dir() and (
+            child.name.startswith(TEST_USER_PREFIX)
+            or child.name.startswith("user_a_")
+            or child.name.startswith("user_b_")
+        ):
             try:
                 shutil.rmtree(child)
                 print(f"\n[CLEANUP] Removed {child}")
@@ -191,6 +196,7 @@ def agent_service(real_config, memory_service, tmp_path):
         memory_retrieval_relevance_score=0.2,
         session_storage_dir=str(tmp_path / "sessions"),
         skills_base_dir=str(tmp_path / "skills"),
+        working_folder_base_dir=str(tmp_path / "workspace"),
     )
     service = AgentService(config, memory_service)
     print("[FIXTURE] agent_service created")

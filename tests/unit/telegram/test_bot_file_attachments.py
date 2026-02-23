@@ -131,7 +131,6 @@ class TestSQSPayloadStructure:
             telegram_bot_token="test-bot-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
-            temp_files_base_dir=temp_dir,
             working_folder_base_dir=temp_dir,
         )
 
@@ -340,7 +339,6 @@ class TestFileSendRouting:
             telegram_bot_token="test-bot-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
-            temp_files_base_dir=temp_dir,
             working_folder_base_dir=temp_dir,
         )
 
@@ -421,7 +419,6 @@ class TestErrorMessages:
             telegram_bot_token="test-bot-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
-            temp_files_base_dir=temp_dir,
             working_folder_base_dir=temp_dir,
             max_file_size_mb=20,
             allowed_file_extensions=[".txt", ".pdf", ".py"],

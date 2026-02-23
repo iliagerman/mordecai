@@ -27,7 +27,9 @@ os.environ["BYPASS_TOOL_CONSENT"] = "true"
 
 from app.config import AgentConfig
 from app.dao import LogDAO, TaskDAO, UserDAO
+from app.dao.browser_cookie_dao import BrowserCookieDAO
 from app.dao.conversation_dao import ConversationDAO
+from app.dao.skill_secret_dao import SkillSecretDAO
 from app.dao.cron_dao import CronDAO
 from app.dao.cron_lock_dao import CronLockDAO
 from app.database import Database
@@ -124,6 +126,8 @@ class Application:
         self.cron_dao: CronDAO | None = None
         self.cron_lock_dao: CronLockDAO | None = None
         self.conversation_dao: ConversationDAO | None = None
+        self.browser_cookie_dao: BrowserCookieDAO | None = None
+        self.skill_secret_dao: SkillSecretDAO | None = None
 
         # Services
         self.agent_service: AgentService | None = None
@@ -205,6 +209,9 @@ class Application:
         self.cron_dao = CronDAO(self.database)
         self.cron_lock_dao = CronLockDAO(self.database)
         self.conversation_dao = ConversationDAO(self.database.session)
+        if self.config.browser_enabled:
+            self.browser_cookie_dao = BrowserCookieDAO(self.database)
+        self.skill_secret_dao = SkillSecretDAO(self.database)
         logger.info("DAOs initialized")
 
         # Initialize services
@@ -212,7 +219,7 @@ class Application:
         self.logging_service = LoggingService(self.log_dao)
         self.skill_service = SkillService(self.config)
         self.onboarding_service = OnboardingService(
-            vault_root=self.config.obsidian_vault_root,
+            workspace_base_dir=self.config.working_folder_base_dir,
         )
 
         # Pending skills: create service and run preflight (bounded, non-fatal)
@@ -249,6 +256,8 @@ class Application:
             skill_service=self.skill_service,
             logging_service=self.logging_service,
             conversation_dao=self.conversation_dao,
+            cookie_dao=self.browser_cookie_dao,
+            skill_secret_dao=self.skill_secret_dao,
         )
         self.task_service = TaskService(self.task_dao, self.user_dao, self.log_dao)
         self.webhook_service = WebhookService(self.logging_service)

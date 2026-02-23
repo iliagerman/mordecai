@@ -6,6 +6,7 @@ skill-specific environment variables from secrets.yml.
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -164,6 +165,24 @@ def resolve_user_skills_secrets_path(config: Any, user_id: str, *, create: bool 
 
 
 SCRATCHPAD_DIRNAME = "scratchpad"
+
+
+def get_user_scratchpad_path(config: Any, user_id: str, *, create: bool = True) -> Path:
+    """Return the per-user scratchpad directory: ``workspace/<USER_ID>/scratchpad/``.
+
+    This is the canonical path for personality files (soul.md, id.md),
+    short-term memory (stm.md), and conversation summaries.
+    """
+
+    u = _validate_user_identifier_for_path(user_id)
+    work_base = Path(getattr(config, "working_folder_base_dir", "./workspace")).expanduser()
+    if not work_base.is_absolute():
+        repo_root = _find_repo_root(start=Path(__file__))
+        work_base = repo_root / work_base
+    p = (work_base / u / SCRATCHPAD_DIRNAME).resolve()
+    if create:
+        p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def _create_config_file(path: str, config_data: dict) -> None:
@@ -519,16 +538,55 @@ def upsert_skill_config(
     return secrets
 
 
+_UPPERCASE_ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def _is_exportable_env_key(key: str) -> bool:
+    """Return ``True`` if *key* looks like a conventional env-var name.
+
+    Only keys composed entirely of uppercase letters, digits, and underscores
+    (starting with a letter) are exported.  This prevents metadata keys like
+    ``email_provider`` or section names like ``outlook-browser`` from leaking
+    into the subprocess environment.
+    """
+    return bool(_UPPERCASE_ENV_KEY_RE.match(key))
+
+
 def get_skill_env_vars(
     *,
     secrets: dict[str, Any],
     skill_name: str,
     user_id: str | None = None,
 ) -> dict[str, str]:
-    """Return all env vars from the flat skills: section.
+    """Return all env vars from the skills: section.
 
-    In flat format, all env vars are directly under skills: as key-value pairs.
-    The skill_name and user_id parameters are kept for API compatibility.
+    Only keys matching ``^[A-Z][A-Z0-9_]*$`` are exported.
+
+    Supports two formats:
+
+    1. **Flat format** -- scalar values directly under ``skills:``:
+
+       .. code-block:: yaml
+
+          skills:
+            SOME_KEY: some_value
+
+    2. **Structured format** -- per-skill blocks with optional ``env:`` and
+       per-user overrides:
+
+       .. code-block:: yaml
+
+          skills:
+            my-skill:
+              env:
+                SOME_KEY: global_value
+              users:
+                alice:
+                  env:
+                    SOME_KEY: alice_value
+
+       When *user_id* is provided, per-user ``env`` values override the global
+       ``env`` block for that skill.
     """
     skills = secrets.get("skills")
     if not isinstance(skills, dict):
@@ -536,14 +594,60 @@ def get_skill_env_vars(
 
     merged: dict[str, str] = {}
 
-    # Flat format: all non-dict values in skills: are env vars
     for k, v in skills.items():
         if v is None:
             continue
-        # Skip nested dicts (legacy structured format or other config)
+
         if isinstance(v, dict):
-            continue
-        merged[str(k)] = str(v)
+            # Structured skill block -- extract env vars from nested keys.
+
+            # 0) Direct scalar key-value pairs (convenient shorthand).
+            for ek, ev in v.items():
+                if ek in {"env", "users"}:
+                    continue
+                if isinstance(ev, (dict, list)):
+                    continue
+                if ev is None:
+                    continue
+                if _is_exportable_env_key(str(ek)):
+                    merged[str(ek)] = str(ev)
+
+            # 1) Global env block for this skill.
+            env_block = v.get("env")
+            if isinstance(env_block, dict):
+                for ek, ev in env_block.items():
+                    if ev is None:
+                        continue
+                    if _is_exportable_env_key(str(ek)):
+                        merged[str(ek)] = str(ev)
+
+            # 2) Per-user env overrides (highest precedence).
+            if user_id is not None:
+                users_block = v.get("users")
+                if isinstance(users_block, dict):
+                    user_block = users_block.get(str(user_id))
+                    if isinstance(user_block, dict):
+                        for ek, ev in user_block.items():
+                            if ek in {"env", "users"}:
+                                continue
+                            if isinstance(ev, (dict, list)):
+                                continue
+                            if ev is None:
+                                continue
+                            if _is_exportable_env_key(str(ek)):
+                                merged[str(ek)] = str(ev)
+
+                        user_env = user_block.get("env")
+                        if isinstance(user_env, dict):
+                            for ek, ev in user_env.items():
+                                if ev is None:
+                                    continue
+                                if _is_exportable_env_key(str(ek)):
+                                    merged[str(ek)] = str(ev)
+        else:
+            # Flat format: scalar value directly under skills:
+            if _is_exportable_env_key(str(k)):
+                merged[str(k)] = str(v)
 
     return merged
 
@@ -615,17 +719,17 @@ def refresh_runtime_env_from_secrets(
     if isinstance(secrets, dict):
         _deep_merge_dict(merged_secrets, secrets)
 
-    # Per-user skill secrets (skills/<user>/skills_secrets.yml)
-    if user_id is not None and config is not None:
+    # Per-user skill secrets from database (via cached dict).
+    # The cache is populated at agent creation time and updated by set_skill_env_vars.
+    if user_id is not None:
         try:
-            user_skills_secrets_path = resolve_user_skills_secrets_path(config, user_id)
-            user_secrets = load_raw_secrets(user_skills_secrets_path)
-            if isinstance(user_secrets, dict):
-                user_skills = user_secrets.get("skills")
-                if isinstance(user_skills, dict):
-                    merged_secrets.setdefault("skills", {})
-                    if isinstance(merged_secrets.get("skills"), dict):
-                        _deep_merge_dict(merged_secrets["skills"], user_skills)  # type: ignore[index]
+            from app.tools.skill_secrets import get_cached_skill_secrets
+
+            db_secrets = get_cached_skill_secrets()
+            if db_secrets:
+                merged_secrets.setdefault("skills", {})
+                if isinstance(merged_secrets.get("skills"), dict):
+                    _deep_merge_dict(merged_secrets["skills"], db_secrets)  # type: ignore[index]
         except Exception:
             pass
 
@@ -640,7 +744,9 @@ def refresh_runtime_env_from_secrets(
 
     # With flat format, we get all env vars at once (no per-skill iteration needed)
     # get_skill_env_vars returns all non-dict values from skills: section
-    desired_env: dict[str, str] = get_skill_env_vars(secrets=merged_secrets, skill_name="", user_id=user_id)
+    desired_env: dict[str, str] = get_skill_env_vars(
+        secrets=merged_secrets, skill_name="", user_id=user_id
+    )
 
     # Track all the keys we're managing for cleanup on user switch
     new_keys_by_skill: dict[str, set[str]] = {"_all": set(desired_env.keys())}
@@ -662,7 +768,9 @@ def refresh_runtime_env_from_secrets(
         try:
             user_dir = resolve_user_skills_dir(config, user_id, create=True)
             if user_dir.exists() and user_dir.is_dir():
-                names = [d.name for d in user_dir.iterdir() if d.is_dir() and not d.name.startswith('_')]
+                names = [
+                    d.name for d in user_dir.iterdir() if d.is_dir() and not d.name.startswith("_")
+                ]
         except Exception:
             pass
 
@@ -688,9 +796,20 @@ def refresh_runtime_env_from_secrets(
 
         extra_env: dict[str, str] = {}
 
-        # Determine the per-user skills directory where shared skills are mirrored.
+        # Determine the per-user skills directory (source of templates).
         try:
             user_dir = resolve_user_skills_dir(config, user_id, create=True)
+        except Exception:
+            return {}
+
+        # Rendered configs go into the user's workspace tmp dir, NOT the skills dir.
+        # This keeps secrets-bearing files isolated per user in the workspace.
+        # Directory creation is deferred until we actually need to write a file.
+        try:
+            work_base = Path(getattr(config, "working_folder_base_dir", "./workspace")).expanduser()
+            if not work_base.is_absolute():
+                work_base = _find_repo_root(start=Path(__file__)) / work_base
+            output_dir = (work_base / str(user_id) / "tmp").resolve()
         except Exception:
             return {}
 
@@ -807,11 +926,10 @@ def refresh_runtime_env_from_secrets(
                 else:
                     continue
 
-                # Write rendered outputs next to the per-user skills secrets file
-                # (i.e., in the per-user skills directory root).
+                # Write rendered outputs to workspace/<user>/tmp/.
                 #
-                # This keeps generated configs isolated per user and makes it
-                # easy to point CLIs to a stable per-user config path.
+                # This keeps secrets-bearing config files in the user's
+                # private workspace, away from the skills directory tree.
                 #
                 # Naming convention:
                 # - If the rendered filename already starts with the skill name
@@ -825,7 +943,7 @@ def refresh_runtime_env_from_secrets(
                     out_name = dest_name
                 else:
                     out_name = f"{skill}__{dest_name}"
-                dest = user_dir / out_name
+                dest = output_dir / out_name
 
                 def _replace(match: re.Match, _replacements: dict[str, str] = replacements) -> str:
                     key = (match.group(1) or "").strip().upper()
@@ -838,6 +956,9 @@ def refresh_runtime_env_from_secrets(
                 rendered = re.sub(r"\[([A-Z0-9_]+)\]", _replace, raw)
 
                 try:
+                    # Ensure the output directory exists (deferred creation).
+                    output_dir.mkdir(parents=True, exist_ok=True)
+
                     # Only write when changed to reduce churn.
                     if dest.exists() and dest.is_dir():
                         # A common mistake is `mkdir -p some-config.toml`, which creates a
@@ -878,10 +999,10 @@ def refresh_runtime_env_from_secrets(
                     extra_env[env_key] = abs_dest
                     config_env_lines[env_key] = abs_dest
 
-        # Write a per-user .env convenience file (git-ignored) containing only *_CONFIG vars.
+        # Write a per-user .env convenience file containing only *_CONFIG vars.
         if config_env_lines:
             try:
-                env_path = user_dir / ".env"
+                env_path = output_dir / ".env"
                 existing_lines: list[str] = []
                 if env_path.exists():
                     try:
@@ -1238,13 +1359,9 @@ class AgentConfig(BaseSettings):
             # 2) Resolve relative paths against the repository root rather than CWD.
             repo_root = _find_repo_root(start=Path(__file__))
 
-            # Normalize temp + working folder roots (workspace artifacts are ephemeral;
+            # Normalize working folder root (workspace artifacts are ephemeral;
             # scratchpad is long-lived and handled separately).
-            temp_base = Path(self.temp_files_base_dir).expanduser()
-            if not temp_base.is_absolute():
-                temp_base = repo_root / temp_base
-            self.temp_files_base_dir = str(temp_base.resolve())
-
+            # Temp files live inside each user's workspace at workspace/<user_id>/temp/.
             work_base = Path(self.working_folder_base_dir).expanduser()
             if not work_base.is_absolute():
                 work_base = repo_root / work_base
@@ -1267,17 +1384,13 @@ class AgentConfig(BaseSettings):
                     tp = repo_root / tp
                 self.user_skills_dir_template = str(tp)
 
-            # Normalize obsidian_vault_root: resolve relative paths against repo_root,
-            # but allow explicit configuration to override the default scratchpad location.
-            vault = (
-                Path(self.obsidian_vault_root).expanduser() if self.obsidian_vault_root else None
-            )
-            if vault:
+            # Normalize obsidian_vault_root only when explicitly set (legacy override).
+            # By default it is None — scratchpad now lives inside each user's workspace.
+            if self.obsidian_vault_root:
+                vault = Path(self.obsidian_vault_root).expanduser()
                 if not vault.is_absolute():
                     vault = repo_root / vault
                 self.obsidian_vault_root = str(vault.resolve())
-            else:
-                self.obsidian_vault_root = str((repo_root / SCRATCHPAD_DIRNAME).resolve())
         except Exception:
             # Be conservative: never fail config construction due to normalization.
             return
@@ -1362,18 +1475,19 @@ class AgentConfig(BaseSettings):
     vision_model_id: str | None = Field(default=None)
 
     # Working folder settings
-    temp_files_base_dir: str = Field(default="./temp_files")
-    # NOTE: This is the user-visible “workspace” folder where the agent writes files.
+    # NOTE: This is the user-visible "workspace" folder where the agent writes files.
     # We keep it singular (`./workspace/<USER_ID>/`) to match prompts/docs and to
     # avoid confusion with other pluralized directories.
     working_folder_base_dir: str = Field(default="./workspace")
 
-    # Scratchpad (repo-local) + personality files
+    # Scratchpad — now lives inside each user's workspace at
+    # workspace/<USER_ID>/scratchpad/.  The old standalone vault root is
+    # deprecated; keep the field only for backward-compatible overrides.
     obsidian_vault_root: str | None = Field(
-        default=f"./{SCRATCHPAD_DIRNAME}",
+        default=None,
         description=(
-            "Filesystem path to the repo-local scratchpad root. "
-            "All user-specific notes/memory artifacts are stored under this directory."
+            "DEPRECATED — scratchpad now lives inside workspace/<USER_ID>/scratchpad/. "
+            "If set explicitly, the legacy standalone vault root is used instead."
         ),
     )
 
@@ -1385,6 +1499,55 @@ class AgentConfig(BaseSettings):
     personality_max_chars: int = Field(
         default=20_000,
         description="Maximum characters to read from each personality markdown file (soul/id).",
+    )
+
+    # Browser automation settings (AgentCore Browser via Strands)
+    browser_enabled: bool = Field(
+        default=True,
+        description="Enable the browser tool for AgentCore Browser automation with cookie persistence.",
+    )
+    browser_region: str = Field(
+        default="us-west-2",
+        description="AWS region for AgentCore Browser sessions.",
+    )
+
+    # AgentCore Browser recording / replay settings
+    # NOTE:
+    # - Recordings are only available when using a *custom* AgentCore browser that
+    #   was created with recording enabled (see bedrock_agentcore BrowserClient.create_browser).
+    # - The default system browser identifier ("aws.browser.v1") typically does NOT
+    #   emit sessionReplayArtifact.
+    browser_identifier: str = Field(
+        default="aws.browser.v1",
+        description=(
+            "AgentCore browser identifier to use for sessions. Use a custom browserId if you "
+            "want session replay artifacts (recordings) in S3."
+        ),
+    )
+    browser_recording_enabled: bool = Field(
+        default=False,
+        description=(
+            "If true, Mordecai will attempt to surface AgentCore session replay artifacts "
+            "as presigned S3 links after each message that uses the browser tool."
+        ),
+    )
+    browser_recording_s3_bucket: str | None = Field(
+        default=None,
+        description="S3 bucket for browser recordings (required to presign replay links).",
+    )
+    browser_recording_s3_prefix: str = Field(
+        default="mordecai/browser-replays/",
+        description="S3 key prefix for browser recordings (optional; used for validation/logging).",
+    )
+    browser_recording_presign_ttl_seconds: int = Field(
+        default=3600,
+        description="TTL (seconds) for generated presigned recording URLs.",
+    )
+
+    # 1Password credential management settings
+    onepassword_enabled: bool = Field(
+        default=True,
+        description="Enable the get_credential tool for 1Password credential retrieval via the Python SDK (requires OP_SERVICE_ACCOUNT_TOKEN).",
     )
 
     # Agent commands (loaded from config, shown in system prompt)

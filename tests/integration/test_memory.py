@@ -25,10 +25,12 @@ def temp_dirs():
     """Create temporary directories for test isolation."""
     session_dir = tempfile.mkdtemp(prefix="test_sessions_")
     skills_dir = tempfile.mkdtemp(prefix="test_skills_")
-    yield session_dir, skills_dir
+    workspace_dir = tempfile.mkdtemp(prefix="test_workspace_")
+    yield session_dir, skills_dir, workspace_dir
     # Cleanup
     shutil.rmtree(session_dir, ignore_errors=True)
     shutil.rmtree(skills_dir, ignore_errors=True)
+    shutil.rmtree(workspace_dir, ignore_errors=True)
 
 
 @pytest.fixture
@@ -43,7 +45,7 @@ def base_config():
 @pytest.fixture
 def memory_config(temp_dirs, base_config):
     """Create config with memory enabled."""
-    session_dir, skills_dir = temp_dirs
+    session_dir, skills_dir, workspace_dir = temp_dirs
 
     return AgentConfig(
         telegram_bot_token=base_config.telegram_bot_token,
@@ -56,13 +58,14 @@ def memory_config(temp_dirs, base_config):
         memory_name="TestMemory",
         session_storage_dir=session_dir,
         skills_base_dir=skills_dir,
+        working_folder_base_dir=workspace_dir,
     )
 
 
 @pytest.fixture
 def disabled_memory_config(temp_dirs, base_config):
     """Create config with memory disabled."""
-    session_dir, skills_dir = temp_dirs
+    session_dir, skills_dir, workspace_dir = temp_dirs
 
     return AgentConfig(
         telegram_bot_token=base_config.telegram_bot_token,
@@ -73,6 +76,7 @@ def disabled_memory_config(temp_dirs, base_config):
         memory_enabled=False,
         session_storage_dir=session_dir,
         skills_base_dir=skills_dir,
+        working_folder_base_dir=workspace_dir,
     )
 
 

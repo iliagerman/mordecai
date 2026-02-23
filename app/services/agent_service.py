@@ -119,6 +119,8 @@ class AgentService:
         pending_skill_service: "PendingSkillService | None" = None,
         logging_service: Any | None = None,
         conversation_dao: "ConversationDAO | None" = None,
+        cookie_dao: Any | None = None,
+        skill_secret_dao: Any | None = None,
     ) -> None:
         """Initialize the agent service.
 
@@ -130,6 +132,7 @@ class AgentService:
                 memory extraction.
             file_service: Optional FileService for file operations.
             conversation_dao: Optional ConversationDAO for conversation persistence.
+            cookie_dao: Optional BrowserCookieDAO for browser cookie persistence.
         """
         self.config = config
         self.memory_service = memory_service
@@ -142,6 +145,8 @@ class AgentService:
         self.pending_skill_service = pending_skill_service
         self.skill_service = skill_service
         self.logging_service = logging_service
+        self.cookie_dao = cookie_dao
+        self.skill_secret_dao = skill_secret_dao
         self.conversation_dao = conversation_dao
 
         # State managers for type-safe internal state
@@ -156,9 +161,9 @@ class AgentService:
         self._user_agents: dict[str, Agent] = {}
         self._user_conversation_managers: dict[str, SlidingWindowConversationManager] = {}
 
-        # External personality/identity loader (Obsidian vault)
+        # External personality/identity loader (workspace-based scratchpad)
         self.personality_service = PersonalityService(
-            config.obsidian_vault_root,
+            config.working_folder_base_dir,
             max_chars=getattr(config, "personality_max_chars", 20_000),
         )
 
@@ -220,6 +225,8 @@ class AgentService:
             user_agents=self._user_agents,
             get_session_id=self._get_session_id,
             on_agent_name_changed=self._on_agent_name_changed,
+            cookie_dao=cookie_dao,
+            skill_secret_dao=skill_secret_dao,
         )
 
         self._message_processor = MessageProcessor(

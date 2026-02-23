@@ -22,6 +22,8 @@ from app.models.agent import AttachmentInfo, MemoryContext, SkillInfo
 
 if TYPE_CHECKING:
     from app.config import AgentConfig
+    from app.dao.browser_cookie_dao import BrowserCookieDAO
+    from app.dao.skill_secret_dao import SkillSecretDAO
     from app.services.agent.model_factory import ModelFactory
     from app.services.agent.prompt_builder import SystemPromptBuilder
     from app.services.agent.skills import SkillRepository
@@ -31,6 +33,12 @@ if TYPE_CHECKING:
     from app.services.memory_service import MemoryService
     from app.services.pending_skill_service import PendingSkillService
 
+from app.tools import (
+    browser_tool as browser_tool_module,
+)
+from app.tools import (
+    credential_tool as credential_tool_module,
+)
 from app.tools import (
     cron_tools as cron_tools_module,
 )
@@ -99,6 +107,8 @@ class AgentCreator:
         user_agents: dict,
         get_session_id: Callable[[str], str],
         on_agent_name_changed: Callable[[str, str], None],
+        cookie_dao: BrowserCookieDAO | None = None,
+        skill_secret_dao: SkillSecretDAO | None = None,
     ):
         """Initialize the agent creator.
 
@@ -117,6 +127,8 @@ class AgentCreator:
             user_agents: Dict of user agents (will be mutated).
             get_session_id: Function to get session ID.
             on_agent_name_changed: Callback for agent name changes.
+            cookie_dao: Optional BrowserCookieDAO for browser cookie persistence.
+            skill_secret_dao: Optional SkillSecretDAO for per-user skill secrets.
         """
         self.config = config
         self.memory_service = memory_service
@@ -132,6 +144,8 @@ class AgentCreator:
         self._user_agents = user_agents
         self._get_session_id = get_session_id
         self._on_agent_name_changed = on_agent_name_changed
+        self.cookie_dao = cookie_dao
+        self.skill_secret_dao = skill_secret_dao
 
     def create_model(self, use_vision: bool = False) -> Model:
         """Create a model instance."""
@@ -368,9 +382,15 @@ class AgentCreator:
                 user_id,
             )
 
-        # Set up personality vault tools context (Obsidian vault)
+        # Set up personality vault tools context (per-user scratchpad)
+        try:
+            from app.config import get_user_scratchpad_path
+
+            scratchpad_dir = str(get_user_scratchpad_path(self.config, user_id))
+        except Exception:
+            scratchpad_dir = None
         personality_vault_module.set_personality_context(
-            getattr(self.config, "obsidian_vault_root", None),
+            scratchpad_dir,
             user_id,
             max_chars=getattr(self.config, "personality_max_chars", 20_000),
         )
@@ -382,12 +402,22 @@ class AgentCreator:
             config=self.config,
         )
 
-        # Skill secrets tool context: persist env vars into secrets.yml
+        # Skill secrets tool context: persist env vars into DB
         skill_secrets_module.set_skill_secrets_context(
             user_id=user_id,
-            secrets_path=getattr(self.config, "secrets_path", "secrets.yml"),
             config=self.config,
+            dao=self.skill_secret_dao,
         )
+
+        # Pre-load user's skill secrets from DB into the in-memory cache
+        # so shell/tool calls see them immediately without a DB round-trip.
+        if self.skill_secret_dao is not None:
+            try:
+                user_secrets = skill_secrets_module.get_cached_skill_secrets()
+                if user_secrets:
+                    skill_secrets_module.set_cached_skill_secrets(user_secrets)
+            except Exception:
+                pass
 
         # File read/write tool context: allow access to user's skill directories
         file_read_env_module.set_file_read_context(
@@ -398,6 +428,22 @@ class AgentCreator:
             user_id=user_id,
             config=self.config,
         )
+
+        # Browser tool: create or retrieve a per-user browser instance
+        browser_instance = None
+        if self.cookie_dao is not None:
+            browser_instance = browser_tool_module.get_or_create_browser(
+                user_id=user_id,
+                config=self.config,
+                cookie_dao=self.cookie_dao,
+            )
+
+        # Credential tool context: 1Password via op CLI
+        if getattr(self.config, "onepassword_enabled", False):
+            credential_tool_module.set_credential_context(
+                user_id=user_id,
+                config=self.config,
+            )
 
         # Built-in Strands tools (not the same thing as instruction-based "skills").
         # Skills are loaded separately from the skills directory via load_tools_from_directory.
@@ -410,7 +456,7 @@ class AgentCreator:
             send_progress_module.send_progress,
         ]
 
-        # Built-in tools for persisting per-skill settings into secrets.yml
+        # Built-in tools for persisting per-skill settings into DB
         # (used during skill onboarding / setup prompts).
         builtin_tools.append(skill_secrets_module.set_skill_env_vars)
         builtin_tools.append(skill_secrets_module.set_skill_config)
@@ -470,6 +516,14 @@ class AgentCreator:
                 logger.info("Added image_reader tool for vision processing")
             except (ImportError, AttributeError) as e:
                 logger.warning("image_reader tool not available for image attachment: %s", e)
+
+        # Add browser automation tool if cookie DAO is available
+        if browser_instance is not None:
+            builtin_tools.append(browser_instance.browser)
+
+        # Add credential retrieval tool if 1Password is enabled
+        if getattr(self.config, "onepassword_enabled", False):
+            builtin_tools.append(credential_tool_module.get_credential)
 
         # Load MCP clients from configuration if available
         try:

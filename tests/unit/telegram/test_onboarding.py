@@ -29,7 +29,7 @@ class _StubOnboardingService(OnboardingService):
         soul_content: str | None = None,
         id_content: str | None = None,
     ) -> None:
-        super().__init__(vault_root=None)
+        super().__init__(workspace_base_dir=None)
         self.soul_content = soul_content
         self.id_content = id_content
 

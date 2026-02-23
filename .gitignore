@@ -87,7 +87,7 @@ dmypy.json
 alembic/versions/*.pyc
 
 MagicMock
-
+screenshots
 # OS
 .DS_Store
 Thumbs.db
@@ -96,7 +96,6 @@ settings.local.json
 agent.db
 workspace/
 splintermaster
-temp_files
 himalaya.toml
 
 

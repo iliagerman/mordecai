@@ -121,10 +121,12 @@ requires:
     svc = AgentService(config=cfg, memory_service=None)
 
     # Ensure the per-user directory exists and shared skills are mirrored.
-    user_dir = svc._get_user_skills_dir("u1")
+    svc._get_user_skills_dir("u1")
 
-    # Simulate an already-generated Himalaya config file at the per-user root.
-    (user_dir / "himalaya.toml").write_text(
+    # Simulate an already-generated Himalaya config file in workspace/<user>/tmp/.
+    workspace_tmp = tmp_path / "workspaces" / "u1" / "tmp"
+    workspace_tmp.mkdir(parents=True, exist_ok=True)
+    (workspace_tmp / "himalaya.toml").write_text(
         """[accounts.default]
 default = true
 email = "user@example.com"

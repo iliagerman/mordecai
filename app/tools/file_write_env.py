@@ -14,7 +14,6 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from app.config import resolve_user_skills_dir
 from app.observability.trace_context import get_trace_id
 from app.observability.trace_logging import trace_event
 
@@ -94,29 +93,25 @@ def _find_repo_root(*, start: Path) -> Path:
     return Path.cwd()
 
 
-def _scratchpad_root() -> Path:
-    repo_root = _find_repo_root(start=Path(__file__))
-    return (repo_root / "scratchpad").resolve()
-
-
 def _allowed_roots() -> list[Path]:
-    """Return list of allowed root paths for file operations."""
-    roots = [_scratchpad_root()]
+    """Return list of allowed root paths for file write operations.
 
-    # Add user's skill directory if context is available
+    Security: Only the user's workspace directory is writable.
+    The scratchpad lives inside the workspace so no separate root is needed.
+    """
+    roots: list[Path] = []
+
     cfg = _config_var.get()
     uid = _current_user_id_var.get()
     if cfg is not None and uid is not None:
         try:
-            user_skills_dir = resolve_user_skills_dir(cfg, uid, create=False)
-            if user_skills_dir.exists():
-                roots.append(user_skills_dir)
-                # Also allow the skills base dir for shared skill access
-                skills_base = Path(getattr(cfg, "skills_base_dir", "./skills")).expanduser()
-                if not skills_base.is_absolute():
-                    skills_base = _find_repo_root(start=Path(__file__)) / skills_base
-                if skills_base.exists():
-                    roots.append(skills_base.resolve())
+            # User's working directory (the only writable location)
+            work_base = Path(getattr(cfg, "working_folder_base_dir", "./workspace")).expanduser()
+            if not work_base.is_absolute():
+                work_base = _find_repo_root(start=Path(__file__)) / work_base
+            user_work = (work_base / uid).resolve()
+            if user_work.exists():
+                roots.append(user_work)
         except Exception:
             pass
 
@@ -127,9 +122,8 @@ def _ensure_allowed_path(path_raw: str) -> Path:
     """Ensure the path is within an allowed directory.
 
     Allowed directories:
-    - scratchpad/**
-    - User's skill directory (e.g., /app/skills/{username}/**)
-    - Skills base directory (e.g., /app/skills/** for shared skills)
+    - User's working directory (e.g., /app/workspace/{username}/**)
+      (includes scratchpad at workspace/{username}/scratchpad/**)
     """
     p = Path(str(path_raw)).expanduser()
     if not p.is_absolute():

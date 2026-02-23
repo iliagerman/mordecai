@@ -55,6 +55,11 @@ class TestDatabaseInitialization:
             "cron_locks",
             "long_memory",
             "conversation_messages",
+            "conversations",
+            "conversation_participants",
+            "multi_agent_conversation_messages",
+            "browser_cookies",
+            "user_skill_secrets",
         }
         assert expected_tables == set(table_names)
 

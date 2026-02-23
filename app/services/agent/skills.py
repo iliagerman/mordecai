@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.config import refresh_runtime_env_from_secrets, resolve_user_skills_dir
+from app.config import _find_repo_root, refresh_runtime_env_from_secrets, resolve_user_skills_dir
 from app.models.agent import MissingSkillRequirements, RequirementSpec, SkillInfo, WhenClause
 from app.services.agent.frontmatter import (
     extract_required_bins,
@@ -237,62 +237,22 @@ class SkillRepository:
         return list(skills_by_name.values())
 
     def load_merged_skill_secrets(self, user_id: str) -> dict[str, Any]:
-        """Load merged skill secrets for a user.
+        """Load skill secrets for a user from the database cache.
 
-        Sources (later wins):
-          - repo-root config.yml (optional) [skills: only]
-          - secrets.yml (global)
-          - skills/<user>/skills_secrets.yml (per-user) [skills: only]
+        The DB is the single source of truth for per-user skill secrets.
+        Returns ``{"skills": {...}}`` dict compatible with existing callers.
         """
 
-        merged: dict[str, Any] = {}
-
-        # repo-root config.yml is optional
         try:
-            repo_root = Path(__file__).resolve().parents[3]
-            cfg_yml = repo_root / "config.yml"
-            if cfg_yml.exists() and cfg_yml.is_file():
-                import yaml
+            from app.tools.skill_secrets import get_cached_skill_secrets
 
-                cfg_data = yaml.safe_load(cfg_yml.read_text(encoding="utf-8")) or {}
-                if isinstance(cfg_data, dict) and isinstance(cfg_data.get("skills"), dict):
-                    merged["skills"] = cfg_data.get("skills")
+            db_secrets = get_cached_skill_secrets()
+            if db_secrets:
+                return {"skills": db_secrets}
         except Exception:
             pass
 
-        try:
-            from app.config import (
-                _deep_merge_dict,
-                load_raw_secrets,
-                resolve_user_skills_secrets_path,
-            )
-
-            secrets_path = Path(getattr(self.config, "secrets_path", "secrets.yml"))
-            global_secrets = load_raw_secrets(secrets_path)
-            if isinstance(global_secrets, dict):
-                skills = global_secrets.get("skills")
-                if isinstance(skills, dict):
-                    merged_skills = merged.get("skills")
-                    if not isinstance(merged_skills, dict):
-                        merged_skills = {}
-                        merged["skills"] = merged_skills
-                    merged_skills.update(skills)
-
-            user_skills_secrets_path = resolve_user_skills_secrets_path(self.config, user_id)
-            user_secrets = load_raw_secrets(user_skills_secrets_path)
-            if isinstance(user_secrets, dict):
-                user_skills = user_secrets.get("skills")
-                if isinstance(user_skills, dict):
-                    merged_skills = merged.get("skills")
-                    if not isinstance(merged_skills, dict):
-                        merged_skills = {}
-                        merged["skills"] = merged_skills
-
-                    _deep_merge_dict(merged_skills, user_skills)
-        except Exception:
-            pass
-
-        return merged
+        return {}
 
     def get_missing_skill_requirements(self, user_id: str) -> dict[str, MissingSkillRequirements]:
         """Return missing required env/config/bins values and config files for installed skills."""
@@ -343,10 +303,11 @@ class SkillRepository:
             # Fallback to PATH
             return shutil.which(bin_name) is not None
 
-        def get_rendered_config_files(skill_name: str, skill_dir: Path, user_root: Path) -> list[Path]:
+        def get_rendered_config_files(skill_name: str, skill_dir: Path, output_dir: Path) -> list[Path]:
             """Get list of config files that should be rendered from *_example templates.
 
-            Returns the destination paths where rendered config files should exist.
+            Returns the destination paths where rendered config files should exist
+            (in workspace/<user>/tmp/).
             """
             config_files: list[Path] = []
 
@@ -364,7 +325,7 @@ class SkillRepository:
                             out_name = dest_name
                         else:
                             out_name = f"{skill_name}__{dest_name}"
-                        config_files.append(user_root / out_name)
+                        config_files.append(output_dir / out_name)
 
                 for tpl in skill_dir.rglob("*.example"):
                     if tpl.is_file():
@@ -376,7 +337,7 @@ class SkillRepository:
                             out_name = dest_name
                         else:
                             out_name = f"{skill_name}__{dest_name}"
-                        config_files.append(user_root / out_name)
+                        config_files.append(output_dir / out_name)
             except Exception:
                 pass
 
@@ -424,11 +385,14 @@ class SkillRepository:
 
             missing_cfg: list[RequirementSpec] = []
             if cfg_reqs:
-                # Heuristic: if a per-user generated config file exists at the
-                # user skills root (e.g. himalaya.toml), do not keep prompting.
+                # Heuristic: if a per-user generated config file exists in
+                # workspace/<user>/tmp/ (e.g. himalaya.toml), do not keep prompting.
                 try:
-                    user_root = resolve_user_skills_dir(self.config, user_id, create=True)
-                    generated_cfg = user_root / f"{skill_name.lower()}.toml"
+                    work_base_cfg = Path(getattr(self.config, "working_folder_base_dir", "./workspace")).expanduser()
+                    if not work_base_cfg.is_absolute():
+                        work_base_cfg = _find_repo_root(start=Path(__file__)) / work_base_cfg
+                    ws_tmp = (work_base_cfg / str(user_id) / "tmp").resolve()
+                    generated_cfg = ws_tmp / f"{skill_name.lower()}.toml"
                     if generated_cfg.exists() and generated_cfg.is_file():
                         cfg_reqs = []
                 except Exception:
@@ -457,11 +421,14 @@ class SkillRepository:
                         missing_bins.append(r)
 
             missing_config_files: list[RequirementSpec] = []
-            # Check if rendered config files exist
+            # Check if rendered config files exist in workspace/<user>/tmp/
             try:
-                user_root = resolve_user_skills_dir(self.config, user_id, create=True)
+                work_base = Path(getattr(self.config, "working_folder_base_dir", "./workspace")).expanduser()
+                if not work_base.is_absolute():
+                    work_base = _find_repo_root(start=Path(__file__)) / work_base
+                workspace_tmp = (work_base / str(user_id) / "tmp").resolve()
                 skill_dir_obj = Path(skill_path)
-                expected_configs = get_rendered_config_files(skill_name, skill_dir_obj, user_root)
+                expected_configs = get_rendered_config_files(skill_name, skill_dir_obj, workspace_tmp)
                 for config_path in expected_configs:
                     if not config_path.exists() or not config_path.is_file():
                         missing_config_files.append(

@@ -46,6 +46,7 @@ class TestAgentServiceModelProvider:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
     @pytest.fixture
@@ -58,6 +59,7 @@ class TestAgentServiceModelProvider:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
     @patch("app.services.agent.model_factory.BedrockModel")
@@ -83,6 +85,7 @@ class TestAgentServiceModelProvider:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
         service = AgentService(config)
         service._create_model()
@@ -110,6 +113,7 @@ class TestAgentServiceModelProvider:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
         service = AgentService(config)
 
@@ -147,6 +151,7 @@ class TestAgentServiceSession:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
     @patch("app.services.agent.model_factory.BedrockModel")
@@ -313,6 +318,7 @@ class TestAgentServiceMessageProcessing:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
     @pytest.mark.asyncio
@@ -407,6 +413,7 @@ class TestAgentServiceMessageCountTracking:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
     def test_get_message_count_returns_zero_for_new_user(self, config):
@@ -503,6 +510,7 @@ class TestAgentServiceAutomaticExtraction:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
             max_conversation_messages=4,  # Low limit for testing
             extraction_timeout_seconds=5,
         )
@@ -716,6 +724,7 @@ class TestVisionModelSelection:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
     @pytest.fixture
@@ -728,6 +737,7 @@ class TestVisionModelSelection:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
     @patch("app.services.agent.model_factory.BedrockModel")
@@ -797,6 +807,7 @@ class TestImageCaptionInclusion:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
     @pytest.fixture
@@ -892,6 +903,7 @@ class TestVisionProcessingFallback:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
     @pytest.fixture
@@ -1112,12 +1124,12 @@ class TestAgentServicePersonalityInjection:
     """
 
     @pytest.fixture
-    def vault_dir(self, tmp_path):
+    def workspace_base(self, tmp_path):
         # Use pytest's tmp_path so we don't depend on other class-scoped fixtures.
-        return str(tmp_path / "vault")
+        return str(tmp_path / "workspace")
 
     @pytest.fixture
-    def config(self, tmp_path, vault_dir):
+    def config(self, tmp_path, workspace_base):
         base = str(tmp_path / "agent")
         return AgentConfig(
             model_provider=ModelProvider.BEDROCK,
@@ -1125,23 +1137,22 @@ class TestAgentServicePersonalityInjection:
             telegram_bot_token="test-token",
             session_storage_dir=base,
             skills_base_dir=base,
-            working_folder_base_dir=base,
-            obsidian_vault_root=vault_dir,
+            working_folder_base_dir=workspace_base,
             personality_enabled=True,
             personality_max_chars=20_000,
         )
 
-    def _write(self, vault_dir: str, relpath: str, content: str) -> None:
-        path = Path(vault_dir) / relpath
+    def _write(self, workspace_base: str, user_id: str, filename: str, content: str) -> None:
+        path = Path(workspace_base) / user_id / "scratchpad" / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
-    def test_falls_back_to_default_when_user_missing(self, config, vault_dir):
+    def test_falls_back_to_default_when_user_missing(self, config, workspace_base):
         service = AgentService(config)
         user_id = "12345"
 
-        # Create the vault directory so it's accessible
-        Path(vault_dir).mkdir(parents=True, exist_ok=True)
+        # Create the workspace directory so it's accessible
+        Path(workspace_base).mkdir(parents=True, exist_ok=True)
 
         prompt = service._build_system_prompt(user_id)
 
@@ -1154,12 +1165,12 @@ class TestAgentServicePersonalityInjection:
         assert "# Identity" in prompt
         assert "source: repo" in prompt
 
-    def test_user_files_override_default(self, config, vault_dir):
+    def test_user_files_override_default(self, config, workspace_base):
         service = AgentService(config)
         user_id = "999"
 
-        self._write(vault_dir, f"users/{user_id}/soul.md", "USER_SOUL")
-        self._write(vault_dir, f"users/{user_id}/id.md", "USER_ID")
+        self._write(workspace_base, user_id, "soul.md", "USER_SOUL")
+        self._write(workspace_base, user_id, "id.md", "USER_ID")
 
         prompt = service._build_system_prompt(user_id)
 
@@ -1210,6 +1221,7 @@ class TestGeminiModelProvider:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
     def test_google_enum_value_exists(self):
@@ -1224,6 +1236,7 @@ class TestGeminiModelProvider:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
         assert config.google_model_id == "gemini-2.5-flash"
         assert config.google_api_key is None
@@ -1237,6 +1250,7 @@ class TestGeminiModelProvider:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
         assert config.google_model_id == "gemini-2.0-pro"
         assert config.google_api_key == "custom-api-key"
@@ -1263,6 +1277,7 @@ class TestGeminiModelProvider:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
         service = AgentService(config)
         service._create_model()
@@ -1280,6 +1295,7 @@ class TestGeminiModelProvider:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
         service = AgentService(config)
         service._create_model()
@@ -1296,6 +1312,7 @@ class TestGeminiModelProvider:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
         service = AgentService(config)
 

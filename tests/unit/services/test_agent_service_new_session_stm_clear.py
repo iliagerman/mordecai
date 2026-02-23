@@ -19,19 +19,19 @@ async def test_new_session_clears_obsidian_stm_even_if_read_fails(tmp_path: Path
     ensure the service still clears stm.md on disk.
     """
 
-    vault = tmp_path / "vault"
+    workspace_base = tmp_path / "workspaces"
 
     cfg = MagicMock(spec=AgentConfig)
     cfg.skills_base_dir = str(tmp_path / "skills")
     cfg.shared_skills_dir = str(tmp_path / "shared_skills")
     cfg.secrets_path = str(tmp_path / "secrets.yml")
-    cfg.obsidian_vault_root = str(vault)
+    cfg.obsidian_vault_root = None
     cfg.personality_max_chars = 20_000
     cfg.personality_enabled = False
     cfg.timezone = "UTC"
     cfg.memory_enabled = False
     cfg.agent_commands = []
-    cfg.working_folder_base_dir = str(tmp_path / "workspaces")
+    cfg.working_folder_base_dir = str(workspace_base)
     cfg.extraction_timeout_seconds = 1
     cfg.model_provider = "bedrock"  # Required by ModelFactory
     cfg.bedrock_model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
@@ -63,7 +63,8 @@ async def test_new_session_clears_obsidian_stm_even_if_read_fails(tmp_path: Path
         stm_module, "read_raw_text", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom"))
     )
 
-    stm_path = short_term_memory_path(str(vault), user_id)
+    scratchpad_dir = str(workspace_base / user_id / "scratchpad")
+    stm_path = short_term_memory_path(scratchpad_dir)
     stm_path.parent.mkdir(parents=True, exist_ok=True)
     stm_path.write_text("# STM\n\n- something\n", encoding="utf-8")
     assert stm_path.exists()

@@ -23,6 +23,7 @@ def test_missing_skill_requirements_respects_conditional_requires_config(temp_di
         telegram_bot_token="test-token",
         session_storage_dir=temp_dir,
         skills_base_dir=temp_dir,
+        working_folder_base_dir=temp_dir + "/workspace",
     )
 
     service = AgentService(config)

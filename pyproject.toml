@@ -44,6 +44,10 @@ dependencies = [
     "pdfplumber>=0.10.0",
     # TOML writing for skill configs
     "tomli-w>=1.0.0",
+    # Browser automation (AgentCore Browser via Strands)
+    "playwright>=1.40.0",
+    # 1Password Python SDK for credential retrieval
+    "onepassword-sdk>=0.1.0",
 ]
 
 [project.optional-dependencies]

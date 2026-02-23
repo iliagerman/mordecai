@@ -97,29 +97,39 @@ def _find_repo_root(*, start: Path) -> Path:
     return Path.cwd()
 
 
-def _scratchpad_root() -> Path:
-    repo_root = _find_repo_root(start=Path(__file__))
-    return (repo_root / "scratchpad").resolve()
-
-
 def _allowed_roots() -> list[Path]:
-    """Return list of allowed root paths for file operations."""
-    roots = [_scratchpad_root()]
+    """Return list of allowed root paths for file operations.
 
-    # Add user's skill directory if context is available
+    Security: Only the user's own skill directory, shared skills directory,
+    and workspace directory are allowed — never the entire skills_base_dir
+    (which would expose other users' directories).
+    The scratchpad lives inside the workspace so no separate root is needed.
+    """
+    roots: list[Path] = []
+
     cfg = _config_var.get()
     uid = _current_user_id_var.get()
     if cfg is not None and uid is not None:
         try:
+            # User's own skill directory
             user_skills_dir = resolve_user_skills_dir(cfg, uid, create=False)
             if user_skills_dir.exists():
                 roots.append(user_skills_dir)
-                # Also allow the skills base dir for shared skill access
-                skills_base = Path(getattr(cfg, "skills_base_dir", "./skills")).expanduser()
-                if not skills_base.is_absolute():
-                    skills_base = _find_repo_root(start=Path(__file__)) / skills_base
-                if skills_base.exists():
-                    roots.append(skills_base.resolve())
+
+            # Shared skills directory (read-only access for all users)
+            shared_dir = Path(getattr(cfg, "shared_skills_dir", "./skills/shared")).expanduser()
+            if not shared_dir.is_absolute():
+                shared_dir = _find_repo_root(start=Path(__file__)) / shared_dir
+            if shared_dir.resolve().exists():
+                roots.append(shared_dir.resolve())
+
+            # User's working directory
+            work_base = Path(getattr(cfg, "working_folder_base_dir", "./workspace")).expanduser()
+            if not work_base.is_absolute():
+                work_base = _find_repo_root(start=Path(__file__)) / work_base
+            user_work = (work_base / uid).resolve()
+            if user_work.exists():
+                roots.append(user_work)
         except Exception:
             pass
 
@@ -130,9 +140,10 @@ def _ensure_allowed_path(path_raw: str) -> Path:
     """Ensure the path is within an allowed directory.
 
     Allowed directories:
-    - scratchpad/**
-    - User's skill directory (e.g., /app/skills/{username}/**)
-    - Skills base directory (e.g., /app/skills/** for shared skills)
+    - User's own skill directory (e.g., /app/skills/{username}/**)
+    - Shared skills directory (e.g., /app/skills/shared/**)
+    - User's working directory (e.g., /app/workspace/{username}/**)
+      (includes scratchpad at workspace/{username}/scratchpad/**)
     """
     p = Path(str(path_raw)).expanduser()
     if not p.is_absolute():

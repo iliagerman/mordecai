@@ -22,7 +22,7 @@ from app.services.file_service import FileService, FileValidationResult
 # ============================================================================
 
 
-def create_file_service(temp_base: str, work_base: str) -> FileService:
+def create_file_service(work_base: str) -> FileService:
     """Create a FileService with the given directories."""
     config = MagicMock(
         spec=AgentConfig,
@@ -47,7 +47,6 @@ def create_file_service(temp_base: str, work_base: str) -> FileService:
             ".gif",
             ".webp",
         ],
-        temp_files_base_dir=temp_base,
         working_folder_base_dir=work_base,
     )
     return FileService(config)
@@ -61,16 +60,14 @@ def create_file_service(temp_base: str, work_base: str) -> FileService:
 @pytest.fixture
 def temp_dirs():
     """Create temporary directories for testing."""
-    with tempfile.TemporaryDirectory() as temp_base:
-        with tempfile.TemporaryDirectory() as work_base:
-            yield temp_base, work_base
+    with tempfile.TemporaryDirectory() as work_base:
+        yield work_base
 
 
 @pytest.fixture
 def file_service(temp_dirs):
     """Create FileService instance for testing."""
-    temp_base, work_base = temp_dirs
-    return create_file_service(temp_base, work_base)
+    return create_file_service(temp_dirs)
 
 
 VALID_EXTENSIONS = [
@@ -244,7 +241,9 @@ def test_user_directories_isolated(file_service: FileService):
     temp_dir_1 = file_service.get_user_temp_dir(user_id_1)
     temp_dir_2 = file_service.get_user_temp_dir(user_id_2)
     assert temp_dir_1 != temp_dir_2
-    assert temp_dir_1.parent == temp_dir_2.parent
+    # Both temp dirs live under workspace/<user_id>/temp/ — they share the
+    # same workspace root (grandparent).
+    assert temp_dir_1.parent.parent == temp_dir_2.parent.parent
 
 
 # ============================================================================
@@ -257,8 +256,8 @@ def test_temp_and_working_dirs_separate(file_service: FileService):
     temp_dir = file_service.get_user_temp_dir(user_id)
     work_dir = file_service.get_user_working_dir(user_id)
     assert temp_dir != work_dir
-    assert not str(temp_dir).startswith(str(work_dir))
-    assert not str(work_dir).startswith(str(temp_dir))
+    # Temp dir now lives inside the user's workspace at workspace/<user_id>/temp/
+    assert temp_dir == work_dir / "temp"
 
 
 # ============================================================================

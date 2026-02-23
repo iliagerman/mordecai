@@ -14,6 +14,19 @@ from app.services.agent.skills import SkillRepository
 logger = logging.getLogger(__name__)
 
 
+def _redact_yaml_tree(data: Any) -> Any:
+    """Recursively replace all leaf values with ``'***'``.
+
+    Preserves dict keys and list structure so the agent can see the
+    configuration hierarchy without learning actual secret values.
+    """
+    if isinstance(data, dict):
+        return {k: _redact_yaml_tree(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_redact_yaml_tree(item) for item in data]
+    return "***"
+
+
 @dataclass(slots=True)
 class SystemPromptBuilder:
     config: Any
@@ -78,12 +91,15 @@ class SystemPromptBuilder:
         prompt += self._skills_section(user_id)
         prompt += self._working_folder_section(user_id)
 
+        prompt += self._skill_env_vars_section(user_id)
         prompt += self._progress_updates_section()
         prompt += self._shell_timeout_handling_section()
 
         if self.has_cron:
             prompt += self._scheduling_section()
 
+        prompt += self._security_boundaries_section(user_id)
+        prompt += self._browser_credential_section()
         prompt += self._attachment_context(attachments, user_id)
 
         return prompt
@@ -158,55 +174,34 @@ class SystemPromptBuilder:
         return "\n".join(lines)
 
     def _obsidian_access_section(self) -> str:
-        # Scratchpad access capabilities (historical name kept for compatibility)
-        try:
-            vault_root_raw = getattr(self.config, "obsidian_vault_root", None)
-            vault_root_path = (
-                Path(str(vault_root_raw)).expanduser().resolve() if vault_root_raw else None
-            )
-            vault_accessible = bool(
-                vault_root_path and vault_root_path.exists() and vault_root_path.is_dir()
-            )
-            vault_root_display = f"`{vault_root_path}`" if vault_root_path else "(not configured)"
-        except Exception:
-            vault_root_raw = getattr(self.config, "obsidian_vault_root", None)
-            vault_accessible = False
-            vault_root_display = f"`{vault_root_raw}`" if vault_root_raw else "(not configured)"
-
+        # Scratchpad access capabilities
+        workspace_base = getattr(self.config, "working_folder_base_dir", None)
         out = "\n## Scratchpad Access\n\n"
-        if not vault_root_raw:
+        if not workspace_base:
             out += (
-                "Scratchpad root is **not configured**. You do NOT have filesystem access to the user's scratchpad notes. "
+                "Scratchpad is **not configured** (workspace not set). "
+                "You do NOT have filesystem access to the user's scratchpad notes. "
                 "Ask the user to paste content or send files as attachments.\n\n"
-            )
-        elif not vault_accessible:
-            out += (
-                f"Scratchpad root is configured as {vault_root_display}, but it is **not accessible in this runtime** (missing path / no permissions). "
-                "Ask the user to paste the relevant contents (or attach files), or fix the deployment so the scratchpad directory is readable/writable.\n\n"
             )
         else:
             out += (
-                f"Scratchpad root is accessible at {vault_root_display}.\n\n"
+                "Scratchpad is accessible at `workspace/<USER_ID>/scratchpad/`.\n\n"
                 "Constraints and best practices:\n"
-                "- You may only read/write files under `scratchpad/**` (no other filesystem access).\n"
-                "- Store user-scoped notes and artifacts under `users/<USER_ID>/...` within the scratchpad.\n"
-                "- Use the personality tools to edit only `users/<USER_ID>/{soul.md,id.md}`.\n"
-                "- You may use the injected STM scratchpad (`users/<USER_ID>/stm.md`) as context when it appears in this prompt.\n"
+                "- The scratchpad lives inside the user's workspace directory.\n"
+                "- Use the personality tools to edit `scratchpad/{soul.md,id.md}`.\n"
+                "- You may use the injected STM scratchpad (`scratchpad/stm.md`) as context when it appears in this prompt.\n"
             )
         return out
 
     def _obsidian_stm_section(self, user_id: str) -> str:
-        vault_root = getattr(self.config, "obsidian_vault_root", None)
-        if not vault_root:
-            return ""
-
         try:
+            from app.config import get_user_scratchpad_path
             from app.observability.redaction import redact_text
             from app.tools.short_term_memory_vault import read_raw_text
 
+            scratchpad_dir = str(get_user_scratchpad_path(self.config, user_id, create=False))
             stm_text = read_raw_text(
-                vault_root,
-                user_id,
+                scratchpad_dir,
                 max_chars=getattr(self.config, "personality_max_chars", 20_000),
             )
 
@@ -299,8 +294,9 @@ class SystemPromptBuilder:
             '- `shell(command="...")` - Run bash/shell commands\n'
             '- `file_read(path="...", mode="view")` - Read files\n'
             "- `file_write(...)` - Write files\n\n"
-            "**⚠️ MANDATORY: ALWAYS Read SKILL.md Before Using a Skill ⚠️**\n\n"
+            "**⚠️ MANDATORY: Read SKILL.md ONCE Before Using a Skill ⚠️**\n\n"
             "You CANNOT use a skill until you have read its SKILL.md file.\n"
+            "Read it ONCE per skill invocation - do NOT re-read the same SKILL.md multiple times.\n"
             "- Do NOT guess the command name from the skill name (e.g., 'tavily_search' skill ≠ 'tavily' CLI)\n"
             "- Do NOT assume a Python venv or CLI exists\n"
             "- Do NOT skip reading SKILL.md - you will likely use the wrong command\n\n"
@@ -342,7 +338,7 @@ class SystemPromptBuilder:
                 "Some installed have missing prerequisites (env vars, config fields, binaries, or config files).\n"
                 "If a required value is missing, ask the user for it and then persist it:\n"
                 "- Env vars: `set_skill_env_vars(...)`\n"
-                "- Config fields: `set_skill_config(...)` (stored in `skills/<user>/skills_secrets.yml`)\n"
+                "- Config fields: `set_skill_config(...)` (stored in the database)\n"
                 "- Missing binaries: The user needs to install them or they may already be in the skill's venv\n"
                 "- Missing config files: Run skill onboarding to generate them from templates\n\n"
                 "IMPORTANT: If a skill has missing setup requirements, do NOT run its shell commands yet.\n\n"
@@ -404,6 +400,71 @@ class SystemPromptBuilder:
                         prompt += line + "\n"
 
         return prompt
+
+    def _skill_env_vars_section(self, user_id: str) -> str:
+        """List env var names that are pre-loaded from skill secrets.
+
+        This tells the agent which environment variables are already available
+        in every shell() call so it can use them directly (e.g. $MY_VAR)
+        without asking the user to provide them again.
+
+        Also shows the redacted configuration structure so the agent knows
+        the hierarchy of stored settings without seeing actual values.
+        """
+        try:
+            from app.config import get_skill_env_vars
+
+            merged_secrets = self.skill_repo.load_merged_skill_secrets(user_id)
+            env_vars = get_skill_env_vars(
+                secrets=merged_secrets, skill_name="", user_id=user_id,
+            )
+        except Exception:
+            return ""
+
+        if not env_vars:
+            return ""
+
+        lines = ["\n## Pre-loaded Skill Environment Variables\n"]
+        lines.append(
+            "The following environment variables are automatically injected "
+            "into every `shell()` call from skill secrets. "
+            "You do NOT need to export or set them — they are already available.\n"
+        )
+        for name in sorted(env_vars):
+            lines.append(f"- `{name}`")
+        lines.append("")
+
+        # Show redacted configuration structure (keys visible, values masked).
+        try:
+            import yaml
+
+            skills_data = merged_secrets.get("skills", {})
+            if skills_data and isinstance(skills_data, dict):
+                redacted = _redact_yaml_tree(skills_data)
+                redacted_yaml = yaml.dump(
+                    redacted, default_flow_style=False, sort_keys=True,
+                ).strip()
+                lines.append("### Configuration Structure (values redacted)\n")
+                lines.append("```yaml")
+                lines.append(redacted_yaml)
+                lines.append("```\n")
+        except Exception:
+            pass
+
+        return "\n".join(lines)
+
+    def _security_boundaries_section(self, user_id: str) -> str:
+        """Instruct the agent to respect per-user data isolation."""
+        shared_dir = getattr(self.config, "shared_skills_dir", "skills/shared")
+        return (
+            "\n## Security Boundaries\n\n"
+            "You must NEVER access other users' directories or data.\n"
+            f"- Your skill files are in: `skills/{user_id}/`\n"
+            f"- You may read shared skills in: `{shared_dir}/`\n"
+            "- You must NEVER read, list, or access other users' skill directories\n"
+            "- You must NEVER attempt to read skills_secrets.yml files (secrets are managed via the database)\n"
+            "- Skill secrets are managed exclusively through `set_skill_env_vars` / `set_skill_config` / `unset_skill_config_keys` tools\n\n"
+        )
 
     def _working_folder_section(self, user_id: str) -> str:
         working_dir = self.working_dir_resolver(user_id)
@@ -469,6 +530,50 @@ class SystemPromptBuilder:
             "- 'The transcript fetch timed out after 5 minutes, but I was able to retrieve about 8,000 characters. Here's a summary of what I found...'\n\n"
             "**Example response:**\n"
             "- 'The video is quite long (45 minutes) and the transcript fetch timed out. Try asking again with a note to use a longer timeout.'\n\n"
+        )
+
+    def _browser_credential_section(self) -> str:
+        """Guidance for step-by-step browser interaction with get_credential."""
+        return (
+            "\n## Browser + Credential Coordination\n\n"
+            "You have a `browser` tool that gives you step-by-step control over a cloud "
+            "browser (navigate, fill, click, getText, screenshot, getCookies, setCookies, etc.).\n\n"
+            "### Login Flow Pattern\n\n"
+            "1. Fetch `username` and `password` via `get_credential(service_name=..., fields='username,password')`.\n"
+            "2. Init a browser session: `browser(action={type: 'initSession', session_name: '...'})`.\n"
+            "3. Navigate to the login URL (e.g. `https://login.microsoftonline.com`).\n"
+            "4. Use `getText` or `screenshot` to observe the page state.\n"
+            "5. Fill form fields individually with the `type` action.\n"
+            "6. Click submit/next buttons with the `click` action.\n"
+            "7. After login, use `getText` to read page content.\n\n"
+            "### MFA / OTP Handling\n\n"
+            "When a site presents an MFA verification page, there are two patterns:\n\n"
+            "**Pattern A — SMS / Text Message verification (interactive):**\n"
+            "If the MFA page offers verification methods (e.g. text message, authenticator app), "
+            "select the **text message** option and click to send the code. "
+            "Then **stop and ask the user** via your response: "
+            "'I've requested an SMS verification code to your phone. Please send me the code.' "
+            "When the user replies with the code in their next message, resume the browser session "
+            "(it stays alive), fill the code field, and click verify.\n\n"
+            "**Pattern B — TOTP from 1Password (automatic):**\n"
+            "If the service uses a TOTP authenticator and the code is stored in 1Password, "
+            "call `get_credential(fields='otp')` for a **fresh** code immediately before filling "
+            "the OTP field. OTP codes expire in ~30 seconds. If the site rejects it, fetch a fresh "
+            "code and retry up to 2 times.\n\n"
+            "**How to decide:** Read the MFA page with `getText`/`screenshot`. If it says "
+            "'Text', 'SMS', or 'Send a code to...', use Pattern A. If it shows a TOTP/authenticator "
+            "input field directly, use Pattern B.\n\n"
+            "### Post-Login Prompts\n\n"
+            "After MFA, sites may show a 'Stay signed in?' prompt. "
+            "Always check the 'Don't show this again' checkbox and click 'Yes' to "
+            "reduce future login prompts and improve cookie persistence.\n\n"
+            "### Tips\n\n"
+            "- Use `getText` and `screenshot` liberally to understand page state before acting.\n"
+            "- Use CSS selectors or text content to identify elements for `click` and `type` actions.\n"
+            "- Browser sessions persist between messages — you can start login in one turn and "
+            "finish it in the next after the user provides an SMS code.\n"
+            "- Cookies persist across sessions via `getCookies`/`setCookies`.\n"
+            "- If a session expires, re-init and re-authenticate.\n\n"
         )
 
     def _scheduling_section(self) -> str:

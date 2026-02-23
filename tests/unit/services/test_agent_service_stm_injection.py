@@ -6,9 +6,10 @@ from app.services.agent_service import AgentService
 
 
 def test_build_system_prompt_injects_obsidian_stm(tmp_path: Path):
-    vault = tmp_path / "vault"
-    (vault / "users" / "u1").mkdir(parents=True)
-    (vault / "users" / "u1" / "stm.md").write_text(
+    workspace_base = tmp_path / "workspaces"
+    scratchpad = workspace_base / "u1" / "scratchpad"
+    scratchpad.mkdir(parents=True)
+    (scratchpad / "stm.md").write_text(
         "# STM\n\n## Session summary: s1\n- created_at: 2026-01-31T00:00:00Z\n\n- Did X\n",
         encoding="utf-8",
     )
@@ -17,13 +18,13 @@ def test_build_system_prompt_injects_obsidian_stm(tmp_path: Path):
     cfg.skills_base_dir = str(tmp_path / "skills")
     cfg.shared_skills_dir = str(tmp_path / "shared_skills")
     cfg.secrets_path = str(tmp_path / "secrets.yml")
-    cfg.obsidian_vault_root = str(vault)
+    cfg.obsidian_vault_root = None
     cfg.personality_max_chars = 20_000
     cfg.personality_enabled = False
     cfg.timezone = "UTC"
     cfg.memory_enabled = False
     cfg.agent_commands = []
-    cfg.working_folder_base_dir = str(tmp_path / "workspaces")
+    cfg.working_folder_base_dir = str(workspace_base)
 
     svc = AgentService(config=cfg, memory_service=None)
 

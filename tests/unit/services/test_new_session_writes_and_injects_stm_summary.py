@@ -16,7 +16,7 @@ async def test_new_session_appends_summary_to_stm_and_next_prompt_injects_it(tmp
     cfg.shared_skills_dir = str(tmp_path / "shared")
     cfg.shared_skills_dir = str(tmp_path / "shared")
     cfg.secrets_path = str(tmp_path / "secrets.yml")
-    cfg.obsidian_vault_root = str(tmp_path / "vault")
+    cfg.obsidian_vault_root = None
     cfg.personality_max_chars = 20_000
     cfg.personality_enabled = False
     cfg.timezone = "UTC"
@@ -36,7 +36,7 @@ async def test_new_session_appends_summary_to_stm_and_next_prompt_injects_it(tmp
     mcfg.aws_region = "us-east-1"
     mcfg.openai_api_key = None
     mcfg.openai_model_id = "gpt-4o-mini"
-    mcfg.obsidian_vault_root = cfg.obsidian_vault_root
+    mcfg.working_folder_base_dir = cfg.working_folder_base_dir
     mcfg.personality_max_chars = 20_000
 
     extraction_service = MemoryExtractionService(config=mcfg, memory_service=None)
@@ -55,7 +55,9 @@ async def test_new_session_appends_summary_to_stm_and_next_prompt_injects_it(tmp
     svc._message_counter.increment(user_id, 2)
 
     # Ensure stm doesn't exist yet
-    stm_path = short_term_memory_path(cfg.obsidian_vault_root, user_id)
+    from pathlib import Path
+    scratchpad_dir = str(Path(cfg.working_folder_base_dir) / user_id / "scratchpad")
+    stm_path = short_term_memory_path(scratchpad_dir)
     assert not stm_path.exists()
 
     _agent, _notif = await svc.new_session(user_id)

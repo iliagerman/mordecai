@@ -9,20 +9,20 @@ from app.tools.conversation_summary_vault import (
 
 
 def test_conversation_summary_path_is_under_vault_root(tmp_path: Path):
-    vault = tmp_path / "vault"
-    vault.mkdir()
+    scratchpad = tmp_path / "scratchpad"
+    scratchpad.mkdir()
 
-    p = conversation_summary_path(str(vault), user_id="u1", session_id="s1")
+    p = conversation_summary_path(str(scratchpad), session_id="s1")
     assert p.is_absolute()
-    assert str(p).startswith(str(vault.resolve()))
+    assert str(p).startswith(str(scratchpad.resolve()))
     assert p.name == "s1.md"
 
 
 def test_conversation_summary_path_sanitizes_session_id(tmp_path: Path):
-    vault = tmp_path / "vault"
-    vault.mkdir()
+    scratchpad = tmp_path / "scratchpad"
+    scratchpad.mkdir()
 
-    p = conversation_summary_path(str(vault), user_id="u1", session_id="../evil")
+    p = conversation_summary_path(str(scratchpad), session_id="../evil")
     # Should not traverse directories; should be a safe filename.
     assert p.name.endswith(".md")
     assert ".." not in p.name
@@ -30,12 +30,11 @@ def test_conversation_summary_path_sanitizes_session_id(tmp_path: Path):
 
 
 def test_write_session_summary_writes_markdown(tmp_path: Path):
-    vault = tmp_path / "vault"
-    vault.mkdir()
+    scratchpad = tmp_path / "scratchpad"
+    scratchpad.mkdir()
 
     note_path = write_session_summary(
-        str(vault),
-        user_id="u1",
+        str(scratchpad),
         session_id="session_123",
         summary="- A\n- B",
     )
@@ -48,13 +47,12 @@ def test_write_session_summary_writes_markdown(tmp_path: Path):
 
 
 def test_write_session_summary_rejects_empty_summary(tmp_path: Path):
-    vault = tmp_path / "vault"
-    vault.mkdir()
+    scratchpad = tmp_path / "scratchpad"
+    scratchpad.mkdir()
 
     with pytest.raises(ValueError):
         write_session_summary(
-            str(vault),
-            user_id="u1",
+            str(scratchpad),
             session_id="s1",
             summary="   ",
         )

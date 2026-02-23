@@ -25,7 +25,6 @@ def config(tmp_path):
         telegram_bot_token="test-bot-token",
         session_storage_dir=str(tmp_path),
         skills_base_dir=str(tmp_path),
-        temp_files_base_dir=str(tmp_path),
         working_folder_base_dir=str(tmp_path),
         allowed_users=["testuser"],
         enable_file_attachments=True,

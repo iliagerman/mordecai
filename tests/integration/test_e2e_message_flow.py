@@ -113,6 +113,7 @@ class TestEndToEndMessageFlow:
             telegram_bot_token="test-bot-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
     @pytest_asyncio.fixture

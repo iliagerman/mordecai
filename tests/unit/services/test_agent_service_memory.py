@@ -38,6 +38,7 @@ class TestAgentServiceConversationHistory:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
             conversation_window_size=20,
         )
 
@@ -131,6 +132,7 @@ class TestAgentServiceConversationManager:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
             conversation_window_size=15,
         )
 
@@ -166,6 +168,7 @@ class TestAgentServiceMemoryTools:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
             memory_enabled=True,
         )
 
@@ -217,6 +220,7 @@ class TestAgentServiceSystemPrompt:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
             memory_enabled=True,
         )
 
@@ -261,6 +265,7 @@ class TestAgentServiceSystemPrompt:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
             memory_enabled=False,
         )
         service = AgentService(config)
@@ -285,6 +290,7 @@ class TestAgentServiceExplicitRememberExtraction:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
             memory_enabled=True,
         )
 
@@ -325,6 +331,7 @@ class TestAgentServiceExplicitRemember:
             telegram_bot_token="test-token",
             session_storage_dir=temp_dir,
             skills_base_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
             memory_enabled=True,
         )
 

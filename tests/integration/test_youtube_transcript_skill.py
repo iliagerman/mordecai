@@ -72,6 +72,7 @@ def config(temp_dir):
             aws_region=base_config.aws_region,
             skills_base_dir=temp_dir,
             session_storage_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
     except Exception:
         # Fallback to minimal config for non-credential tests
@@ -79,6 +80,7 @@ def config(temp_dir):
             telegram_bot_token="test-token",
             skills_base_dir=temp_dir,
             session_storage_dir=temp_dir,
+            working_folder_base_dir=temp_dir,
         )
 
 

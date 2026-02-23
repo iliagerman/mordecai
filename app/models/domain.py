@@ -156,6 +156,40 @@ class MultiAgentConversationMessage(JsonModel):
     created_at: datetime
 
 
+class BrowserCookie(JsonModel):
+    """Browser cookie domain model.
+
+    Represents a stored browser cookie for session persistence.
+    """
+
+    id: int | None = None
+    user_id: str
+    domain: str
+    name: str
+    value: str
+    path: str = "/"
+    expires: datetime | None = None
+    http_only: bool = False
+    secure: bool = False
+    same_site: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class UserSkillSecret(JsonModel):
+    """Per-user skill secrets stored in the database.
+
+    The ``secrets_data`` dict mirrors the structure previously found under the
+    ``skills:`` key in ``skills_secrets.yml``.  Only uppercase keys are
+    exported as environment variables during tool/shell execution.
+    """
+
+    user_id: str
+    secrets_data: dict = {}
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class ParameterPosition(JsonModel):
     """One agent's stance on a single decision parameter."""
 

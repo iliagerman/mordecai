@@ -1,8 +1,8 @@
-"""Load personality/identity markdown from the repo-local scratchpad with repo defaults.
+"""Load personality/identity markdown from the per-user scratchpad with repo defaults.
 
 Per-user overrides are resolved using a strict layout to prevent cross-user leakage:
 
-- Per-user (Telegram id): users/<USER_ID>/{soul,id}.md
+- Per-user (Telegram id): workspace/<USER_ID>/scratchpad/{soul,id}.md
 
 Repo defaults live under `instructions/{soul,id}.md`.
 
@@ -21,6 +21,8 @@ from typing import Literal
 PersonalityDocKind = Literal["soul", "id"]
 PersonalityDocSource = Literal["user", "repo"]
 
+SCRATCHPAD_SUBDIR = "scratchpad"
+
 
 @dataclass(frozen=True)
 class PersonalityDoc:
@@ -31,28 +33,26 @@ class PersonalityDoc:
 
 
 class PersonalityService:
-    """Resolve and load personality docs from the scratchpad."""
+    """Resolve and load personality docs from the per-user scratchpad."""
 
     def __init__(
         self,
-        vault_root: str | None,
+        workspace_base_dir: str | None,
         *,
         max_chars: int = 20_000,
         repo_instructions_dir: str | Path | None = None,
     ) -> None:
-        self._vault_root_raw = vault_root
+        self._workspace_base_raw = workspace_base_dir
         self._max_chars = max_chars
         self._repo_instructions_dir_raw = repo_instructions_dir
 
     def is_enabled(self) -> bool:
-        # Enabled if we can load either per-user vault files or repo defaults.
-        return bool(self._vault_root_raw) or bool(self._repo_instructions_dir())
+        return bool(self._workspace_base_raw) or bool(self._repo_instructions_dir())
 
-    def _vault_root(self) -> Path | None:
-        if not self._vault_root_raw:
+    def _workspace_base(self) -> Path | None:
+        if not self._workspace_base_raw:
             return None
-        # Expand ~ for macOS paths.
-        return Path(self._vault_root_raw).expanduser().resolve()
+        return Path(self._workspace_base_raw).expanduser().resolve()
 
     @staticmethod
     def _find_repo_root(*, start: Path) -> Path:
@@ -99,13 +99,13 @@ class PersonalityService:
 
         candidates: list[tuple[PersonalityDocSource, Path]] = []
 
-        root = self._vault_root()
-        if root is not None:
-            user_path = root / "users" / user_id / filename
+        workspace_base = self._workspace_base()
+        if workspace_base is not None:
+            user_path = workspace_base / user_id / SCRATCHPAD_SUBDIR / filename
             candidates.append(("user", user_path))
 
         # Built-in defaults live in the repo (instructions/). These are intended to
-        # be available even when no Obsidian vault is configured.
+        # be available even when no workspace is configured.
         repo_dir = self._repo_instructions_dir()
         if repo_dir is not None:
             candidates.append(("repo", repo_dir / filename))
@@ -119,14 +119,14 @@ class PersonalityService:
         try:
             resolved.relative_to(root)
         except Exception as e:
-            raise ValueError(f"Path escapes vault root: {resolved}") from e
+            raise ValueError(f"Path escapes root: {resolved}") from e
         return resolved
 
     def load(self, user_id: str) -> dict[PersonalityDocKind, PersonalityDoc]:
         """Load soul/id docs for a user, with fallback to defaults."""
-        vault_root = self._vault_root()
+        workspace_base = self._workspace_base()
         repo_dir = self._repo_instructions_dir()
-        if vault_root is None and repo_dir is None:
+        if workspace_base is None and repo_dir is None:
             return {}
 
         docs: dict[PersonalityDocKind, PersonalityDoc] = {}
@@ -135,12 +135,12 @@ class PersonalityService:
             for source, path in candidates:
                 # Ensure all reads are constrained to their respective roots.
                 if source == "user":
-                    if vault_root is None:
+                    if workspace_base is None:
                         continue
+                    user_scratchpad = workspace_base / user_id / SCRATCHPAD_SUBDIR
                     try:
-                        safe_path = self._ensure_under_root(vault_root, path)
+                        safe_path = self._ensure_under_root(user_scratchpad, path)
                     except ValueError:
-                        # Should never happen with our fixed layout, but be safe.
                         continue
                 else:
                     # repo defaults
